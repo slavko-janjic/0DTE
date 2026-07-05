@@ -1,0 +1,50 @@
+# 0DTE Paper Trading Tool - tweakable configuration
+# All weights, thresholds, and sizing here are intentionally arbitrary
+# starting points per the project brief - tune once real paper-trading
+# data accumulates.
+
+tickers:
+  - QQQ
+  - SPY
+
+poll_interval_minutes: 5
+
+market_hours:
+  open: "09:30"
+  close: "16:00"
+  timezone: "America/New_York"
+
+account:
+  starting_balance: 10000
+  risk_per_trade_pct: 5
+
+confidence_floor_pct: 40
+
+weights:
+  technicals: 0.30
+  greeks_iv: 0.25
+  order_flow: 0.25
+  sentiment: 0.20
+
+exit_rules:
+  profit_target_pct: 50
+  stop_loss_pct: -30
+  time_cutoff_minutes_before_close: 30
+  reversal_confidence_pct: 60
+
+sentiment_sources:
+  apewisdom: true
+  stocktwits: true
+  reddit_praw: true
+  grok_x: false   # pluggable, off by default - revisit if free sources prove insufficient
+
+reddit:
+  subreddits:
+    - options
+    - wallstreetbets
+    - stocks
+  # credentials read from environment variables, not stored here:
+  #   REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
+
+database:
+  path: "storage/0dte.db"
