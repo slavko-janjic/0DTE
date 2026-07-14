@@ -152,6 +152,16 @@ exit_rules:
   stop_loss_pct: -30
   time_cutoff_minutes_before_close: 30
   reversal_confidence_pct: 60
+  # Trailing stop: let a winner run, then lock it in. Once the premium has been
+  # up trailing_activate_pct from entry, exit if it gives back trailing_stop_pct
+  # from that peak. (Set either to null to disable.)
+  trailing_activate_pct: 40
+  trailing_stop_pct: 20
+  # Theta-aware late-session stop: in the last late_session_minutes before the
+  # close, cut a position still down at least late_session_stop_pct (0DTE decay
+  # accelerates, so a lingering loser is usually dead premium). null to disable.
+  late_session_minutes: 90
+  late_session_stop_pct: -20
 
 sentiment_sources:
   apewisdom: true

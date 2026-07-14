@@ -408,3 +408,21 @@ def test_gamma_columns_stored_and_default_null(tmp_path):
     row2 = storage.get_latest_signal(path, "SPY")
     assert row2["gamma_score"] is None
     assert row2["gamma_regime"] is None
+
+
+# --- max_price high-water mark ----------------------------------------------
+
+def test_max_price_initialized_to_entry_and_bumps_up(tmp_path):
+    path = make_temp_db(tmp_path)
+    storage.ensure_account(path, 10000.0)
+    pid = storage.open_position(path, "QQQ", "call", 500.0, "2026-07-14", 1, 2.0, 0.5)
+    row = {r["id"]: r for r in storage.get_open_positions(path)}[pid]
+    assert row["max_price"] == 2.0  # seeded at entry_price
+
+    storage.update_position_price(path, pid, 2.5)      # new high
+    row = {r["id"]: r for r in storage.get_open_positions(path)}[pid]
+    assert row["current_price"] == 2.5 and row["max_price"] == 2.5
+
+    storage.update_position_price(path, pid, 2.1)      # pullback: peak holds
+    row = {r["id"]: r for r in storage.get_open_positions(path)}[pid]
+    assert row["current_price"] == 2.1 and row["max_price"] == 2.5

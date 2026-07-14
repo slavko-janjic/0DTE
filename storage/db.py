@@ -127,6 +127,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE positions ADD COLUMN stop_loss_pct REAL")
     if "opened_by" not in position_columns:
         conn.execute("ALTER TABLE positions ADD COLUMN opened_by TEXT NOT NULL DEFAULT 'manual'")
+    if "max_price" not in position_columns:
+        # high-water mark of the premium since entry, for the trailing stop.
+        # Backfill existing open rows to their entry_price so an in-flight
+        # position doesn't arm a trailing stop off a NULL peak.
+        conn.execute("ALTER TABLE positions ADD COLUMN max_price REAL")
+        conn.execute("UPDATE positions SET max_price = entry_price WHERE max_price IS NULL")
 
     # weight_overrides went from a single global row (id CHECK(id=1)) to per-ticker
     # (ticker PRIMARY KEY). Recreate the table if it still has the old shape - an
@@ -552,10 +558,10 @@ def open_position(
         cur = conn.execute(
             """INSERT INTO positions
                (ticker, option_type, strike, expiration, contracts, entry_price,
-                cost_basis, entry_time, entry_composite_score, status, opened_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+                cost_basis, entry_time, entry_composite_score, status, opened_by, max_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
             (ticker, option_type, strike, expiration, contracts, entry_price,
-             cost_basis, _now(), entry_composite_score, opened_by),
+             cost_basis, _now(), entry_composite_score, opened_by, entry_price),
         )
         return cur.lastrowid
 
@@ -589,10 +595,15 @@ def flag_suggested_exit(db_path: str | Path, position_id: int, reason: str) -> N
 
 
 def update_position_price(db_path: str | Path, position_id: int, current_price: float) -> None:
+    """Stores the latest premium and raises the high-water mark (max_price) used
+    by the trailing stop. COALESCE guards a legacy row with a NULL peak."""
     with connect(db_path) as conn:
         conn.execute(
-            "UPDATE positions SET current_price = ? WHERE id = ?",
-            (current_price, position_id),
+            """UPDATE positions
+               SET current_price = ?,
+                   max_price = MAX(COALESCE(max_price, ?), ?)
+               WHERE id = ?""",
+            (current_price, current_price, current_price, position_id),
         )
 
 

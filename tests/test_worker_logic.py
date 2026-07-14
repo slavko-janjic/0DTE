@@ -394,3 +394,39 @@ def test_catalyst_force_closes_auto_but_suggests_for_manual(tmp_path, monkeypatc
     assert open_rows[manual_id]["suggested_exit_reason"] == "catalyst"
     closed = {row["id"]: row for row in storage.get_closed_positions(db_path)}
     assert closed[auto_id]["exit_reason"] == "catalyst"
+
+
+# --- trailing-stop force-close routing (auto vs manual) ---------------------
+
+TRAIL_CONFIG = {
+    **AUTO_CONFIG,
+    "exit_rules": {
+        "profit_target_pct": 50, "stop_loss_pct": -30,
+        "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 60,
+        "trailing_activate_pct": 40, "trailing_stop_pct": 20,
+        "late_session_minutes": 90, "late_session_stop_pct": -20,
+    },
+}
+
+
+def test_trailing_stop_force_closes_auto_but_suggests_for_manual(tmp_path, monkeypatch):
+    db_path = _auto_db(tmp_path)
+    from paper_trading.engine import buy
+    auto_id = buy(db_path, "QQQ", "call", 500.0, "2026-07-14", 2.0, 1, 0.5, opened_by="auto")
+    manual_id = buy(db_path, "QQQ", "call", 500.0, "2026-07-14", 2.0, 1, 0.5, opened_by="manual")
+    # drive the premium up to 3.0 (peak +50%) to arm the trail on both
+    storage.update_position_price(db_path, auto_id, 3.0)
+    storage.update_position_price(db_path, manual_id, 3.0)
+
+    _patch_market_clock(monkeypatch, to_close=240.0)  # far from bell; no time_cutoff/late stop
+    # faded back to 2.3 -> gave back 23% from the 3.0 peak (>= 20%)
+    monkeypatch.setattr(worker.market_data, "find_contract_price",
+                        lambda chain, option_type, strike: 2.3)
+    worker.check_open_positions("QQQ", TRAIL_CONFIG, db_path, _fake_chain(), 0.0)
+
+    open_rows = {row["id"]: row for row in storage.get_open_positions(db_path)}
+    assert auto_id not in open_rows                    # trailing stop force-closed the auto trade
+    assert manual_id in open_rows                      # manual only gets a suggestion
+    assert open_rows[manual_id]["suggested_exit_reason"] == "trailing_stop"
+    closed = {row["id"]: row for row in storage.get_closed_positions(db_path)}
+    assert closed[auto_id]["exit_reason"] == "trailing_stop"

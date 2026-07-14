@@ -13,9 +13,13 @@ from zoneinfo import ZoneInfo
 from paper_trading.models import Position
 from storage import db as storage
 
-# Exit reasons the worker acts on automatically (the per-trade stop/target the
-# user explicitly set). Time-cutoff and signal-reversal stay suggestion-only.
+# Exit reasons the worker acts on automatically for ANY position (the per-trade
+# stop/target the user explicitly set).
 AUTO_CLOSE_REASONS = frozenset({"profit_target", "stop_loss"})
+
+# Global risk exits: force-close AUTO positions (so a day-session is managed
+# end to end) but only SUGGEST for manual positions, which the user manages.
+AUTO_FORCE_REASONS = frozenset({"time_cutoff", "catalyst", "trailing_stop", "time_decay_stop"})
 
 
 def calculate_contracts(balance: float, risk_per_trade_pct: float, entry_price: float) -> int:
@@ -159,6 +163,43 @@ def price_target_exit(position: Position, current_price: float) -> str | None:
     return None
 
 
+def trailing_stop_exit(position: Position, current_price: float, exit_rules: dict) -> str | None:
+    """Lets winners run, then locks them in: once the premium has been up by
+    trailing_activate_pct from entry (tracked via the high-water mark
+    position.max_price), exit if it gives back trailing_stop_pct from that peak.
+    Off when either knob is missing or the position never armed."""
+    activate = exit_rules.get("trailing_activate_pct")
+    give_back = exit_rules.get("trailing_stop_pct")
+    if activate is None or give_back is None:
+        return None
+    peak = position.max_price if position.max_price is not None else position.entry_price
+    peak = max(peak, current_price)  # be robust if the caller hasn't bumped it yet
+    if position.entry_price <= 0:
+        return None
+    peak_gain_pct = (peak - position.entry_price) / position.entry_price * 100.0
+    if peak_gain_pct < activate:
+        return None  # never got far enough into profit to arm the trail
+    give_back_pct = (peak - current_price) / peak * 100.0 if peak > 0 else 0.0
+    return "trailing_stop" if give_back_pct >= give_back else None
+
+
+def late_session_stop_exit(
+    position: Position, current_price: float, minutes_to_close: float, exit_rules: dict,
+) -> str | None:
+    """Theta-aware: 0DTE decay accelerates late in the session, so a position
+    still underwater in the last late_session_minutes is usually dead premium.
+    Cut it once its loss reaches late_session_stop_pct (negative). Off when
+    either knob is missing."""
+    late_minutes = exit_rules.get("late_session_minutes")
+    late_stop = exit_rules.get("late_session_stop_pct")
+    if late_minutes is None or late_stop is None:
+        return None
+    if minutes_to_close > late_minutes:
+        return None
+    _, pnl_pct = calculate_pnl(position.entry_price, current_price, position.contracts)
+    return "time_decay_stop" if pnl_pct <= late_stop else None
+
+
 def should_auto_enter(
     ticker: str,
     direction: str,
@@ -280,9 +321,10 @@ def evaluate_exit(
     """Returns an exit reason if any exit condition fires, else None.
 
     Checked in priority order: time cutoff (hard safety net) first, then this
-    position's own profit target / stop loss (each off when None), then signal
-    reversal. Profit/stop are per-trade; time-cutoff and reversal are global
-    safety nets from exit_rules.
+    position's own profit target / stop loss, then the trailing stop (lock in a
+    faded winner), then the late-session theta stop (cut a lingering loser), then
+    signal reversal. Profit/stop are per-trade; the rest are global rules from
+    exit_rules.
     """
     if minutes_to_close <= exit_rules.get("time_cutoff_minutes_before_close", 30):
         return "time_cutoff"
@@ -290,6 +332,14 @@ def evaluate_exit(
     price_exit = price_target_exit(position, current_price)
     if price_exit is not None:
         return price_exit
+
+    trailing = trailing_stop_exit(position, current_price, exit_rules)
+    if trailing is not None:
+        return trailing
+
+    late = late_session_stop_exit(position, current_price, minutes_to_close, exit_rules)
+    if late is not None:
+        return late
 
     if current_composite_score is not None:
         reversal_threshold = exit_rules.get("reversal_confidence_pct", 60) / 100.0

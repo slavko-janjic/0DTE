@@ -1258,6 +1258,12 @@ with right_col:
                         pnl_dollars, pnl_pct = calculate_pnl(pos["entry_price"], current_price, pos["contracts"])
                         st.write(f"Current: ${current_price:.2f} | "
                                   f"Unrealized P&L: ${pnl_dollars:,.2f} ({pnl_pct:+.1f}%)")
+                    # peak gain since entry (high-water mark that arms the trailing stop)
+                    peak = pos["max_price"]
+                    if peak is not None and pos["entry_price"] > 0 and peak > pos["entry_price"]:
+                        peak_pct = (peak - pos["entry_price"]) / pos["entry_price"] * 100.0
+                        st.caption(f":material/arrow_upward: peak +{peak_pct:.0f}% "
+                                   f"(${peak:.2f}) since entry")
                     # spread readout: the round-trip cost honest fills bake in
                     # (prices are bid-side, entries fill ask-side)
                     row = market_data.find_contract_row(chain, pos["option_type"], pos["strike"])

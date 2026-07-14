@@ -451,3 +451,62 @@ def test_negative_and_neutral_gamma_leave_threshold_unchanged():
 def test_positive_gamma_penalty_off_by_default():
     # AUTOPILOT_CFG has no penalty key -> positive gamma has no effect
     assert _enter(confidence=60.0, cfg=AUTOPILOT_CFG, gamma_regime="positive") == "call"
+
+
+# --- trailing stop + late-session (theta) stop ------------------------------
+
+TRAIL_RULES = {**EXIT_RULES, "trailing_activate_pct": 30, "trailing_stop_pct": 15,
+               "late_session_minutes": 90, "late_session_stop_pct": -15}
+
+
+def _pos(entry=2.0, contracts=1, option_type="call", max_price=None):
+    p = make_position(option_type=option_type, entry_price=entry, contracts=contracts)
+    p.max_price = max_price
+    return p
+
+
+def test_trailing_stop_not_armed_below_activation():
+    from paper_trading.engine import trailing_stop_exit
+    # peaked at +20% (< 30% activation): trailing never arms even on a pullback
+    p = _pos(entry=2.0, max_price=2.4)
+    assert trailing_stop_exit(p, 2.0, TRAIL_RULES) is None
+
+
+def test_trailing_stop_fires_after_arming_and_giveback():
+    from paper_trading.engine import trailing_stop_exit
+    # peaked at +50% (2.0 -> 3.0), now back to 2.5: gave back (3.0-2.5)/3.0 = 16.7% >= 15%
+    p = _pos(entry=2.0, max_price=3.0)
+    assert trailing_stop_exit(p, 2.5, TRAIL_RULES) == "trailing_stop"
+    # small pullback to 2.8: gave back only 6.7% -> hold
+    assert trailing_stop_exit(p, 2.8, TRAIL_RULES) is None
+
+
+def test_trailing_stop_off_when_unconfigured():
+    from paper_trading.engine import trailing_stop_exit
+    p = _pos(entry=2.0, max_price=3.0)
+    assert trailing_stop_exit(p, 2.5, EXIT_RULES) is None  # no trailing keys
+
+
+def test_late_session_stop_cuts_lingering_loser():
+    from paper_trading.engine import late_session_stop_exit
+    p = _pos(entry=2.0)
+    # in the last 90 min, down 20% (2.0 -> 1.6) -> cut
+    assert late_session_stop_exit(p, 1.6, minutes_to_close=60, exit_rules=TRAIL_RULES) == "time_decay_stop"
+    # same loss but earlier in the session -> hold
+    assert late_session_stop_exit(p, 1.6, minutes_to_close=180, exit_rules=TRAIL_RULES) is None
+    # late but only down 5% -> hold
+    assert late_session_stop_exit(p, 1.9, minutes_to_close=60, exit_rules=TRAIL_RULES) is None
+
+
+def test_evaluate_exit_priority_trailing_before_reversal():
+    # armed & faded winner should exit as trailing_stop even if signal also reversed
+    p = _pos(entry=2.0, max_price=3.0, option_type="call")
+    reason = evaluate_exit(p, current_price=2.5, current_composite_score=-0.9,
+                            minutes_to_close=180, exit_rules=TRAIL_RULES)
+    assert reason == "trailing_stop"
+
+
+def test_auto_force_reasons_membership():
+    from paper_trading.engine import AUTO_FORCE_REASONS
+    assert {"trailing_stop", "time_decay_stop", "time_cutoff", "catalyst"} == set(AUTO_FORCE_REASONS)
+    assert "profit_target" not in AUTO_FORCE_REASONS  # that's AUTO_CLOSE_REASONS (force for all)

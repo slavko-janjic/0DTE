@@ -18,8 +18,8 @@ from analytics import accuracy
 from config import load_settings
 from data import kalshi, market_data, news
 from paper_trading.engine import (
-    AUTO_CLOSE_REASONS, buy as buy_position, calculate_contracts, close as close_position,
-    evaluate_exit, should_auto_enter,
+    AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
+    close as close_position, evaluate_exit, should_auto_enter,
 )
 from paper_trading.models import Position
 from sentiment.aggregate import get_sentiment
@@ -338,11 +338,12 @@ def check_open_positions(ticker: str, config: dict, db_path: str,
         storage.update_position_price(db_path, position.id, current_price)
         reason = evaluate_exit(position, current_price, composite_score,
                                 minutes_to_close, config["exit_rules"])
-        # per-trade stop/target always executes; time_cutoff executes for
-        # auto-opened positions so a day-session ends flat (0DTE would expire
-        # worthless) - manual positions keep suggestion-only behavior
+        # per-trade stop/target always executes; the global risk exits
+        # (time_cutoff, trailing_stop, time_decay_stop) force-close AUTO
+        # positions so a day-session is managed end to end - manual positions
+        # keep suggestion-only behavior
         force_close = (reason in AUTO_CLOSE_REASONS
-                       or (reason == "time_cutoff" and position.opened_by == "auto"))
+                       or (reason in AUTO_FORCE_REASONS and position.opened_by == "auto"))
         # imminent high-impact catalyst: don't hold an AUTO position into it
         # (force-close, overriding a weaker suggestion); manual gets a suggestion
         if not force_close and catalyst_imminent:

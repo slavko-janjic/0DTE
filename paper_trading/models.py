@@ -22,6 +22,7 @@ class Position:
     profit_target_pct: float | None = None
     stop_loss_pct: float | None = None
     opened_by: str = "manual"   # 'manual' | 'auto'
+    max_price: float | None = None   # high-water mark of the premium, for the trailing stop
 
     @classmethod
     def from_row(cls, row) -> "Position":
@@ -35,4 +36,5 @@ class Position:
             profit_target_pct=row["profit_target_pct"],
             stop_loss_pct=row["stop_loss_pct"],
             opened_by=row["opened_by"],
+            max_price=row["max_price"],
         )
