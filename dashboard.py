@@ -1093,7 +1093,10 @@ with right_col:
             if contract is None:
                 st.error("No option contract available for this ticker right now.")
                 return
-            entry_price = float(contract["lastPrice"])
+            entry_price = market_data.contract_entry_price(contract)  # honest fill: ask-side
+            if entry_price is None:
+                st.error("No usable quote on that contract right now.")
+                return
             # read via session state, not the closure, so a fragment-only rerun
             # can't act on a stale amount
             amount = st.session_state.get("trade_amount", 0.0)
@@ -1197,6 +1200,13 @@ with right_col:
                         pnl_dollars, pnl_pct = calculate_pnl(pos["entry_price"], current_price, pos["contracts"])
                         st.write(f"Current: ${current_price:.2f} | "
                                   f"Unrealized P&L: ${pnl_dollars:,.2f} ({pnl_pct:+.1f}%)")
+                    # spread readout: the round-trip cost honest fills bake in
+                    # (prices are bid-side, entries fill ask-side)
+                    row = market_data.find_contract_row(chain, pos["option_type"], pos["strike"])
+                    spread = market_data.contract_spread_pct(row) if row is not None else None
+                    if spread is not None:
+                        st.caption(f":material/swap_horiz: bid/ask spread {spread:.1f}% "
+                                   "(valued at bid)")
                     # per-trade auto-exit targets (None = off). Profit stored
                     # positive, stop stored negative; both shown as magnitudes.
                     stored_pt = pos["profit_target_pct"]

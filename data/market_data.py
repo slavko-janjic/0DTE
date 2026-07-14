@@ -205,14 +205,60 @@ def find_atm_contract(df: pd.DataFrame, spot: float) -> pd.Series | None:
     return df.loc[idx]
 
 
-def find_contract_price(chain: "OptionChainSnapshot | None", option_type: str, strike: float) -> float | None:
-    """Looks up a specific held contract's latest price by exact strike match -
-    used to price open positions live, as opposed to find_atm_contract which is
-    only for picking a new contract to buy."""
+# --- honest fills ------------------------------------------------------------
+# Paper fills used to use lastPrice - the most optimistic assumption possible.
+# 0DTE spreads are wide and last-trade can be minutes stale, so buys fill at the
+# ask and sells at the bid (crossing the spread), falling back to the mid and
+# only then to lastPrice when quotes are missing/zero (common after hours).
+
+def _quote(contract, field: str) -> float | None:
+    try:
+        value = contract.get(field)
+        value = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if value is None or math.isnan(value) or value <= 0:
+        return None
+    return value
+
+
+def _mid(contract) -> float | None:
+    bid, ask = _quote(contract, "bid"), _quote(contract, "ask")
+    if bid is not None and ask is not None and ask >= bid:
+        return (bid + ask) / 2.0
+    return None
+
+
+def contract_entry_price(contract) -> float | None:
+    """Buy fill: ask -> mid -> lastPrice."""
+    return _quote(contract, "ask") or _mid(contract) or _quote(contract, "lastPrice")
+
+
+def contract_exit_price(contract) -> float | None:
+    """Sell fill / open-position valuation: bid -> mid -> lastPrice."""
+    return _quote(contract, "bid") or _mid(contract) or _quote(contract, "lastPrice")
+
+
+def contract_spread_pct(contract) -> float | None:
+    """Bid/ask spread as a percent of the mid - the round-trip cost the honest
+    fills bake in. None when either quote is missing."""
+    bid, ask, mid = _quote(contract, "bid"), _quote(contract, "ask"), _mid(contract)
+    if bid is None or ask is None or not mid:
+        return None
+    return (ask - bid) / mid * 100.0
+
+
+def find_contract_row(chain: "OptionChainSnapshot | None", option_type: str, strike: float):
+    """The held contract's chain row by exact strike match, or None."""
     if chain is None:
         return None
     df = chain.calls if option_type == "call" else chain.puts
     match = df[df["strike"] == strike]
-    if match.empty:
-        return None
-    return float(match.iloc[0]["lastPrice"])
+    return None if match.empty else match.iloc[0]
+
+
+def find_contract_price(chain: "OptionChainSnapshot | None", option_type: str, strike: float) -> float | None:
+    """Prices a held contract for exit/valuation - bid-side (see honest fills
+    above), as opposed to find_atm_contract which picks a new contract to buy."""
+    row = find_contract_row(chain, option_type, strike)
+    return contract_exit_price(row) if row is not None else None

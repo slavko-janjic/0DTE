@@ -269,7 +269,9 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
         contract = market_data.find_atm_contract(df, chain.spot)
         if contract is None:
             continue
-        entry_price = float(contract["lastPrice"])
+        entry_price = market_data.contract_entry_price(contract)  # honest fill: ask-side
+        if entry_price is None:
+            continue
         balance = storage.get_balance(db_path)
         contracts = calculate_contracts(balance, autopilot_cfg.get("risk_per_trade_pct", 5), entry_price)
         if contracts <= 0:
