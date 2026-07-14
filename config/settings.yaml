@@ -128,6 +128,14 @@ autopilot:
   max_entries_per_session: 1    # opening_range: the single best trade per day
   no_entry_before_catalyst_minutes: 15  # stand down this close to a scheduled high-impact catalyst
   close_before_catalyst_minutes: 5      # don't hold into one: force-close AUTO positions (suggest for manual) this close to it (0 = off)
+  positive_gamma_confidence_penalty: 10 # in a rangebound (positive-gamma) regime, require this much more confidence to auto-enter (0 = off)
+
+# Dealer gamma exposure (GEX): a rangebound-vs-trending regime read computed from
+# the option chain we already fetch. Not a directional signal - it gates the
+# opening-range auto-entry (see autopilot.positive_gamma_confidence_penalty) and
+# shows on the dashboard. Naive front-expiry approximation.
+gamma:
+  deadband: 0.15  # |normalized GEX| below this reads as 'neutral' (no strong lean)
 
 # Automatic self-calibration: once per day after market close the worker
 # nudges per-ticker weights toward the accuracy-based suggestion, flips

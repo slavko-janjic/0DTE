@@ -208,16 +208,43 @@ def poll_ticker(
             ticker, signal.direction, calibrated, config["confidence_floor_pct"],
         )
 
+    # dealer-gamma regime (rangebound vs trending) from the chain we already
+    # fetched - a tactic gate + display hint, not a directional subscore
+    gamma_score, gamma_regime = _gamma_from_chain(chain, config)
+
     storage.insert_signal_snapshot(
         db_path, ticker, signal.direction, raw_confidence,
         signal.composite_score, signal.recommendation, signal.subscores_used,
         spot_price=spot,
         calibrated_confidence=calibrated if calibrated != raw_confidence else None,
+        gamma_score=gamma_score, gamma_regime=gamma_regime,
     )
     print(f"[{ticker}] {signal.recommendation} (score={signal.composite_score:.2f})")
 
     check_open_positions(ticker, config, db_path, chain, signal.composite_score)
     return signal, chain
+
+
+def _gamma_from_chain(chain: market_data.OptionChainSnapshot | None,
+                      config: dict) -> tuple[float | None, str | None]:
+    """Normalized dealer-gamma score (-1..1) and its regime label from an
+    enriched chain (needs the 'gamma' + 'openInterest' columns). (None, None)
+    when the chain or those columns are missing."""
+    if chain is None:
+        return None, None
+
+    def _col(df, name):
+        cols = getattr(df, "columns", None)
+        if cols is None or name not in cols or df.empty:
+            return []
+        return df[name].tolist()
+
+    score = indicators.gamma_exposure_score(
+        _col(chain.calls, "gamma"), _col(chain.calls, "openInterest"),
+        _col(chain.puts, "gamma"), _col(chain.puts, "openInterest"),
+    )
+    deadband = config.get("gamma", {}).get("deadband", 0.15)
+    return score, indicators.gamma_regime(score, deadband)
 
 
 def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.OptionChainSnapshot]],
@@ -247,6 +274,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
     ):
         if chain is None:
             continue
+        _, gamma_regime = _gamma_from_chain(chain, config)
         # guard rails re-read per candidate: an entry above changes open_rows
         option_type = should_auto_enter(
             ticker=ticker,
@@ -261,6 +289,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             now=now,
             tz_name=tz_name,
             minutes_to_catalyst=minutes_to_catalyst,
+            gamma_regime=gamma_regime,
         )
         if option_type is None:
             continue

@@ -149,6 +149,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "calibrated_confidence" not in existing_columns:
         conn.execute("ALTER TABLE signal_snapshots ADD COLUMN calibrated_confidence REAL")
+    if "gamma_score" not in existing_columns:
+        conn.execute("ALTER TABLE signal_snapshots ADD COLUMN gamma_score REAL")
+    if "gamma_regime" not in existing_columns:
+        conn.execute("ALTER TABLE signal_snapshots ADD COLUMN gamma_regime TEXT")
 
 
 def init_db(path: str | Path) -> None:
@@ -486,18 +490,25 @@ def insert_signal_snapshot(
     subscores: dict,
     spot_price: float | None = None,
     calibrated_confidence: float | None = None,
+    gamma_score: float | None = None,
+    gamma_regime: str | None = None,
 ) -> None:
     """confidence is the RAW |composite|*100 value - all accuracy grading and
     calibration math keys off it. calibrated_confidence is the corrected
-    display/decision value (None when no calibration map exists yet)."""
+    display/decision value (None when no calibration map exists yet). gamma_score
+    (-1..1) and gamma_regime ('positive'|'negative'|'neutral') describe the
+    dealer-gamma regime for that cycle - a rangebound-vs-trending hint, not a
+    directional call."""
     with connect(db_path) as conn:
         conn.execute(
             """INSERT INTO signal_snapshots
                (ticker, timestamp, direction, confidence, composite_score,
-                recommendation, subscores_json, spot_price, calibrated_confidence)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                recommendation, subscores_json, spot_price, calibrated_confidence,
+                gamma_score, gamma_regime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, _now(), direction, confidence, composite_score,
-             recommendation, json.dumps(subscores), spot_price, calibrated_confidence),
+             recommendation, json.dumps(subscores), spot_price, calibrated_confidence,
+             gamma_score, gamma_regime),
         )
 
 

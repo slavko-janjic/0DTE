@@ -406,6 +406,27 @@ with left_col:
                     st.progress(min(confidence / 100.0, 1.0), text=f"{confidence:.0f}%")
                 if raw_conf is not None:
                     st.caption(f":material/tune: calibrated from {raw_conf:.0f}% raw")
+
+            # dealer-gamma regime: a rangebound-vs-trending hint, not a direction
+            gamma_regime = snap["gamma_regime"]
+            if gamma_regime:
+                gamma_score = snap["gamma_score"]
+                _GAMMA_BADGE = {
+                    "positive": ("Long gamma · rangebound",
+                                 "dealers fade moves; breakouts tend to fail, so auto-pilot "
+                                 "wants extra confidence here", "#f0a202"),
+                    "negative": ("Short gamma · trending",
+                                 "dealers chase moves; breakouts tend to follow through", "#2ecc71"),
+                    "neutral": ("Neutral gamma",
+                                "no strong dealer-hedging lean either way", "#95a5a6"),
+                }
+                label, blurb, color = _GAMMA_BADGE[gamma_regime]
+                score_txt = f" ({gamma_score:+.2f})" if gamma_score is not None else ""
+                st.markdown(
+                    f"<span style='color:{color}; font-weight:600;'>● {label}{score_txt}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"Dealer gamma: {blurb}. Approximate (front-expiry).")
             render_signal_freshness(snap)
 
             with st.expander("How is this score calculated? (ELI5)"):

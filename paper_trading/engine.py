@@ -172,16 +172,19 @@ def should_auto_enter(
     now: datetime,
     tz_name: str = "America/New_York",
     minutes_to_catalyst: float | None = None,
+    gamma_regime: str | None = None,
 ) -> str | None:
     """Auto-pilot entry decision: returns 'call'/'put' to enter, or None.
 
     Pure and row-driven (like summarize_pnl) so it's unit-testable. Guard rails,
-    checked in order: non-neutral direction, confidence threshold, catalyst
-    proximity (stand down within no_entry_before_catalyst_minutes of a scheduled
-    high-impact event), the tactic's entry window, no open position in this
-    ticker (manual OR auto - never stacks), auto-concurrent cap, auto trades/day
-    cap, per-ticker cooldown after any close, and a daily circuit breaker on
-    realized auto P&L (pct of starting_balance).
+    checked in order: non-neutral direction, confidence threshold (raised in a
+    positive-gamma/rangebound regime, where a directional breakout entry is
+    riskier), catalyst proximity (stand down within
+    no_entry_before_catalyst_minutes of a scheduled high-impact event), the
+    tactic's entry window, no open position in this ticker (manual OR auto -
+    never stacks), auto-concurrent cap, auto trades/day cap, per-ticker cooldown
+    after any close, and a daily circuit breaker on realized auto P&L (pct of
+    starting_balance).
 
     Tactics: 'opening_range' allows entries only inside the decision window
     (decision_start..decision_end minutes after open) and at most
@@ -196,7 +199,12 @@ def should_auto_enter(
     else:
         return None
 
-    if confidence_pct < autopilot_cfg.get("min_confidence_pct", 55):
+    # positive gamma = dealers fade moves = rangebound, so breakout-style entries
+    # need a higher bar; negative/neutral leave the threshold unchanged
+    min_confidence = autopilot_cfg.get("min_confidence_pct", 55)
+    if gamma_regime == "positive":
+        min_confidence += autopilot_cfg.get("positive_gamma_confidence_penalty", 0)
+    if confidence_pct < min_confidence:
         return None
 
     # stand down just before a scheduled high-impact catalyst (CPI/FOMC/earnings)

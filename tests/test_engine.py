@@ -299,13 +299,13 @@ def _ap_row(ticker="SPY", opened_by="auto", entry_time="2026-07-07T14:00:00+00:0
 
 def _enter(ticker="QQQ", direction="bullish", confidence=60.0, since_open=120,
            to_close=180, open_rows=(), closed_rows=(), cfg=AUTOPILOT_CFG,
-           minutes_to_catalyst=None):
+           minutes_to_catalyst=None, gamma_regime=None):
     return should_auto_enter(
         ticker=ticker, direction=direction, confidence_pct=confidence,
         minutes_since_open=since_open, minutes_to_close=to_close,
         open_rows=list(open_rows), closed_rows=list(closed_rows),
         autopilot_cfg=cfg, starting_balance=10000.0, now=_AP_NOW, tz_name="UTC",
-        minutes_to_catalyst=minutes_to_catalyst,
+        minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
     )
 
 
@@ -430,3 +430,24 @@ def test_should_auto_enter_catalyst_guard_allows_outside_window():
     assert _enter(minutes_to_catalyst=15.0) is None
     # no catalyst -> unaffected
     assert _enter(minutes_to_catalyst=None) == "call"
+
+
+GAMMA_CFG = {**AUTOPILOT_CFG, "positive_gamma_confidence_penalty": 10}
+
+
+def test_positive_gamma_raises_the_confidence_bar():
+    # 60% clears the base 55% bar, but positive gamma pushes it to 65% -> blocked
+    assert _enter(confidence=60.0, cfg=GAMMA_CFG, gamma_regime="positive") is None
+    # a stronger 70% call still gets through in the same regime
+    assert _enter(confidence=70.0, cfg=GAMMA_CFG, gamma_regime="positive") == "call"
+
+
+def test_negative_and_neutral_gamma_leave_threshold_unchanged():
+    assert _enter(confidence=60.0, cfg=GAMMA_CFG, gamma_regime="negative") == "call"
+    assert _enter(confidence=60.0, cfg=GAMMA_CFG, gamma_regime="neutral") == "call"
+    assert _enter(confidence=60.0, cfg=GAMMA_CFG, gamma_regime=None) == "call"
+
+
+def test_positive_gamma_penalty_off_by_default():
+    # AUTOPILOT_CFG has no penalty key -> positive gamma has no effect
+    assert _enter(confidence=60.0, cfg=AUTOPILOT_CFG, gamma_regime="positive") == "call"

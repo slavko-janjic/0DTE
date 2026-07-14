@@ -6,10 +6,22 @@ is responsible for extracting these primitives from the data/sentiment layers.
 All normalization scales below are arbitrary starting points per the project
 brief - expect to tune them once real paper-trading data accumulates.
 """
+import math
 
 
 def _clip(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, value))
+
+
+def _num(value) -> float:
+    """Coerce a cell to a finite float, treating None/NaN/garbage as 0.0. The
+    `x or 0.0` idiom is unsafe here because NaN is truthy (and yfinance leaves
+    NaN in gamma / openInterest cells on illiquid strikes)."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(value) else value
 
 
 # --- technicals --------------------------------------------------------
@@ -158,6 +170,62 @@ def compute_order_flow_score(
         ) if s is not None
     ]
     return sum(scores) / len(scores) if scores else None
+
+
+# --- dealer gamma exposure (GEX) --------------------------------------------
+# Not a directional signal - gamma doesn't say up/down. It says whether the day
+# is likely rangebound or trending, so it GATES the tactic rather than feeding
+# the composite. Naive/front-expiry approximation (retail convention): dealers
+# assumed long calls, short puts. Sum gamma*OI on each side; net-positive (calls
+# dominate) => dealers long gamma => they fade moves => rangebound/pinning;
+# net-negative (puts dominate) => short gamma => they chase => trending/amplified.
+# OI is EOD-ish and gamma is BS-derived, so treat this as a regime hint, not a
+# precise dollar figure.
+
+def _gamma_oi_sum(gammas: list[float], open_interest: list[float]) -> float:
+    return sum(_num(g) * _num(oi) for g, oi in zip(gammas, open_interest))
+
+
+def gamma_exposure_score(
+    call_gammas: list[float], call_oi: list[float],
+    put_gammas: list[float], put_oi: list[float],
+) -> float | None:
+    """Scale-invariant net dealer gamma in -1..1: (call_gamma_oi - put_gamma_oi)
+    / (call_gamma_oi + put_gamma_oi). Positive = call/long-gamma dominated
+    (rangebound), negative = put/short-gamma dominated (trending). Works across
+    tickers of very different notional (QQQ vs TSLA). None when there's no gamma
+    on either side."""
+    call_side = _gamma_oi_sum(call_gammas, call_oi)
+    put_side = _gamma_oi_sum(put_gammas, put_oi)
+    total = call_side + put_side
+    if total <= 0:
+        return None
+    return _clip((call_side - put_side) / total)
+
+
+def gamma_notional(
+    call_gammas: list[float], call_oi: list[float],
+    put_gammas: list[float], put_oi: list[float], spot: float,
+) -> float | None:
+    """Naive dollar GEX: net dealer gamma * spot^2 * 100 * 0.01 - the approx
+    dollar hedging flow per 1% move. Sign matches gamma_exposure_score. For
+    display; the score above is what drives the regime call. None if spot<=0."""
+    if spot <= 0:
+        return None
+    net = _gamma_oi_sum(call_gammas, call_oi) - _gamma_oi_sum(put_gammas, put_oi)
+    return net * spot * spot * 100.0 * 0.01
+
+
+def gamma_regime(score: float | None, deadband: float = 0.15) -> str | None:
+    """Classifies the normalized GEX score into a regime. Within +/-deadband is
+    'neutral' (no strong lean). None passes through as None (no data)."""
+    if score is None:
+        return None
+    if score > deadband:
+        return "positive"   # long gamma -> rangebound, fade breakouts
+    if score < -deadband:
+        return "negative"   # short gamma -> trending, favor breakouts
+    return "neutral"
 
 
 # --- prediction markets (Kalshi) --------------------------------------------

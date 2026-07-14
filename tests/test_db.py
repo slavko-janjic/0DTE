@@ -388,3 +388,23 @@ def test_day_setup_roundtrip_and_upsert(tmp_path):
     assert storage.get_day_setup(path, "SPY", "2026-07-15") == updated
     # a different date is independent
     assert storage.get_day_setup(path, "SPY", "2026-07-16") is None
+
+
+# --- gamma regime columns on snapshots --------------------------------------
+
+def test_gamma_columns_stored_and_default_null(tmp_path):
+    path = make_temp_db(tmp_path)
+    storage.insert_signal_snapshot(
+        path, "QQQ", "bullish", 60.0, 0.6, "rec", {"technicals": 0.6},
+        spot_price=100.0, gamma_score=0.42, gamma_regime="positive",
+    )
+    row = storage.get_latest_signal(path, "QQQ")
+    assert row["gamma_score"] == 0.42
+    assert row["gamma_regime"] == "positive"
+
+    storage.insert_signal_snapshot(
+        path, "SPY", "bullish", 60.0, 0.6, "rec", {"technicals": 0.6}, spot_price=100.0,
+    )
+    row2 = storage.get_latest_signal(path, "SPY")
+    assert row2["gamma_score"] is None
+    assert row2["gamma_regime"] is None
