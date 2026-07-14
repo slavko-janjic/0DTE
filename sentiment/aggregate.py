@@ -1,15 +1,17 @@
 """Combines sentiment sources into one -1..1 subscore, plus raw context.
 
-ApeWisdom and StockTwits are averaged (equal weight between the two, renormalized
-if one is unavailable). PRAW's raw post titles are returned separately as
-context for the dashboard - they don't feed the numeric score in v1.
+ApeWisdom and StockTwits are averaged (equal weight, renormalized if either
+is unavailable). Reddit's public search returns raw post titles separately
+as context for the dashboard - it doesn't feed the numeric score, and is
+currently blocked by Reddit's bot-protection more often than not (see
+reddit_public.py) - kept as best-effort since that may change.
 
 Grok/X is intentionally not implemented here yet - `sentiment_sources.grok_x`
 in config is a reserved flag for a future pluggable backend.
 """
 from dataclasses import dataclass, field
 
-from sentiment import apewisdom, reddit_praw, stocktwits
+from sentiment import apewisdom, reddit_public, stocktwits
 
 
 @dataclass
@@ -34,9 +36,9 @@ def get_sentiment(ticker: str, config: dict) -> SentimentResult:
             scores["stocktwits"] = score
 
     raw_context: list[str] = []
-    if sources_cfg.get("reddit_praw", True):
+    if sources_cfg.get("reddit_context", True):
         subreddits = config.get("reddit", {}).get("subreddits", ["options", "wallstreetbets"])
-        raw_context = reddit_praw.get_recent_posts(ticker, subreddits)
+        raw_context = reddit_public.get_recent_posts(ticker, subreddits)
 
     if not scores:
         return SentimentResult(score=None, sources_used=[], raw_context=raw_context)

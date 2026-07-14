@@ -61,6 +61,66 @@ def get_intraday_bars(ticker: str, interval: str = "5m", period: str = "1d") -> 
         return None
 
 
+def get_daily_bars(ticker: str, period: str = "5d") -> pd.DataFrame | None:
+    """Daily OHLC bars - used pre-market for prior-session High/Low/Close.
+    Mirrors get_intraday_bars: None on failure or empty."""
+    try:
+        df = yf.Ticker(ticker).history(interval="1d", period=period)
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+def get_premarket_quote(ticker: str, proxy: str | None = None) -> float | None:
+    """Overnight / pre-market last price. When a futures proxy is given (index
+    ETFs -> NQ/ES/RTY, which trade overnight) use its live price; otherwise pull
+    extended-hours intraday bars and take the latest close. None on failure."""
+    if proxy:
+        return get_current_price(proxy)
+    try:
+        df = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=True)
+        if df is None or df.empty:
+            return None
+        return float(df["Close"].iloc[-1])
+    except Exception:
+        return None
+
+
+def get_overnight_range(ticker: str, proxy: str | None = None) -> tuple[float, float] | None:
+    """(overnight_high, overnight_low) from extended-hours bars - best-effort.
+    Uses the proxy's continuous session when given, else the ticker's own
+    pre/post bars. None when unavailable."""
+    symbol = proxy or ticker
+    try:
+        df = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True)
+        if df is None or df.empty:
+            return None
+        return float(df["High"].max()), float(df["Low"].min())
+    except Exception:
+        return None
+
+
+def get_next_earnings_date(ticker: str) -> str | None:
+    """Best-effort next earnings date (ISO) via yfinance calendar - used only to
+    flag a single-name earnings catalyst, never depended on. None on any issue."""
+    try:
+        cal = yf.Ticker(ticker).calendar
+        value = None
+        if isinstance(cal, dict):
+            value = cal.get("Earnings Date")
+            if isinstance(value, (list, tuple)):
+                value = value[0] if value else None
+        elif cal is not None and hasattr(cal, "loc") and "Earnings Date" in getattr(cal, "index", []):
+            value = cal.loc["Earnings Date"][0]
+        if value is None:
+            return None
+        if hasattr(value, "date"):
+            value = value.date()
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+    except Exception:
+        return None
+
+
 def get_nearest_expiration(ticker: str) -> str | None:
     """Returns the nearest available expiration date string (0DTE if today's listed)."""
     try:
@@ -127,9 +187,32 @@ def enrich_with_greeks(snapshot: OptionChainSnapshot) -> OptionChainSnapshot:
     return snapshot
 
 
+_VOLATILITY_TICKERS = {"vix": "^VIX", "vix9d": "^VIX9D", "vvix": "^VVIX"}
+
+
+def get_vix_term_structure() -> dict[str, float] | None:
+    """Latest close for VIX, VIX9D, and VVIX. None if any leg is unavailable -
+    the volatility_regime signal needs all three to be meaningful."""
+    values = {name: get_current_price(ticker) for name, ticker in _VOLATILITY_TICKERS.items()}
+    return values if all(v is not None for v in values.values()) else None
+
+
 def find_atm_contract(df: pd.DataFrame, spot: float) -> pd.Series | None:
     """Returns the row whose strike is closest to spot (ATM), or None if df is empty."""
     if df is None or df.empty:
         return None
     idx = (df["strike"] - spot).abs().idxmin()
     return df.loc[idx]
+
+
+def find_contract_price(chain: "OptionChainSnapshot | None", option_type: str, strike: float) -> float | None:
+    """Looks up a specific held contract's latest price by exact strike match -
+    used to price open positions live, as opposed to find_atm_contract which is
+    only for picking a new contract to buy."""
+    if chain is None:
+        return None
+    df = chain.calls if option_type == "call" else chain.puts
+    match = df[df["strike"] == strike]
+    if match.empty:
+        return None
+    return float(match.iloc[0]["lastPrice"])

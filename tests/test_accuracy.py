@@ -1,0 +1,353 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from analytics import accuracy
+
+
+def _snap(minutes_offset: int, direction: str, spot_price: float | None):
+    return {
+        "timestamp": datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes_offset),
+        "direction": direction,
+        "spot_price": spot_price,
+    }
+
+
+def test_evaluate_signal_accuracy_marks_hit_when_price_moves_as_predicted():
+    snapshots = [
+        _snap(0, "bullish", 100.0),
+        _snap(30, "bullish", 101.0),
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["evaluated"] is True
+    assert results[0]["hit"] is True
+
+
+def test_evaluate_signal_accuracy_marks_miss_when_price_moves_against_prediction():
+    snapshots = [
+        _snap(0, "bullish", 100.0),
+        _snap(30, "bullish", 99.0),
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["hit"] is False
+
+
+def test_evaluate_signal_accuracy_bearish_direction():
+    snapshots = [
+        _snap(0, "bearish", 100.0),
+        _snap(30, "bearish", 98.0),
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["hit"] is True
+
+
+def test_evaluate_signal_accuracy_not_evaluated_when_no_future_snapshot_far_enough():
+    snapshots = [
+        _snap(0, "bullish", 100.0),
+        _snap(10, "bullish", 101.0),  # only 10 min later, horizon is 30
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["evaluated"] is False
+    assert results[0]["hit"] is None
+
+
+def test_evaluate_signal_accuracy_skips_neutral_signals():
+    snapshots = [
+        _snap(0, "neutral", 100.0),
+        _snap(30, "neutral", 105.0),
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["evaluated"] is False
+
+
+def test_evaluate_signal_accuracy_skips_when_spot_price_missing():
+    snapshots = [
+        _snap(0, "bullish", None),
+        _snap(30, "bullish", 101.0),
+    ]
+    results = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes=30)
+    assert results[0]["evaluated"] is False
+
+
+def test_daily_accuracy_summary_groups_and_computes_hit_rate():
+    evaluated = [
+        {"timestamp": datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc), "evaluated": True, "hit": True},
+        {"timestamp": datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc), "evaluated": True, "hit": False},
+        {"timestamp": datetime(2026, 7, 6, 16, 0, tzinfo=timezone.utc), "evaluated": False, "hit": None},
+    ]
+    summary = accuracy.daily_accuracy_summary(evaluated, tz_name="UTC")
+    assert len(summary) == 1
+    assert summary[0]["total"] == 2
+    assert summary[0]["hits"] == 1
+    assert summary[0]["accuracy_pct"] == 50.0
+
+
+def test_daily_accuracy_summary_empty_when_nothing_evaluated():
+    assert accuracy.daily_accuracy_summary([]) == []
+
+
+def test_overall_accuracy_pct_computes_ratio():
+    evaluated = [
+        {"evaluated": True, "hit": True},
+        {"evaluated": True, "hit": True},
+        {"evaluated": True, "hit": False},
+        {"evaluated": False, "hit": None},
+    ]
+    assert accuracy.overall_accuracy_pct(evaluated) == 2 / 3 * 100.0
+
+
+def test_overall_accuracy_pct_none_when_nothing_evaluated():
+    assert accuracy.overall_accuracy_pct([]) is None
+
+
+def _history_snap(minutes_offset: int, spot_price: float, subscores: dict):
+    return {
+        "timestamp": datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes_offset),
+        "spot_price": spot_price,
+        "subscores": subscores,
+    }
+
+
+def test_evaluate_category_accuracy_separates_good_and_bad_signals():
+    # steady uptrend: a bullish-calling signal should score well, a bearish-calling
+    # signal on the same data should score poorly.
+    history = [
+        _history_snap(0, 100.0, {"good_signal": 0.8, "bad_signal": -0.8}),
+        _history_snap(30, 101.0, {"good_signal": 0.8, "bad_signal": -0.8}),
+        _history_snap(60, 102.0, {"good_signal": 0.8, "bad_signal": -0.8}),
+        _history_snap(90, 103.0, {"good_signal": 0.8, "bad_signal": -0.8}),
+    ]
+    results = accuracy.evaluate_category_accuracy(history, horizon_minutes=30)
+
+    assert results["good_signal"]["accuracy_pct"] == 100.0
+    assert results["bad_signal"]["accuracy_pct"] == 0.0
+    assert results["good_signal"]["graded_count"] == 3
+    assert results["bad_signal"]["graded_count"] == 3
+
+
+def test_evaluate_category_accuracy_treats_missing_category_as_ungraded():
+    history = [
+        _history_snap(0, 100.0, {"sometimes_present": 0.8}),
+        _history_snap(30, 101.0, {}),  # category absent this cycle
+        _history_snap(60, 102.0, {"sometimes_present": 0.8}),
+    ]
+    results = accuracy.evaluate_category_accuracy(history, horizon_minutes=30)
+
+    # only the t=0 reading has a later snapshot >=30 min out with the category present
+    # to grade against (t=30's absence doesn't count as a wrong call)
+    assert results["sometimes_present"]["graded_count"] == 1
+    assert results["sometimes_present"]["accuracy_pct"] == 100.0
+
+
+def test_evaluate_category_accuracy_empty_history():
+    assert accuracy.evaluate_category_accuracy([], horizon_minutes=30) == {}
+
+
+def test_suggest_weights_favors_more_accurate_category():
+    category_accuracy = {
+        "good_signal": {"accuracy_pct": 80.0, "graded_count": 20},
+        "bad_signal": {"accuracy_pct": 55.0, "graded_count": 20},
+    }
+    current_weights = {"good_signal": 0.5, "bad_signal": 0.5}
+
+    suggested = accuracy.suggest_weights(category_accuracy, current_weights)
+
+    assert suggested["good_signal"] > suggested["bad_signal"]
+    # total weight-mass across the reallocated categories is preserved
+    assert suggested["good_signal"] + suggested["bad_signal"] == pytest.approx(1.0)
+
+
+def test_suggest_weights_leaves_undersampled_categories_untouched():
+    category_accuracy = {
+        "proven_signal": {"accuracy_pct": 80.0, "graded_count": 20},
+        "new_signal": {"accuracy_pct": 90.0, "graded_count": 2},  # below min_graded
+    }
+    current_weights = {"proven_signal": 0.5, "new_signal": 0.5}
+
+    suggested = accuracy.suggest_weights(category_accuracy, current_weights, min_graded=10)
+
+    # new_signal isn't reweighted despite its high accuracy - not enough samples yet
+    assert suggested["new_signal"] == 0.5
+    # proven_signal is the only eligible category, so it keeps its full share
+    assert suggested["proven_signal"] == pytest.approx(0.5)
+
+
+def test_suggest_weights_none_when_nothing_has_enough_data():
+    category_accuracy = {"signal_a": {"accuracy_pct": 90.0, "graded_count": 3}}
+    assert accuracy.suggest_weights(category_accuracy, {"signal_a": 1.0}, min_graded=10) is None
+
+
+def test_confidence_calibration_buckets_by_predicted_confidence():
+    evaluated = [
+        {"evaluated": True, "hit": True, "confidence": 10.0},
+        {"evaluated": True, "hit": False, "confidence": 15.0},
+        {"evaluated": True, "hit": True, "confidence": 65.0},
+        {"evaluated": True, "hit": True, "confidence": 70.0},
+        {"evaluated": False, "hit": None, "confidence": 50.0},  # ungraded, excluded
+    ]
+    calibration = accuracy.confidence_calibration(evaluated)
+
+    assert len(calibration) == 2  # empty bands omitted
+    low_band = next(b for b in calibration if b["band"] == "0-20%")
+    high_band = next(b for b in calibration if b["band"] == "60-100%")
+    assert low_band["count"] == 2
+    assert low_band["observed_accuracy_pct"] == 50.0
+    assert high_band["count"] == 2
+    assert high_band["observed_accuracy_pct"] == 100.0
+
+
+def test_confidence_calibration_empty_when_nothing_graded():
+    assert accuracy.confidence_calibration([]) == []
+
+
+def test_inversion_candidates_flags_reliably_wrong_categories():
+    category_accuracy = {
+        "wrong_signal": {"accuracy_pct": 30.0, "graded_count": 20},
+        "good_signal": {"accuracy_pct": 70.0, "graded_count": 20},
+        "wrong_but_undersampled": {"accuracy_pct": 10.0, "graded_count": 3},
+    }
+    assert accuracy.inversion_candidates(category_accuracy, min_graded=10) == ["wrong_signal"]
+
+
+def test_inversion_candidates_empty_when_all_fine():
+    category_accuracy = {"signal_a": {"accuracy_pct": 55.0, "graded_count": 50}}
+    assert accuracy.inversion_candidates(category_accuracy, min_graded=10) == []
+
+
+# --- automatic self-calibration ---------------------------------------------
+
+from datetime import date
+
+
+def test_blend_weights_moves_fraction_toward_suggestion():
+    current = {"a": 0.5, "b": 0.5}
+    suggested = {"a": 0.9, "b": 0.1}
+    blended = accuracy.blend_weights(current, suggested, 0.25)
+    assert blended["a"] == pytest.approx(0.6)   # 0.5 + 0.25*(0.9-0.5)
+    assert blended["b"] == pytest.approx(0.4)
+
+
+def test_blend_weights_noop_when_equal():
+    w = {"a": 0.3, "b": 0.7}
+    assert accuracy.blend_weights(w, dict(w), 0.25) == pytest.approx(w)
+
+
+def test_blend_weights_missing_category_keeps_current():
+    current = {"a": 0.4, "b": 0.6}
+    suggested = {"a": 0.8}  # b absent
+    blended = accuracy.blend_weights(current, suggested, 0.5)
+    assert blended["a"] == pytest.approx(0.6)
+    assert blended["b"] == pytest.approx(0.6)  # unchanged
+
+
+def test_calibrated_confidence_band_hit():
+    bands = [{"lo": 60, "hi": 101, "count": 20, "observed_accuracy_pct": 72.0}]
+    assert accuracy.calibrated_confidence(65.0, bands, min_band_count=5) == 72.0
+
+
+def test_calibrated_confidence_low_count_falls_back_to_raw():
+    bands = [{"lo": 60, "hi": 101, "count": 3, "observed_accuracy_pct": 72.0}]
+    assert accuracy.calibrated_confidence(65.0, bands, min_band_count=5) == 65.0
+
+
+def test_calibrated_confidence_out_of_band_falls_back():
+    bands = [{"lo": 60, "hi": 101, "count": 20, "observed_accuracy_pct": 72.0}]
+    assert accuracy.calibrated_confidence(30.0, bands, min_band_count=5) == 30.0
+
+
+def test_calibrated_confidence_no_map_returns_raw():
+    assert accuracy.calibrated_confidence(55.0, None) == 55.0
+    assert accuracy.calibrated_confidence(55.0, []) == 55.0
+
+
+def test_calibrated_confidence_clamps():
+    bands = [{"lo": 0, "hi": 101, "count": 10, "observed_accuracy_pct": 150.0}]
+    assert accuracy.calibrated_confidence(50.0, bands) == 100.0
+
+
+class _Row(dict):
+    """dict that also supports row['x'] like sqlite3.Row already does; here just
+    a plain dict is enough since history_snapshots uses subscript access."""
+
+
+def test_history_snapshots_converts_rows():
+    rows = [
+        _Row(timestamp="2026-07-06T14:00:00+00:00", direction="bullish",
+             spot_price=100.0, confidence=60.0, composite_score=0.6,
+             subscores_json='{"technicals": 0.5}'),
+    ]
+    snaps = accuracy.history_snapshots(rows)
+    assert snaps[0]["direction"] == "bullish"
+    assert snaps[0]["spot_price"] == 100.0
+    assert snaps[0]["subscores"] == {"technicals": 0.5}
+    assert snaps[0]["timestamp"].year == 2026
+
+
+def _cal_cfg(**overrides):
+    cfg = {
+        "learning_rate": 0.25, "inversion_cooldown_days": 5,
+        "confidence_min_graded": 20, "weight_min_graded": 3,
+        "inversion_min_graded": 3, "inversion_max_accuracy_pct": 40.0,
+        "horizon_minutes": 30,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def _history_for_category(direction_correct: bool, n: int, category: str):
+    """Builds a run of snapshots that all make a bullish call for `category`,
+    with a monotonic price path so every graded call is consistently right
+    (rising price) or wrong (falling price). Snapshots are 30 min apart so each
+    one has the next as its 30-min grading point."""
+    base = datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
+    step = 1.0 if direction_correct else -1.0
+    score = 0.5  # bullish call
+    return [
+        {
+            "timestamp": base + timedelta(minutes=30 * i),
+            "spot_price": 200.0 + step * i,
+            "direction": "bullish",
+            "confidence": 50.0,
+            "composite_score": score,
+            "subscores": {category: score},
+        }
+        for i in range(n)
+    ]
+
+
+def test_plan_calibration_adds_inversion_for_wrong_category():
+    history = _history_for_category(direction_correct=False, n=6, category="sentiment")
+    actions = accuracy.plan_calibration(
+        "QQQ", history, {"sentiment": 1.0}, [], [], _cal_cfg(), date(2026, 7, 7),
+    )
+    inverts = [a for a in actions if a["kind"] == "invert"]
+    assert any(a["category"] == "sentiment" for a in inverts)
+
+
+def test_plan_calibration_respects_inversion_cooldown():
+    history = _history_for_category(direction_correct=False, n=6, category="sentiment")
+    recent = [{"kind": "inversion_added",
+               "detail": {"category": "sentiment"},
+               "created_at": "2026-07-05T20:00:00+00:00"}]  # 2 days ago < 5
+    actions = accuracy.plan_calibration(
+        "QQQ", history, {"sentiment": 1.0}, [], recent, _cal_cfg(), date(2026, 7, 7),
+    )
+    assert not any(a["kind"] == "invert" for a in actions)
+
+
+def test_plan_calibration_confidence_map_needs_enough_graded():
+    history = _history_for_category(direction_correct=True, n=6, category="technicals")
+    # only 6 graded < confidence_min_graded=20 -> no confidence_map action
+    actions = accuracy.plan_calibration(
+        "QQQ", history, {"technicals": 1.0}, [], [], _cal_cfg(), date(2026, 7, 7),
+    )
+    assert not any(a["kind"] == "confidence_map" for a in actions)
+
+
+def test_plan_calibration_stores_confidence_map_with_enough_graded():
+    history = _history_for_category(direction_correct=True, n=25, category="technicals")
+    actions = accuracy.plan_calibration(
+        "QQQ", history, {"technicals": 1.0}, [], [],
+        _cal_cfg(confidence_min_graded=20), date(2026, 7, 7),
+    )
+    assert any(a["kind"] == "confidence_map" for a in actions)

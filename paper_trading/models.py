@@ -17,6 +17,11 @@ class Position:
     status: str = "open"
     suggested_exit_reason: str | None = None
     current_price: float | None = None
+    # per-trade exit targets (None = that trigger is off for this position);
+    # profit_target_pct is positive, stop_loss_pct is negative
+    profit_target_pct: float | None = None
+    stop_loss_pct: float | None = None
+    opened_by: str = "manual"   # 'manual' | 'auto'
 
     @classmethod
     def from_row(cls, row) -> "Position":
@@ -27,4 +32,7 @@ class Position:
             entry_composite_score=row["entry_composite_score"], status=row["status"],
             suggested_exit_reason=row["suggested_exit_reason"],
             current_price=row["current_price"],
+            profit_target_pct=row["profit_target_pct"],
+            stop_loss_pct=row["stop_loss_pct"],
+            opened_by=row["opened_by"],
         )

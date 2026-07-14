@@ -6,6 +6,9 @@
 tickers:
   - QQQ
   - SPY
+  - IWM   # no Kalshi index-range market mapping - prediction_markets renormalizes away for it
+  - TSLA  # mega-cap with daily (0DTE) options; no Kalshi/prediction_markets, renormalizes away
+  - NVDA  # mega-cap with daily (0DTE) options; no Kalshi/prediction_markets, renormalizes away
 
 poll_interval_minutes: 5
 
@@ -14,17 +17,127 @@ market_hours:
   close: "16:00"
   timezone: "America/New_York"
 
+# NYSE full-closure holidays (source: NYSE Group 2026/2027/2028 holiday calendar
+# announcement). Extend this list each year - the worker treats unlisted
+# weekdays as normal trading days.
+market_holidays:
+  - "2026-01-01"  # New Year's Day
+  - "2026-01-19"  # Martin Luther King, Jr. Day
+  - "2026-02-16"  # Washington's Birthday
+  - "2026-04-03"  # Good Friday
+  - "2026-05-25"  # Memorial Day
+  - "2026-06-19"  # Juneteenth
+  - "2026-07-03"  # Independence Day (observed - Jul 4 is a Saturday)
+  - "2026-09-07"  # Labor Day
+  - "2026-11-26"  # Thanksgiving
+  - "2026-12-25"  # Christmas
+  - "2027-01-01"  # New Year's Day
+  - "2027-01-18"  # Martin Luther King, Jr. Day
+  - "2027-02-15"  # Washington's Birthday
+  - "2027-03-26"  # Good Friday
+  - "2027-05-31"  # Memorial Day
+  - "2027-06-18"  # Juneteenth (observed - Jun 19 is a Saturday)
+  - "2027-07-05"  # Independence Day (observed - Jul 4 is a Sunday)
+  - "2027-09-06"  # Labor Day
+  - "2027-11-25"  # Thanksgiving
+  - "2027-12-24"  # Christmas (observed - Dec 25 is a Saturday)
+
+# Early-close days: market closes at 13:00 ET instead of 16:00.
+market_half_days:
+  - "2026-11-27"  # day after Thanksgiving
+  - "2026-12-24"  # Christmas Eve
+  - "2027-11-26"  # day after Thanksgiving
+
 account:
   starting_balance: 10000
   risk_per_trade_pct: 5
 
 confidence_floor_pct: 40
 
+accuracy_horizon_minutes: 30  # how far ahead a signal's direction is graded against actual price movement
+weight_suggestion_min_graded: 10  # min graded signals before a category is "proven" enough to suggest reweighting
+
+# Categories whose score should be used contrarian (sign-flipped) - e.g. if the
+# accuracy panel shows a signal is reliably wrong, listing it here makes its
+# inverse contribute to the composite instead. Applies at the worker, so stored
+# subscores and accuracy grading reflect the flipped signal.
+invert_categories: []
+
+trump_news_lookback_hours: 6  # how far back the Trump/tariff/economy headline scan looks each cycle
+
+# Pre-market "day setup": once per trading day before the open, the worker
+# assembles the overnight gap, prior-day/overnight levels, today's catalysts,
+# and an opening bias per ticker (stored in day_setups). Feeds the day-session
+# auto-pilot (stand down near catalysts) and the dashboard.
+premarket:
+  window_minutes: 90            # how long before the open the setup pass runs (~08:00 ET)
+  gap_bias_scale_pct: 0.5       # gap% that maps to a full +/-1 opening bias
+
+premarket_proxies:              # index-futures proxy for overnight gap; single stocks use extended-hours last
+  QQQ: "NQ=F"
+  SPY: "ES=F"
+  IWM: "RTY=F"
+
+# High-impact scheduled events, hand-maintained like market_holidays. The
+# auto-pilot stands down near these and won't hold an auto position into one
+# (dates + times in market tz). Sources: FOMC decision days from the Federal
+# Reserve calendar (2:00pm ET); CPI from the BLS release schedule (8:30am ET);
+# jobs report / nonfarm payrolls first Friday of the month (8:30am ET). Seeded
+# for the rest of 2026 - top up each year. Past dates are ignored.
+market_catalysts:
+  - { date: "2026-07-29", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2026-08-07", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2026-08-12", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2026-09-04", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2026-09-11", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2026-09-16", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2026-10-02", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2026-10-14", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2026-10-28", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2026-11-06", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2026-11-10", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2026-12-04", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2026-12-09", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2026-12-10", time: "08:30", label: "CPI",         impact: "high" }
+
 weights:
-  technicals: 0.30
-  greeks_iv: 0.25
-  order_flow: 0.25
-  sentiment: 0.20
+  technicals: 0.15
+  greeks_iv: 0.15
+  order_flow: 0.15
+  sentiment: 0.15
+  prediction_markets: 0.15   # Kalshi daily index-range markets - crowd-money implied probability
+  volatility_regime: 0.15    # VIX/VIX9D term structure + VVIX - market-wide fear gauge
+  trump_news: 0.10           # GDELT headline tone on Trump + tariffs/economy/trade/fed, market-wide
+
+# Auto-pilot: automated paper entries (on/off lives in the DB, toggled from the
+# dashboard - these are the tunables). Manual trading always stays available.
+autopilot:
+  min_confidence_pct: 55        # only enter on signals at least this confident
+  profit_target_pct: 50         # auto-set on every auto trade at entry
+  stop_loss_pct: -35            # auto-set on every auto trade at entry (negative)
+  risk_per_trade_pct: 5         # % of current balance risked per auto trade
+  max_concurrent_positions: 3   # cap on simultaneously open AUTO positions
+  max_trades_per_day: 4         # cap on auto entries per calendar day (market tz)
+  cooldown_minutes: 30          # no re-entry in a ticker this soon after any close
+  daily_loss_limit_pct: 10      # circuit breaker: stop for the day after losing this % (of starting balance) on auto trades
+  no_entry_first_minutes: 30    # let the opening range form (continuous tactic)
+  no_entry_last_minutes: 60     # don't open with too little runway before the bell
+  tactic: opening_range         # opening_range = one deliberate decision per day-session; continuous = enter any time guard rails pass
+  decision_start_minutes: 30    # opening_range: decision window opens this many minutes after open
+  decision_end_minutes: 90      # opening_range: ...and closes this many minutes after open
+  max_entries_per_session: 1    # opening_range: the single best trade per day
+  no_entry_before_catalyst_minutes: 15  # stand down this close to a scheduled high-impact catalyst
+  close_before_catalyst_minutes: 5      # don't hold into one: force-close AUTO positions (suggest for manual) this close to it (0 = off)
+
+# Automatic self-calibration: once per day after market close the worker
+# nudges per-ticker weights toward the accuracy-based suggestion, flips
+# reliably-wrong signals, and maps raw confidence to observed accuracy.
+# On/off lives in the DB (dashboard toggle) - these are the tunables.
+calibration:
+  learning_rate: 0.25           # fraction of the suggested weight change applied per day
+  inversion_cooldown_days: 5    # a category can't flip (or flip back) more often than this
+  confidence_min_graded: 20     # graded composite calls needed before storing a confidence map
+  band_min_count: 5             # graded calls a band needs before it recalibrates a raw confidence
 
 exit_rules:
   profit_target_pct: 50
@@ -35,7 +148,9 @@ exit_rules:
 sentiment_sources:
   apewisdom: true
   stocktwits: true
-  reddit_praw: true
+  reddit_context: true  # raw post titles via Reddit's public unauthenticated search, no key needed
+                         # (currently blocked by Reddit's bot-protection more often than not - kept
+                         # as best-effort, degrades gracefully to no context if blocked)
   grok_x: false   # pluggable, off by default - revisit if free sources prove insufficient
 
 reddit:
@@ -43,8 +158,6 @@ reddit:
     - options
     - wallstreetbets
     - stocks
-  # credentials read from environment variables, not stored here:
-  #   REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
 
 database:
   path: "storage/0dte.db"

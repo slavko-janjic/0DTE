@@ -1,5 +1,4 @@
 yfinance>=0.2.40
-praw>=7.7
 requests>=2.31
 streamlit>=1.35
 pyyaml>=6.0

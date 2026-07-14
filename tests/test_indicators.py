@@ -39,6 +39,43 @@ def test_compute_technicals_score_averages_available_signals():
     assert -1.0 <= score <= 1.0
 
 
+def test_opening_range_score_bullish_on_breakout_above():
+    # first 6 bars range 99-101, price now well above
+    highs = [101] * 6 + [102] * 6
+    lows = [99] * 6 + [101] * 6
+    closes = [100] * 6 + [101.5] * 5 + [102.0]
+    score = indicators.opening_range_score(closes, highs, lows)
+    assert score is not None
+    assert score > 0
+
+
+def test_opening_range_score_bearish_on_breakdown_below():
+    highs = [101] * 6 + [99] * 6
+    lows = [99] * 6 + [97] * 6
+    closes = [100] * 6 + [98.5] * 5 + [98.0]
+    score = indicators.opening_range_score(closes, highs, lows)
+    assert score is not None
+    assert score < 0
+
+
+def test_opening_range_score_zero_inside_range():
+    highs = [101] * 12
+    lows = [99] * 12
+    closes = [100] * 12
+    assert indicators.opening_range_score(closes, highs, lows) == 0.0
+
+
+def test_opening_range_score_none_without_enough_bars():
+    assert indicators.opening_range_score([100] * 4, [101] * 4, [99] * 4) is None
+
+
+def test_compute_technicals_score_works_without_highs_lows():
+    # backwards compatible: highs/lows optional
+    closes = [100 + i * 0.1 for i in range(20)]
+    volumes = [1000] * 20
+    assert indicators.compute_technicals_score(closes, volumes, None, None) is not None
+
+
 def test_iv_skew_score_bullish_when_calls_richer():
     score = indicators.iv_skew_score(call_iv_atm=0.30, put_iv_atm=0.25, scale=0.05)
     assert score == pytest.approx(1.0)
@@ -76,3 +113,111 @@ def test_compute_order_flow_score_combines_components():
     )
     assert score is not None
     assert -1.0 <= score <= 1.0
+
+
+def test_interpolate_probability_above_exact_strike_match():
+    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
+    assert indicators.interpolate_probability_above(ladder, spot=110) == 0.5
+
+
+def test_interpolate_probability_above_between_strikes():
+    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
+    # halfway between 100 and 110 -> halfway between 0.8 and 0.5
+    assert indicators.interpolate_probability_above(ladder, spot=105) == pytest.approx(0.65)
+
+
+def test_interpolate_probability_above_clamps_below_range():
+    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
+    assert indicators.interpolate_probability_above(ladder, spot=50) == 0.8
+
+
+def test_interpolate_probability_above_clamps_above_range():
+    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
+    assert indicators.interpolate_probability_above(ladder, spot=200) == 0.2
+
+
+def test_interpolate_probability_above_none_when_empty():
+    assert indicators.interpolate_probability_above([], spot=100) is None
+
+
+def test_prediction_market_score_maps_probability_to_directional_score():
+    ladder = [(100, 0.9), (110, 0.1)]
+    # spot exactly at the strike implying 90% chance of closing higher -> strongly bullish
+    assert indicators.prediction_market_score(ladder, spot=100) == pytest.approx(0.8)
+    # 10% chance of closing higher -> strongly bearish
+    assert indicators.prediction_market_score(ladder, spot=110) == pytest.approx(-0.8)
+
+
+def test_prediction_market_score_none_when_no_data():
+    assert indicators.prediction_market_score([], spot=100) is None
+
+
+def test_term_structure_score_bearish_on_backwardation():
+    # VIX9D above VIX = near-term stress = bearish
+    score = indicators.term_structure_score(vix9d=20, vix=16)
+    assert score is not None
+    assert score < 0
+
+
+def test_term_structure_score_bullish_on_contango():
+    # VIX9D below VIX = calm/normal = mildly bullish
+    score = indicators.term_structure_score(vix9d=12, vix=16)
+    assert score is not None
+    assert score > 0
+
+
+def test_term_structure_score_none_when_missing_data():
+    assert indicators.term_structure_score(None, 16) is None
+    assert indicators.term_structure_score(12, None) is None
+
+
+def test_vvix_score_bearish_when_elevated():
+    assert indicators.vvix_score(vvix=130) < 0
+
+
+def test_vvix_score_bullish_when_low():
+    assert indicators.vvix_score(vvix=60) > 0
+
+
+def test_vvix_score_none_when_missing():
+    assert indicators.vvix_score(None) is None
+
+
+def test_compute_volatility_regime_score_combines_components():
+    score = indicators.compute_volatility_regime_score(vix9d=12, vix=16, vvix=70)
+    assert score is not None
+    assert -1.0 <= score <= 1.0
+
+
+def test_compute_volatility_regime_score_none_when_all_missing():
+    assert indicators.compute_volatility_regime_score(None, None, None) is None
+
+
+def test_trump_headline_score_bearish_on_tariff_heavy_headlines():
+    headlines = [
+        "Trump announces new tariffs on China",
+        "Markets brace for tariff crisis as Trump threatens sanctions",
+    ]
+    score = indicators.trump_headline_score(headlines)
+    assert score is not None
+    assert score < 0
+
+
+def test_trump_headline_score_bullish_on_deal_heavy_headlines():
+    headlines = [
+        "Trump announces trade deal and ceasefire agreement",
+        "Stocks rally on stimulus optimism after Trump remarks",
+    ]
+    score = indicators.trump_headline_score(headlines)
+    assert score is not None
+    assert score > 0
+
+
+def test_trump_headline_score_neutral_when_no_keyword_hits():
+    headlines = ["Trump visits Ohio for campaign event"]
+    assert indicators.trump_headline_score(headlines) == 0.0
+
+
+def test_trump_headline_score_none_when_no_headlines():
+    assert indicators.trump_headline_score(None) is None
+    assert indicators.trump_headline_score([]) is None
