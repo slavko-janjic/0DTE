@@ -351,3 +351,54 @@ def test_plan_calibration_stores_confidence_map_with_enough_graded():
         _cal_cfg(confidence_min_graded=20), date(2026, 7, 7),
     )
     assert any(a["kind"] == "confidence_map" for a in actions)
+
+
+# --- context-conditional accuracy -------------------------------------------
+
+def _ctx_snap(hour, direction, spot, vol_regime=None, minute=0):
+    subs = {"technicals": 0.5}
+    if vol_regime is not None:
+        subs["volatility_regime"] = vol_regime
+    return {
+        "timestamp": datetime(2026, 7, 6, hour, minute, tzinfo=timezone.utc),
+        "direction": direction, "spot_price": spot, "confidence": 50.0,
+        "composite_score": 0.5, "subscores": subs,
+    }
+
+
+def test_context_time_of_day_buckets():
+    # 14:00 UTC = 10:00 ET (morning), 17:00 UTC = 13:00 ET (midday), 20:00 UTC = 16:00 ET (afternoon)
+    assert accuracy.context_time_of_day(_ctx_snap(14, "bullish", 100)) == "morning"
+    assert accuracy.context_time_of_day(_ctx_snap(17, "bullish", 100)) == "midday"
+    assert accuracy.context_time_of_day(_ctx_snap(20, "bullish", 100)) == "afternoon"
+
+
+def test_context_volatility_regime_from_subscore():
+    assert accuracy.context_volatility_regime(_ctx_snap(14, "bullish", 100, vol_regime=0.3)) == "calm"
+    assert accuracy.context_volatility_regime(_ctx_snap(14, "bullish", 100, vol_regime=-0.3)) == "stressed"
+    assert accuracy.context_volatility_regime(_ctx_snap(14, "bullish", 100)) is None
+
+
+def test_bucket_evaluated_splits_by_context():
+    # morning call right, afternoon call wrong; grade at 30min then bucket
+    history = [
+        _ctx_snap(14, "bullish", 100.0, minute=0),    # 10:00 ET (morning), graded call
+        _ctx_snap(14, "neutral", 101.0, minute=30),   # +30min grading point (neutral -> not itself graded)
+        _ctx_snap(20, "bullish", 100.0, minute=0),    # 16:00 ET (afternoon), graded call
+        _ctx_snap(20, "neutral", 99.0, minute=30),    # +30min grading point
+    ]
+    evaluated = accuracy.evaluate_signal_accuracy(history, horizon_minutes=30)
+    buckets = accuracy.bucket_evaluated(evaluated, accuracy.context_time_of_day)
+    assert buckets["morning"]["accuracy_pct"] == 100.0
+    assert buckets["afternoon"]["accuracy_pct"] == 0.0
+
+
+def test_accuracy_by_context_per_category():
+    history = [
+        _ctx_snap(14, "bullish", 100.0, vol_regime=0.5, minute=0),
+        _ctx_snap(14, "bullish", 101.0, vol_regime=0.5, minute=30),
+    ]
+    result = accuracy.accuracy_by_context(
+        history, 30, accuracy.context_volatility_regime, category="technicals")
+    assert result["calm"]["graded"] == 1
+    assert result["calm"]["accuracy_pct"] == 100.0

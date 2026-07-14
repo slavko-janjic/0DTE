@@ -70,6 +70,71 @@ def overall_accuracy_pct(evaluated_snapshots: list[dict]) -> float | None:
     return sum(1 for s in evaluated if s["hit"]) / len(evaluated) * 100.0
 
 
+# --- context-conditional accuracy -------------------------------------------
+# "Which signals should I trust given what kind of day it is?" The same graded
+# calls, bucketed by market context (time of day, volatility regime, gap size)
+# rather than averaged into one number. Read-only analysis for now - the
+# hook the calibrator would eventually condition weights on.
+
+def bucket_evaluated(evaluated_snapshots: list[dict], context_fn) -> dict[str, dict]:
+    """Buckets an already-graded list (from evaluate_signal_accuracy) by a
+    context label. context_fn maps an evaluated snapshot to a bucket string, or
+    None to exclude it. Returns {label: {"graded": int, "accuracy_pct": float|None}}."""
+    buckets: dict = defaultdict(lambda: [0, 0])  # [graded, hits]
+    for snap in evaluated_snapshots:
+        if not snap.get("evaluated"):
+            continue
+        label = context_fn(snap)
+        if label is None:
+            continue
+        buckets[label][0] += 1
+        buckets[label][1] += 1 if snap["hit"] else 0
+    return {
+        label: {"graded": total, "accuracy_pct": (hits / total * 100.0) if total else None}
+        for label, (total, hits) in buckets.items()
+    }
+
+
+def accuracy_by_context(
+    history: list[dict], horizon_minutes: float, context_fn, category: str | None = None,
+) -> dict[str, dict]:
+    """Per-context accuracy for the composite (category=None) or one signal
+    category. Grades the relevant direction, then buckets by context_fn. Used
+    for per-category context cuts and by tests; the dashboard reuses an
+    already-graded list via bucket_evaluated for the composite case."""
+    if category is None:
+        series = history
+    else:
+        series = [
+            dict(row, direction=(
+                direction_from_score(row["subscores"][category])
+                if category in row.get("subscores", {}) else "neutral"
+            ))
+            for row in history
+        ]
+    evaluated = evaluate_signal_accuracy(series, horizon_minutes)
+    return bucket_evaluated(evaluated, context_fn)
+
+
+def context_time_of_day(snap: dict, tz_name: str = "America/New_York") -> str:
+    """Session period of a snapshot's call: morning (<11:00), midday (11:00-14:00),
+    afternoon (>=14:00), market-local time. Replay showed the technicals leg is
+    much better in the morning than the afternoon."""
+    local = snap["timestamp"].astimezone(ZoneInfo(tz_name))
+    hour = local.hour + local.minute / 60.0
+    return "morning" if hour < 11 else ("midday" if hour < 14 else "afternoon")
+
+
+def context_volatility_regime(snap: dict) -> str | None:
+    """Calm vs stressed, from the volatility_regime subscore already stored on
+    each snapshot (positive = contango/low-VVIX/calm, negative = backwardation/
+    elevated-VVIX/stress). None when that signal had no data that cycle."""
+    value = (snap.get("subscores") or {}).get("volatility_regime")
+    if value is None:
+        return None
+    return "calm" if value >= 0 else "stressed"
+
+
 def evaluate_category_accuracy(history: list[dict], horizon_minutes: float) -> dict[str, dict]:
     """Breaks the overall accuracy check down per signal category, so you can see
     which individual signals (technicals, IV skew, Kalshi, VIX regime, etc.) are

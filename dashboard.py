@@ -789,6 +789,43 @@ with left_col:
                         use_container_width=True,
                     )
 
+                    # --- accuracy by market context -------------------------
+                    tz_name = config["market_hours"].get("timezone", "America/New_York")
+                    tod = accuracy.bucket_evaluated(
+                        evaluated, lambda s: accuracy.context_time_of_day(s, tz_name))
+                    vol = accuracy.bucket_evaluated(evaluated, accuracy.context_volatility_regime)
+                    if any(b["graded"] for b in tod.values()) or any(b["graded"] for b in vol.values()):
+                        st.subheader("Accuracy by market context")
+                        st.caption("The same graded calls, split by *when* and *what kind of day* - "
+                                   "which is more honest than one blended number. Read-only for now.")
+
+                        def _ctx_rows(buckets, order):
+                            return [
+                                {
+                                    "Context": label,
+                                    "Signals graded": buckets[label]["graded"],
+                                    "Accuracy": (f"{buckets[label]['accuracy_pct']:.0f}%"
+                                                 if buckets[label]["accuracy_pct"] is not None else "-"),
+                                }
+                                for label in order if label in buckets and buckets[label]["graded"]
+                            ]
+
+                        tod_rows = _ctx_rows(tod, ["morning", "midday", "afternoon"])
+                        vol_rows = _ctx_rows(vol, ["calm", "stressed"])
+                        ctx_a, ctx_b = st.columns(2)
+                        with ctx_a:
+                            st.markdown("**By time of day** (ET)")
+                            if tod_rows:
+                                st.dataframe(tod_rows, hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Not enough graded calls yet.")
+                        with ctx_b:
+                            st.markdown("**By volatility regime**")
+                            if vol_rows:
+                                st.dataframe(vol_rows, hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Not enough graded calls yet.")
+
                     candidates = accuracy.inversion_candidates(
                         category_results, min_graded=config.get("weight_suggestion_min_graded", 10),
                     )
