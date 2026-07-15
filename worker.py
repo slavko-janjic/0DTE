@@ -22,6 +22,7 @@ from paper_trading.engine import (
     close as close_position, evaluate_exit, should_auto_enter,
 )
 from paper_trading.models import Position
+from paper_trading.shadow import shadow_position_from_row, should_shadow_enter
 from sentiment.aggregate import get_sentiment
 from signals import day_setup as day_setup_mod
 from signals import indicators
@@ -222,6 +223,11 @@ def poll_ticker(
     print(f"[{ticker}] {signal.recommendation} (score={signal.composite_score:.2f})")
 
     check_open_positions(ticker, config, db_path, chain, signal.composite_score)
+    # shadow lab is bookkeeping only - a bug there must never break the real loop
+    try:
+        process_shadow_strategies(ticker, config, db_path, chain, signal, gamma_regime)
+    except Exception as exc:
+        print(f"[{ticker}] shadow lab failed: {exc}")
     return signal, chain
 
 
@@ -375,6 +381,91 @@ def _catalyst_imminent(config: dict, now: datetime | None = None) -> bool:
         config.get("market_catalysts", []), now.date(), tz_name)
     minutes = day_setup_mod.minutes_to_next_catalyst(catalysts_today, now, tz_name)
     return minutes is not None and 0 <= minutes <= window
+
+
+def process_shadow_strategies(ticker: str, config: dict, db_path: str,
+                              chain: market_data.OptionChainSnapshot | None,
+                              signal, gamma_regime: str | None) -> None:
+    """Runs every configured shadow strategy against this ticker's fresh signal:
+    manages exits on their open virtual positions (same evaluate_exit machinery
+    and honest bid-side fills as the real book), then considers one entry per
+    strategy (ask-side fill, full audit of the reasoning at entry). Positions
+    whose expiration has passed close at 0.00 - an unmanaged 0DTE expires
+    worthless, and the shadow book stays honest about that."""
+    strategies = config.get("shadow_strategies", [])
+    if not strategies:
+        return
+
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    today = datetime.now(tz).date()
+    minutes_to_close = minutes_to_market_close(config)
+    minutes_since_open = minutes_since_market_open(config)
+    open_rows = storage.get_open_shadow_positions(db_path, ticker)
+    open_by_strategy = {}
+    for row in open_rows:
+        open_by_strategy.setdefault(row["strategy"], []).append(row)
+
+    for strategy in strategies:
+        name = strategy.get("name")
+        if not name:
+            continue
+        exit_cfg = strategy.get("exit", {})
+
+        # --- exits on this strategy's open positions in this ticker ---------
+        for row in open_by_strategy.get(name, []):
+            if row["expiration"] < today.isoformat():
+                storage.close_shadow_position(db_path, row["id"], 0.0, "expired")
+                print(f"[{ticker}] SHADOW {name}: position {row['id']} expired worthless")
+                continue
+            current_price = market_data.find_contract_price(chain, row["option_type"], row["strike"])
+            if current_price is None:
+                continue
+            storage.update_shadow_price(db_path, row["id"], current_price)
+            position = shadow_position_from_row(row, exit_cfg)
+            position.max_price = max(position.max_price or current_price, current_price)
+            reason = evaluate_exit(position, current_price, signal.composite_score,
+                                   minutes_to_close, exit_cfg)
+            if reason:
+                pnl = storage.close_shadow_position(db_path, row["id"], current_price, reason)
+                if pnl is not None:
+                    print(f"[{ticker}] SHADOW {name}: closed {row['id']} {reason} "
+                          f"@ ${current_price:.2f} (P&L ${pnl:+,.2f})")
+
+        # --- one possible entry per strategy per cycle -----------------------
+        if chain is None or not is_market_open(config):
+            continue
+        has_open = any(row["expiration"] >= today.isoformat()
+                       for row in open_by_strategy.get(name, []))
+        option_type = should_shadow_enter(
+            strategy.get("entry", {}),
+            signal.direction, signal.confidence_pct,
+            minutes_since_open, minutes_to_close,
+            gamma_regime, signal.subscores_used,
+            has_open,
+            storage.count_shadow_entries_today(db_path, name, ticker, today.isoformat()),
+        )
+        if option_type is None:
+            continue
+        df = chain.calls if option_type == "call" else chain.puts
+        contract = market_data.find_atm_contract(df, chain.spot)
+        if contract is None:
+            continue
+        entry_price = market_data.contract_entry_price(contract)
+        if entry_price is None:
+            continue
+        entry_reason = {
+            "confidence_pct": signal.confidence_pct,
+            "composite_score": signal.composite_score,
+            "gamma_regime": gamma_regime,
+            "minutes_since_open": round(minutes_since_open, 1),
+            "subscores": signal.subscores_used,
+        }
+        sid = storage.open_shadow_position(
+            db_path, name, ticker, option_type, float(contract["strike"]),
+            chain.expiration, entry_price, entry_reason,
+        )
+        print(f"[{ticker}] SHADOW {name}: opened {sid} {option_type} "
+              f"{contract['strike']:g} @ ${entry_price:.2f}")
 
 
 def run_once(config: dict, db_path: str) -> None:

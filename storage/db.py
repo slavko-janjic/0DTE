@@ -111,6 +111,32 @@ CREATE TABLE IF NOT EXISTS day_setups (
     created_at TEXT NOT NULL,
     PRIMARY KEY (ticker, date)
 );
+
+-- Shadow strategy lab: virtual positions traded by named strategies running
+-- alongside the real paper account. Zero balance impact - pure bookkeeping so
+-- N strategies can build win/loss track records from the same market data.
+CREATE TABLE IF NOT EXISTS shadow_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    option_type TEXT NOT NULL,          -- 'call' or 'put'
+    strike REAL NOT NULL,
+    expiration TEXT NOT NULL,
+    contracts INTEGER NOT NULL DEFAULT 1,
+    entry_price REAL NOT NULL,          -- ask-side honest fill
+    entry_time TEXT NOT NULL,
+    entry_reason_json TEXT NOT NULL,    -- audit: confidence/gamma/subscores at entry
+    status TEXT NOT NULL DEFAULT 'open',
+    current_price REAL,
+    max_price REAL,                     -- high-water mark, for trailing stops
+    exit_price REAL,                    -- bid-side honest fill
+    exit_time TEXT,
+    exit_reason TEXT,
+    pnl REAL,
+    pnl_pct REAL
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_positions_strategy_status
+    ON shadow_positions (strategy, status);
 """
 
 
@@ -445,6 +471,98 @@ def get_day_setup(db_path: str | Path, ticker: str, date: str) -> dict | None:
             "SELECT setup_json FROM day_setups WHERE ticker = ? AND date = ?", (ticker, date)
         ).fetchone()
         return json.loads(row["setup_json"]) if row is not None else None
+
+
+# --- shadow strategy positions (virtual book, no balance impact) ------------
+
+def open_shadow_position(
+    db_path: str | Path, strategy: str, ticker: str, option_type: str,
+    strike: float, expiration: str, entry_price: float, entry_reason: dict,
+    contracts: int = 1,
+) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """INSERT INTO shadow_positions
+               (strategy, ticker, option_type, strike, expiration, contracts,
+                entry_price, entry_time, entry_reason_json, status, max_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+            (strategy, ticker, option_type, strike, expiration, contracts,
+             entry_price, _now(), json.dumps(entry_reason), entry_price),
+        )
+        return cur.lastrowid
+
+
+def get_open_shadow_positions(db_path: str | Path, ticker: str | None = None) -> list[sqlite3.Row]:
+    with connect(db_path) as conn:
+        if ticker is None:
+            return conn.execute(
+                "SELECT * FROM shadow_positions WHERE status = 'open' ORDER BY entry_time"
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM shadow_positions WHERE status = 'open' AND ticker = ? ORDER BY entry_time",
+            (ticker,),
+        ).fetchall()
+
+
+def get_closed_shadow_positions(db_path: str | Path, limit: int = 2000) -> list[sqlite3.Row]:
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM shadow_positions WHERE status = 'closed' "
+            "ORDER BY exit_time DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def update_shadow_price(db_path: str | Path, position_id: int, current_price: float) -> None:
+    """Latest premium + high-water mark bump, mirroring update_position_price."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """UPDATE shadow_positions
+               SET current_price = ?,
+                   max_price = MAX(COALESCE(max_price, ?), ?)
+               WHERE id = ?""",
+            (current_price, current_price, current_price, position_id),
+        )
+
+
+def close_shadow_position(
+    db_path: str | Path, position_id: int, exit_price: float, reason: str,
+) -> float | None:
+    """Books the virtual exit. Returns realized pnl dollars, or None if the row
+    was already closed (same status-guard idempotency as the real close)."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT entry_price, contracts FROM shadow_positions WHERE id = ? AND status = 'open'",
+            (position_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        pnl = (exit_price - row["entry_price"]) * row["contracts"] * 100
+        pnl_pct = ((exit_price - row["entry_price"]) / row["entry_price"] * 100.0
+                   if row["entry_price"] else 0.0)
+        cur = conn.execute(
+            """UPDATE shadow_positions
+               SET status = 'closed', exit_price = ?, exit_time = ?, exit_reason = ?,
+                   pnl = ?, pnl_pct = ?
+               WHERE id = ? AND status = 'open'""",
+            (exit_price, _now(), reason, pnl, pnl_pct, position_id),
+        )
+        return pnl if cur.rowcount else None
+
+
+def count_shadow_entries_today(
+    db_path: str | Path, strategy: str, ticker: str, today_iso: str,
+) -> int:
+    """Shadow entries (open or closed) a strategy has made in a ticker today -
+    date prefix match on the ISO UTC entry_time is close enough for the per-day
+    entry cap."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n FROM shadow_positions
+               WHERE strategy = ? AND ticker = ? AND entry_time >= ?""",
+            (strategy, ticker, today_iso),
+        ).fetchone()
+        return row["n"]
 
 
 # --- weight overrides -------------------------------------------------------

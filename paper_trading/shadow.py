@@ -1,0 +1,124 @@
+"""Shadow strategy lab: named virtual strategies that trade a paper-within-paper
+book alongside the real account. Each strategy = an entry rule (this module) +
+an exit rule set (reusing engine.evaluate_exit via a Position built from the
+shadow row + the strategy's exit config). Zero balance impact - the point is to
+build N win/loss track records per market day instead of one, so strategy ideas
+can be compared on evidence before any of them drives the real auto-pilot.
+
+Pure functions only - the worker does the I/O.
+
+Honest scope: shadow books are per-ticker (a strategy may hold one open shadow
+position per ticker and its entry cap applies per ticker), so this tests
+entry/exit RULES, not portfolio selection. All strategies see the same delayed
+data and the same honest bid/ask fill model as the real paper account.
+"""
+from paper_trading.models import Position
+from signals.composite import direction_from_score
+
+
+def should_shadow_enter(
+    entry_cfg: dict,
+    direction: str,
+    confidence_pct: float,
+    minutes_since_open: float,
+    minutes_to_close: float,
+    gamma_regime: str | None,
+    subscores: dict,
+    has_open_for_ticker: bool,
+    entries_today: int,
+) -> str | None:
+    """Entry decision for one strategy on one ticker: 'call'/'put' or None.
+
+    entry_cfg keys (all optional except min_confidence_pct):
+      min_confidence_pct        - confidence floor
+      window_start_minutes /    - entry window, minutes after the open
+      window_end_minutes          (omit both = whole session)
+      no_entry_last_minutes     - runway floor before the close (default 45)
+      max_entries_per_day       - per ticker (default 1)
+      gamma_block               - list of gamma regimes to stand down in
+      require_agree             - a category whose subscore sign must match the
+                                  composite direction (confluence); missing
+                                  subscore blocks the entry
+    """
+    if direction == "bullish":
+        option_type = "call"
+    elif direction == "bearish":
+        option_type = "put"
+    else:
+        return None
+
+    if confidence_pct < entry_cfg.get("min_confidence_pct", 55):
+        return None
+
+    start = entry_cfg.get("window_start_minutes")
+    end = entry_cfg.get("window_end_minutes")
+    if start is not None and minutes_since_open < start:
+        return None
+    if end is not None and minutes_since_open > end:
+        return None
+    if minutes_to_close < entry_cfg.get("no_entry_last_minutes", 45):
+        return None
+
+    if gamma_regime is not None and gamma_regime in entry_cfg.get("gamma_block", []):
+        return None
+
+    agree_category = entry_cfg.get("require_agree")
+    if agree_category is not None:
+        subscore = subscores.get(agree_category)
+        if subscore is None or direction_from_score(subscore) != direction:
+            return None
+
+    if has_open_for_ticker:
+        return None
+    if entries_today >= entry_cfg.get("max_entries_per_day", 1):
+        return None
+
+    return option_type
+
+
+def shadow_position_from_row(row, exit_cfg: dict) -> Position:
+    """Builds an engine Position from a shadow_positions row so evaluate_exit
+    applies unchanged. Per-trade stop/target come from the strategy's exit
+    config (not stored per row - the strategy IS the config)."""
+    return Position(
+        id=row["id"], ticker=row["ticker"], option_type=row["option_type"],
+        strike=row["strike"], expiration=row["expiration"], contracts=row["contracts"],
+        entry_price=row["entry_price"], cost_basis=row["entry_price"] * row["contracts"] * 100,
+        entry_composite_score=0.0, status=row["status"],
+        current_price=row["current_price"], max_price=row["max_price"],
+        profit_target_pct=exit_cfg.get("profit_target_pct"),
+        stop_loss_pct=exit_cfg.get("stop_loss_pct"),
+    )
+
+
+def strategy_scorecard(closed_rows: list) -> dict[str, dict]:
+    """Per-strategy performance from closed shadow rows: trade count, win rate,
+    total/avg P&L, profit factor (gross wins / gross losses), and max drawdown
+    on the cumulative P&L path (rows are walked oldest-first)."""
+    by_strategy: dict[str, list] = {}
+    for row in closed_rows:
+        by_strategy.setdefault(row["strategy"], []).append(row)
+
+    cards = {}
+    for strategy, rows in by_strategy.items():
+        rows = sorted(rows, key=lambda r: r["exit_time"] or "")
+        pnls = [row["pnl"] or 0.0 for row in rows]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        gross_win, gross_loss = sum(wins), -sum(losses)
+
+        cumulative = peak = max_drawdown = 0.0
+        for p in pnls:
+            cumulative += p
+            peak = max(peak, cumulative)
+            max_drawdown = max(max_drawdown, peak - cumulative)
+
+        cards[strategy] = {
+            "trades": len(pnls),
+            "win_rate_pct": (len(wins) / len(pnls) * 100.0) if pnls else None,
+            "total_pnl": sum(pnls),
+            "avg_pnl": (sum(pnls) / len(pnls)) if pnls else None,
+            "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+            "max_drawdown": max_drawdown,
+        }
+    return cards

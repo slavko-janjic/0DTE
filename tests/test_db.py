@@ -426,3 +426,50 @@ def test_max_price_initialized_to_entry_and_bumps_up(tmp_path):
     storage.update_position_price(path, pid, 2.1)      # pullback: peak holds
     row = {r["id"]: r for r in storage.get_open_positions(path)}[pid]
     assert row["current_price"] == 2.1 and row["max_price"] == 2.5
+
+
+# --- shadow strategy positions -----------------------------------------------
+
+def test_shadow_position_lifecycle(tmp_path):
+    path = make_temp_db(tmp_path)
+    pid = storage.open_shadow_position(
+        path, "baseline", "QQQ", "call", 500.0, "2026-07-15", 2.10,
+        {"confidence": 62.0, "gamma_regime": "positive"},
+    )
+    rows = storage.get_open_shadow_positions(path, "QQQ")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["strategy"] == "baseline"
+    assert row["entry_price"] == 2.10
+    assert row["max_price"] == 2.10   # seeded at entry
+    import json as _json
+    assert _json.loads(row["entry_reason_json"])["confidence"] == 62.0
+
+    storage.update_shadow_price(path, pid, 2.6)
+    storage.update_shadow_price(path, pid, 2.3)  # pullback keeps the peak
+    row = storage.get_open_shadow_positions(path, "QQQ")[0]
+    assert row["current_price"] == 2.3 and row["max_price"] == 2.6
+
+    pnl = storage.close_shadow_position(path, pid, 2.4, "profit_target")
+    assert pnl == pytest.approx((2.4 - 2.10) * 100)
+    assert storage.get_open_shadow_positions(path) == []
+    closed = storage.get_closed_shadow_positions(path)
+    assert closed[0]["exit_reason"] == "profit_target"
+    assert closed[0]["pnl_pct"] == pytest.approx((2.4 - 2.10) / 2.10 * 100.0)
+
+    # double close is a no-op
+    assert storage.close_shadow_position(path, pid, 2.4, "again") is None
+
+
+def test_count_shadow_entries_today(tmp_path):
+    path = make_temp_db(tmp_path)
+    storage.open_shadow_position(path, "baseline", "QQQ", "call", 500.0, "2026-07-15", 2.0, {})
+    storage.open_shadow_position(path, "baseline", "SPY", "call", 600.0, "2026-07-15", 2.0, {})
+    storage.open_shadow_position(path, "runner", "QQQ", "call", 500.0, "2026-07-15", 2.0, {})
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert storage.count_shadow_entries_today(path, "baseline", "QQQ", today) == 1
+    assert storage.count_shadow_entries_today(path, "baseline", "SPY", today) == 1
+    assert storage.count_shadow_entries_today(path, "runner", "SPY", today) == 0
+    # a date in the future counts nothing
+    assert storage.count_shadow_entries_today(path, "baseline", "QQQ", "2099-01-01") == 0

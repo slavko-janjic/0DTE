@@ -130,6 +130,39 @@ autopilot:
   close_before_catalyst_minutes: 5      # don't hold into one: force-close AUTO positions (suggest for manual) this close to it (0 = off)
   positive_gamma_confidence_penalty: 10 # in a rangebound (positive-gamma) regime, require this much more confidence to auto-enter (0 = off)
 
+# Shadow strategy lab: named virtual strategies traded on a paper-within-paper
+# book every cycle (zero balance impact). Each = entry rule + exit rules; the
+# leaderboard on the dashboard compares their track records. Per-ticker books -
+# this tests entry/exit RULES, not portfolio selection. Stats need ~20-30
+# trades before they mean anything (multiple-testing: with several strategies
+# running, one will look great by luck early on).
+shadow_strategies:
+  - name: baseline            # mirrors the real autopilot's opening-range setup
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: confluence          # same window, but demands technicals agreement + non-positive gamma
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60, require_agree: technicals, gamma_block: [positive] }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: runner              # let winners run: trailing stop instead of a profit target
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60 }
+    exit: { stop_loss_pct: -35, trailing_activate_pct: 30, trailing_stop_pct: 15,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: quick_scalp         # tighter target/stop, wider window, up to 3 tries/day
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 180,
+             no_entry_last_minutes: 60, max_entries_per_day: 3 }
+    exit: { profit_target_pct: 25, stop_loss_pct: -20,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: afternoon           # tests the late-session entry idea the context tables hint at
+    entry: { min_confidence_pct: 50, window_start_minutes: 180, window_end_minutes: 300,
+             no_entry_last_minutes: 45 }
+    exit: { profit_target_pct: 30, stop_loss_pct: -25,
+            time_cutoff_minutes_before_close: 20, reversal_confidence_pct: 60 }
+
 # Dealer gamma exposure (GEX): a rangebound-vs-trending regime read computed from
 # the option chain we already fetch. Not a directional signal - it gates the
 # opening-range auto-entry (see autopilot.positive_gamma_confidence_penalty) and

@@ -28,6 +28,7 @@ from paper_trading.engine import (
     shift_month, summarize_pnl, trade_events,
 )
 from paper_trading.models import Position
+from paper_trading.shadow import strategy_scorecard
 from storage import db as storage
 from worker import (
     is_market_open, minutes_since_market_open, minutes_to_market_close, next_trading_day,
@@ -106,7 +107,7 @@ def _accuracy_analysis(rows_tuple: tuple, horizon_minutes: float):
 st.markdown(
     """
     <style>
-    .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card,
+    .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
     .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
     .st-key-positions_card, .st-key-history_card {
         border-radius: 12px;
@@ -117,12 +118,12 @@ st.markdown(
        determines the app's *actual* in-app theme (which the user can set
        independently of their OS via the Streamlit menu). */
     @media (prefers-color-scheme: light) {
-        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card,
+        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
         .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
         .st-key-positions_card, .st-key-history_card { background-color: #f7f8fa; }
     }
     @media (prefers-color-scheme: dark) {
-        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card,
+        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
         .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
         .st-key-positions_card, .st-key-history_card { background-color: #191c24; }
     }
@@ -131,6 +132,7 @@ st.markdown(
     html[data-app-theme="light"] .st-key-signal_panel,
     html[data-app-theme="light"] .st-key-accuracy_panel,
     html[data-app-theme="light"] .st-key-day_setup_card,
+    html[data-app-theme="light"] .st-key-strategy_lab_card,
     html[data-app-theme="light"] .st-key-wallet_card,
     html[data-app-theme="light"] .st-key-calendar_card,
     html[data-app-theme="light"] .st-key-order_card,
@@ -141,6 +143,7 @@ st.markdown(
     html[data-app-theme="dark"] .st-key-signal_panel,
     html[data-app-theme="dark"] .st-key-accuracy_panel,
     html[data-app-theme="dark"] .st-key-day_setup_card,
+    html[data-app-theme="dark"] .st-key-strategy_lab_card,
     html[data-app-theme="dark"] .st-key-wallet_card,
     html[data-app-theme="dark"] .st-key-calendar_card,
     html[data-app-theme="dark"] .st-key-order_card,
@@ -908,6 +911,59 @@ with left_col:
                                 st.rerun()
 
         render_accuracy_panel()
+
+    # --- Strategy lab: shadow strategies' track records -----------------
+    with st.container(key="strategy_lab_card"):
+        st.header(":material/science: Strategy lab")
+
+        @st.fragment(run_every="60s")
+        def render_strategy_lab() -> None:
+            strategies = config.get("shadow_strategies", [])
+            if not strategies:
+                st.caption("No shadow strategies configured (settings.yaml -> shadow_strategies).")
+                return
+            st.caption(
+                "Virtual strategies trading a paper-within-paper book on every ticker, "
+                "every cycle - same signals, honest bid/ask fills, zero wallet impact. "
+                "**Stats below ~20 trades are noise** - with several strategies running, "
+                "one will look great by luck early on."
+            )
+            closed = storage.get_closed_shadow_positions(db_path)
+            open_rows = storage.get_open_shadow_positions(db_path)
+            open_counts: dict[str, int] = {}
+            for row in open_rows:
+                open_counts[row["strategy"]] = open_counts.get(row["strategy"], 0) + 1
+
+            cards = strategy_scorecard(closed)
+            MIN_TRADES = 20
+            table = []
+            for strat in strategies:
+                name = strat.get("name", "?")
+                card = cards.get(name)
+                if card is None:
+                    table.append({"Strategy": name, "Trades": 0, "Win rate": "-",
+                                  "Total P&L": "-", "Avg P&L": "-", "Profit factor": "-",
+                                  "Max DD": "-", "Open": open_counts.get(name, 0),
+                                  "Status": "warming up"})
+                    continue
+                trusted = card["trades"] >= MIN_TRADES
+                table.append({
+                    "Strategy": name,
+                    "Trades": card["trades"],
+                    "Win rate": f"{card['win_rate_pct']:.0f}%" if card["win_rate_pct"] is not None else "-",
+                    "Total P&L": f"${card['total_pnl']:+,.0f}",
+                    "Avg P&L": f"${card['avg_pnl']:+,.0f}" if card["avg_pnl"] is not None else "-",
+                    "Profit factor": f"{card['profit_factor']:.2f}" if card["profit_factor"] is not None else "-",
+                    "Max DD": f"${card['max_drawdown']:,.0f}",
+                    "Open": open_counts.get(name, 0),
+                    "Status": "tracked" if trusted else f"warming up ({card['trades']}/{MIN_TRADES})",
+                })
+            # strongest first among those with data; warming-up rows keep config order
+            table.sort(key=lambda r: (r["Trades"] == 0,
+                                      -(cards.get(r["Strategy"], {}).get("total_pnl") or 0.0)))
+            st.dataframe(table, hide_index=True, use_container_width=True)
+
+        render_strategy_lab()
 
 with right_col:
     # --- Wallet card ---------------------------------------------------
