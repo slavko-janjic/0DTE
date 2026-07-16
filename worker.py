@@ -26,7 +26,7 @@ from paper_trading.shadow import shadow_position_from_row, should_shadow_enter
 from sentiment.aggregate import get_sentiment
 from signals import day_setup as day_setup_mod
 from signals import indicators
-from signals.composite import build_recommendation, compute_signal
+from signals.composite import build_recommendation, compute_signal, direction_from_score
 from storage import db as storage
 
 
@@ -440,11 +440,33 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         # --- one possible entry per strategy per cycle -----------------------
         if chain is None or not is_market_open(config):
             continue
+        entry_cfg = strategy.get("entry", {})
+
+        # a strategy may be pinned to specific tickers (exits above still run for
+        # any position it already holds, in case the pinning changed)
+        only_tickers = entry_cfg.get("only_tickers")
+        if only_tickers and ticker not in only_tickers:
+            continue
+
+        # ...and may trade ONE subscore instead of the blended composite, to test
+        # a single signal on its own (the composite is 7 signals averaged, which
+        # can dilute a good one). Confidence mirrors how the composite derives
+        # it: |score| * 100.
+        source = entry_cfg.get("signal_source")
+        if source:
+            score = signal.subscores_used.get(source)
+            if score is None:
+                continue  # that signal had no data this cycle
+            entry_direction = direction_from_score(score)
+            entry_confidence = abs(score) * 100.0
+        else:
+            entry_direction, entry_confidence = signal.direction, signal.confidence_pct
+
         has_open = any(row["expiration"] >= today.isoformat()
                        for row in open_by_strategy.get(name, []))
         option_type = should_shadow_enter(
-            strategy.get("entry", {}),
-            signal.direction, signal.confidence_pct,
+            entry_cfg,
+            entry_direction, entry_confidence,
             minutes_since_open, minutes_to_close,
             gamma_regime, signal.subscores_used,
             has_open,
@@ -461,8 +483,13 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         if entry_price is None:
             continue
         entry_reason = {
-            "confidence_pct": signal.confidence_pct,
+            # what this strategy actually acted on (differs from the composite
+            # when signal_source pins it to a single subscore)
+            "signal_source": source or "composite",
+            "direction": entry_direction,
+            "confidence_pct": entry_confidence,
             "composite_score": signal.composite_score,
+            "composite_confidence_pct": signal.confidence_pct,
             "gamma_regime": gamma_regime,
             "direction_streak": direction_streak,
             "minutes_since_open": round(minutes_since_open, 1),

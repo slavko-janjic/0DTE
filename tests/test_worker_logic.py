@@ -516,3 +516,76 @@ def test_shadow_failure_never_breaks_poll(tmp_path, monkeypatch):
     assert raised  # sanity: the stub raises when called directly...
     # ...but poll_ticker wraps it (verified by reading the code path; a full
     # poll_ticker call needs live data, so this test just pins the stub shape)
+
+
+# --- pre-registered single-signal strategies (signal_source / only_tickers) ---
+
+SINGLE_SIGNAL_CONFIG = {
+    **AUTO_CONFIG,
+    "shadow_strategies": [
+        {"name": "spy_technicals",
+         "entry": {"signal_source": "technicals", "only_tickers": ["SPY"],
+                   "min_confidence_pct": 20, "window_start_minutes": 30,
+                   "window_end_minutes": 240, "no_entry_last_minutes": 60},
+         "exit": {"profit_target_pct": 50, "stop_loss_pct": -35,
+                  "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 60}},
+    ],
+}
+
+
+def _ss_signal(technicals, composite_dir="bearish", composite_score=-0.9):
+    """Composite deliberately DISAGREES with technicals, so a wrong wiring
+    (trading the composite instead of the subscore) is caught."""
+    return SimpleNamespace(direction=composite_dir, confidence_pct=90.0,
+                           composite_score=composite_score,
+                           subscores_used={"technicals": technicals, "sentiment": -0.8})
+
+
+def _ss_chain():
+    from datetime import date as _date
+    return SimpleNamespace(calls="C", puts="P", spot=500.0,
+                           expiration=_date.today().isoformat())
+
+
+def test_single_signal_strategy_trades_the_subscore_not_the_composite(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "ss.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=240.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"strike": 500.0, "bid": 1.9, "ask": 2.1,
+                                          "lastPrice": 2.0})
+    # technicals bullish (+0.4) while the composite says bearish -> must buy a CALL
+    worker.process_shadow_strategies("SPY", SINGLE_SIGNAL_CONFIG, db_path, _ss_chain(),
+                                     _ss_signal(technicals=0.4), None)
+    rows = storage.get_open_shadow_positions(db_path, "SPY")
+    assert len(rows) == 1
+    assert rows[0]["option_type"] == "call"   # followed technicals, not the composite
+    import json as _json
+    reason = _json.loads(rows[0]["entry_reason_json"])
+    assert reason["signal_source"] == "technicals"
+    assert reason["confidence_pct"] == pytest.approx(40.0)   # |0.4| * 100
+    assert reason["direction"] == "bullish"
+
+
+def test_single_signal_strategy_is_pinned_to_its_ticker(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "ss2.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=240.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"strike": 500.0, "bid": 1.9, "ask": 2.1,
+                                          "lastPrice": 2.0})
+    # same strong signal, but on a ticker the strategy isn't registered for
+    worker.process_shadow_strategies("QQQ", SINGLE_SIGNAL_CONFIG, db_path, _ss_chain(),
+                                     _ss_signal(technicals=0.4), None)
+    assert storage.get_open_shadow_positions(db_path) == []
+
+
+def test_single_signal_strategy_skips_when_its_signal_has_no_data(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "ss3.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=240.0)
+    sig = SimpleNamespace(direction="bullish", confidence_pct=90.0, composite_score=0.9,
+                          subscores_used={"sentiment": 0.8})  # technicals absent
+    worker.process_shadow_strategies("SPY", SINGLE_SIGNAL_CONFIG, db_path, _ss_chain(),
+                                     sig, None)
+    assert storage.get_open_shadow_positions(db_path) == []

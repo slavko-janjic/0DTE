@@ -12,6 +12,9 @@ position per ticker and its entry cap applies per ticker), so this tests
 entry/exit RULES, not portfolio selection. All strategies see the same delayed
 data and the same honest bid/ask fill model as the real paper account.
 """
+import math
+import statistics
+
 from paper_trading.models import Position
 from signals.composite import direction_from_score
 
@@ -111,6 +114,55 @@ def shadow_position_from_row(row, exit_cfg: dict) -> Position:
         profit_target_pct=exit_cfg.get("profit_target_pct"),
         stop_loss_pct=exit_cfg.get("stop_loss_pct"),
     )
+
+
+def strategy_edge(closed_rows: list, min_trades: int = 20) -> dict[str, dict]:
+    """Has a strategy earned the right to be believed?
+
+    The null is NOT "a 50% win rate" - asymmetric exits (a +50% target vs a -35%
+    stop) move the natural win rate away from 50% with zero skill involved. The
+    honest question is whether average P&L per trade is distinguishable from
+    zero: t = mean / (stdev / sqrt(n)). |t| >= 2 is the usual bar.
+
+    Also reports trades_needed: how many trades it would take to prove an effect
+    of the size currently observed. A strategy showing a big mean with a huge
+    spread may need hundreds; that number is the honest answer to "when will we
+    know?".
+
+    Caveat the caller should surface: with ~10 strategies running, one will clear
+    |t|>=2 by luck roughly 1 time in 2. Treat a single winner as a hypothesis to
+    re-test, not a result.
+    """
+    by_strategy: dict[str, list] = {}
+    for row in closed_rows:
+        by_strategy.setdefault(row["strategy"], []).append(row["pnl"] or 0.0)
+
+    results = {}
+    for name, pnls in by_strategy.items():
+        n = len(pnls)
+        mean = statistics.fmean(pnls) if n else 0.0
+        stdev = statistics.stdev(pnls) if n > 1 else 0.0
+        std_err = stdev / math.sqrt(n) if n > 1 and stdev > 0 else 0.0
+        t_stat = mean / std_err if std_err else 0.0
+
+        trades_needed = None
+        if stdev > 0 and mean != 0:
+            trades_needed = math.ceil((1.96 * stdev / abs(mean)) ** 2)
+
+        if n < min_trades:
+            verdict = f"warming up ({n}/{min_trades})"
+        elif t_stat >= 2:
+            verdict = "EDGE (+)"
+        elif t_stat <= -2:
+            verdict = "EDGE (-)"
+        else:
+            verdict = "no edge"
+
+        results[name] = {
+            "trades": n, "mean_pnl": mean, "stdev": stdev,
+            "t_stat": t_stat, "trades_needed": trades_needed, "verdict": verdict,
+        }
+    return results
 
 
 def strategy_scorecard(closed_rows: list) -> dict[str, dict]:

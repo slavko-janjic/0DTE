@@ -204,6 +204,29 @@ shadow_strategies:
              no_entry_last_minutes: 60, max_direction_streak: 2 }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
             time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
+  # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
+  # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure
+  # noise across 18 tests would typically produce a best z of ~+2.40. So 55.9%
+  # is IN-SAMPLE data mining, not an edge.
+  # Declaring it here converts it into a real out-of-sample test: if it still
+  # holds after ~22 more trading days (n~384 needed to prove a 55% edge, SPY had
+  # 92), that means something. If it regresses to 50%, that also means something.
+  # Either way we learn - which is the entire point of writing it down first.
+  # nvda_technicals is the control: the same rule on the cheap-spread ticker
+  # (NVDA ~0.5% vs SPY ~15.4% round trip), where a real edge could survive costs.
+  - name: spy_technicals
+    entry: { signal_source: technicals, only_tickers: [SPY], min_confidence_pct: 20,
+             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
+             max_entries_per_day: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: nvda_technicals
+    entry: { signal_source: technicals, only_tickers: [NVDA], min_confidence_pct: 20,
+             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
+             max_entries_per_day: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
 
 # Dealer gamma exposure (GEX): a rangebound-vs-trending regime read computed from
 # the option chain we already fetch. Not a directional signal - it gates the

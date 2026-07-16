@@ -28,7 +28,7 @@ from paper_trading.engine import (
     shift_month, summarize_pnl, trade_events,
 )
 from paper_trading.models import Position
-from paper_trading.shadow import strategy_scorecard
+from paper_trading.shadow import strategy_edge, strategy_scorecard
 from storage import db as storage
 from worker import (
     is_market_open, minutes_since_market_open, minutes_to_market_close, next_trading_day,
@@ -945,8 +945,13 @@ with left_col:
             st.caption(
                 "Virtual strategies trading a paper-within-paper book on every ticker, "
                 "every cycle - same signals, honest bid/ask fills, zero wallet impact. "
-                "**Stats below ~20 trades are noise** - with several strategies running, "
-                "one will look great by luck early on."
+                "**Verdict** tests whether average P&L per trade is distinguishable "
+                "from zero (|t| >= 2), *not* whether the win rate beats 50% - "
+                "asymmetric exits move the natural win rate on their own. "
+                "**Need** is how many trades it would take to prove an effect the "
+                "size currently observed. With ~10 strategies running, expect one to "
+                "clear the bar by luck roughly half the time: treat a single winner "
+                "as a hypothesis to re-test, not a result."
             )
             closed = storage.get_closed_shadow_positions(db_path)
             open_rows = storage.get_open_shadow_positions(db_path)
@@ -956,6 +961,7 @@ with left_col:
 
             cards = strategy_scorecard(closed)
             MIN_TRADES = 20
+            edges = strategy_edge(closed, min_trades=MIN_TRADES)
             table = []
             for strat in strategies:
                 name = strat.get("name", "?")
@@ -964,9 +970,10 @@ with left_col:
                     table.append({"Strategy": name, "Trades": 0, "Win rate": "-",
                                   "Total P&L": "-", "Avg P&L": "-", "Profit factor": "-",
                                   "Max DD": "-", "Open": open_counts.get(name, 0),
-                                  "Status": "warming up"})
+                                  "t": "-", "Need": "-", "Verdict": "no trades yet"})
                     continue
-                trusted = card["trades"] >= MIN_TRADES
+                edge = edges.get(name, {})
+                need = edge.get("trades_needed")
                 table.append({
                     "Strategy": name,
                     "Trades": card["trades"],
@@ -976,7 +983,9 @@ with left_col:
                     "Profit factor": f"{card['profit_factor']:.2f}" if card["profit_factor"] is not None else "-",
                     "Max DD": f"${card['max_drawdown']:,.0f}",
                     "Open": open_counts.get(name, 0),
-                    "Status": "tracked" if trusted else f"warming up ({card['trades']}/{MIN_TRADES})",
+                    "t": f"{edge.get('t_stat', 0):+.2f}",
+                    "Need": f"{need:,}" if need else "-",
+                    "Verdict": edge.get("verdict", "-"),
                 })
             # strongest first among those with data; warming-up rows keep config order
             table.sort(key=lambda r: (r["Trades"] == 0,

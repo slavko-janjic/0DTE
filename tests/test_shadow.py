@@ -127,3 +127,55 @@ def test_shadow_enter_max_direction_streak():
 def test_shadow_enter_streak_gates_unset_means_no_gate():
     assert _enter(direction_streak=1) == "call"
     assert _enter(direction_streak=999) == "call"
+
+
+# --- edge tracker ------------------------------------------------------------
+
+from paper_trading.shadow import strategy_edge
+
+
+def _pnl_rows(strategy, pnls):
+    return [{"strategy": strategy, "pnl": p, "exit_time": f"t{i}"} for i, p in enumerate(pnls)]
+
+
+def test_strategy_edge_warming_up_below_min_trades():
+    e = strategy_edge(_pnl_rows("s", [10.0, -5.0, 8.0]), min_trades=20)["s"]
+    assert e["trades"] == 3
+    assert e["verdict"] == "warming up (3/20)"
+
+
+def test_strategy_edge_detects_no_edge_when_pnl_is_noise():
+    # symmetric wins/losses -> mean ~0 -> no edge no matter how many trades
+    pnls = [50.0, -50.0] * 15
+    e = strategy_edge(_pnl_rows("s", pnls), min_trades=20)["s"]
+    assert e["trades"] == 30
+    assert abs(e["t_stat"]) < 2
+    assert e["verdict"] == "no edge"
+
+
+def test_strategy_edge_flags_a_real_positive_edge():
+    # consistently +10 with small spread -> large t
+    pnls = [10.0, 12.0, 9.0, 11.0, 10.0] * 6
+    e = strategy_edge(_pnl_rows("s", pnls), min_trades=20)["s"]
+    assert e["t_stat"] > 2
+    assert e["verdict"] == "EDGE (+)"
+
+
+def test_strategy_edge_flags_a_reliably_losing_strategy():
+    pnls = [-10.0, -12.0, -9.0, -11.0, -10.0] * 6
+    e = strategy_edge(_pnl_rows("s", pnls), min_trades=20)["s"]
+    assert e["t_stat"] < -2
+    assert e["verdict"] == "EDGE (-)"
+
+
+def test_strategy_edge_trades_needed_scales_with_noise():
+    tight = strategy_edge(_pnl_rows("tight", [10.0, 11.0, 9.0, 10.0] * 6))["tight"]
+    noisy = strategy_edge(_pnl_rows("noisy", [100.0, -80.0, 90.0, -70.0] * 6))["noisy"]
+    # a big mean buried in a big spread needs far more trades to prove
+    assert tight["trades_needed"] < noisy["trades_needed"]
+
+
+def test_strategy_edge_empty_and_single_trade():
+    assert strategy_edge([]) == {}
+    one = strategy_edge(_pnl_rows("s", [42.0]))["s"]
+    assert one["trades"] == 1 and one["t_stat"] == 0.0  # no spread to test against
