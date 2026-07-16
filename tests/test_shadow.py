@@ -11,10 +11,10 @@ BASE_ENTRY = {"min_confidence_pct": 55, "window_start_minutes": 30,
 
 def _enter(entry_cfg=BASE_ENTRY, direction="bullish", confidence=60.0,
            since_open=60, to_close=300, gamma_regime=None, subscores=None,
-           has_open=False, entries_today=0):
+           has_open=False, entries_today=0, direction_streak=1):
     return should_shadow_enter(
         entry_cfg, direction, confidence, since_open, to_close,
-        gamma_regime, subscores or {}, has_open, entries_today,
+        gamma_regime, subscores or {}, has_open, entries_today, direction_streak,
     )
 
 
@@ -108,3 +108,22 @@ def test_shadow_enter_invert_still_respects_other_gates():
     cfg = {**BASE_ENTRY, "invert": True}
     assert _enter(entry_cfg=cfg, confidence=40.0) is None   # confidence floor still applies
     assert _enter(entry_cfg=cfg, since_open=200) is None    # window still applies
+
+
+def test_shadow_enter_min_direction_streak():
+    cfg = {**BASE_ENTRY, "min_direction_streak": 10}
+    assert _enter(entry_cfg=cfg, direction_streak=3) is None    # blip, not settled
+    assert _enter(entry_cfg=cfg, direction_streak=10) == "call"  # boundary
+    assert _enter(entry_cfg=cfg, direction_streak=25) == "call"
+
+
+def test_shadow_enter_max_direction_streak():
+    cfg = {**BASE_ENTRY, "max_direction_streak": 2}
+    assert _enter(entry_cfg=cfg, direction_streak=1) == "call"   # fresh flip
+    assert _enter(entry_cfg=cfg, direction_streak=2) == "call"
+    assert _enter(entry_cfg=cfg, direction_streak=3) is None      # gone stale
+
+
+def test_shadow_enter_streak_gates_unset_means_no_gate():
+    assert _enter(direction_streak=1) == "call"
+    assert _enter(direction_streak=999) == "call"

@@ -7,9 +7,14 @@ position already carries entry/exit price and realized P&L.
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+# A direction "streak" only continues across consecutive polls. Anything longer
+# than this gap (the overnight/weekend break, or the worker being down) starts a
+# fresh run rather than pretending the signal held the whole time.
+STREAK_MAX_GAP_MINUTES = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS account (
@@ -185,6 +190,36 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE signal_snapshots ADD COLUMN gamma_score REAL")
     if "gamma_regime" not in existing_columns:
         conn.execute("ALTER TABLE signal_snapshots ADD COLUMN gamma_regime TEXT")
+    if "direction_streak" not in existing_columns:
+        conn.execute("ALTER TABLE signal_snapshots ADD COLUMN direction_streak INTEGER")
+        _backfill_direction_streaks(conn)
+
+
+def _backfill_direction_streaks(conn: sqlite3.Connection) -> None:
+    """One-time: compute direction_streak across pre-existing snapshots so the
+    persistence analysis has the full accumulated history immediately instead of
+    starting from zero. Runs only when the column is first added (and is
+    naturally idempotent - it can't run twice)."""
+    rows = conn.execute(
+        "SELECT id, ticker, timestamp, direction FROM signal_snapshots ORDER BY ticker, timestamp"
+    ).fetchall()
+    updates = []
+    prev_ticker = prev_direction = prev_ts = None
+    streak = 0
+    for row_id, ticker, ts_text, direction in rows:
+        ts = datetime.fromisoformat(ts_text)
+        continues = (
+            ticker == prev_ticker
+            and direction == prev_direction
+            and prev_ts is not None
+            and (ts - prev_ts) <= timedelta(minutes=STREAK_MAX_GAP_MINUTES)
+        )
+        streak = streak + 1 if continues else 1
+        updates.append((streak, row_id))
+        prev_ticker, prev_direction, prev_ts = ticker, direction, ts
+    conn.executemany(
+        "UPDATE signal_snapshots SET direction_streak = ? WHERE id = ?", updates
+    )
 
 
 def init_db(path: str | Path) -> None:
@@ -616,24 +651,39 @@ def insert_signal_snapshot(
     calibrated_confidence: float | None = None,
     gamma_score: float | None = None,
     gamma_regime: str | None = None,
+    direction_streak: int | None = None,
 ) -> None:
     """confidence is the RAW |composite|*100 value - all accuracy grading and
     calibration math keys off it. calibrated_confidence is the corrected
     display/decision value (None when no calibration map exists yet). gamma_score
     (-1..1) and gamma_regime ('positive'|'negative'|'neutral') describe the
     dealer-gamma regime for that cycle - a rangebound-vs-trending hint, not a
-    directional call."""
+    directional call. direction_streak is how many consecutive polls this
+    direction has held (see next_direction_streak)."""
     with connect(db_path) as conn:
         conn.execute(
             """INSERT INTO signal_snapshots
                (ticker, timestamp, direction, confidence, composite_score,
                 recommendation, subscores_json, spot_price, calibrated_confidence,
-                gamma_score, gamma_regime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                gamma_score, gamma_regime, direction_streak)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, _now(), direction, confidence, composite_score,
              recommendation, json.dumps(subscores), spot_price, calibrated_confidence,
-             gamma_score, gamma_regime),
+             gamma_score, gamma_regime, direction_streak),
         )
+
+
+def next_direction_streak(db_path: str | Path, ticker: str, direction: str) -> int:
+    """How long `direction` will have held once the current cycle is stored: the
+    previous snapshot's streak + 1 when the direction is unchanged and the poll
+    was recent, else 1. O(1) - reads only the latest snapshot."""
+    previous = get_latest_signal(db_path, ticker)
+    if previous is None or previous["direction"] != direction:
+        return 1
+    gap = datetime.now(timezone.utc) - datetime.fromisoformat(previous["timestamp"])
+    if gap > timedelta(minutes=STREAK_MAX_GAP_MINUTES):
+        return 1  # overnight/weekend break or a worker outage - fresh run
+    return (previous["direction_streak"] or 0) + 1
 
 
 def get_latest_signal(db_path: str | Path, ticker: str) -> sqlite3.Row | None:

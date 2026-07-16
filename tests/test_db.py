@@ -473,3 +473,63 @@ def test_count_shadow_entries_today(tmp_path):
     assert storage.count_shadow_entries_today(path, "runner", "SPY", today) == 0
     # a date in the future counts nothing
     assert storage.count_shadow_entries_today(path, "baseline", "QQQ", "2099-01-01") == 0
+
+
+# --- direction streak --------------------------------------------------------
+
+def test_direction_streak_stored_and_next_streak_increments(tmp_path):
+    path = make_temp_db(tmp_path)
+    assert storage.next_direction_streak(path, "QQQ", "bullish") == 1  # no history
+    storage.insert_signal_snapshot(path, "QQQ", "bullish", 60.0, 0.6, "r", {}, direction_streak=1)
+    assert storage.get_latest_signal(path, "QQQ")["direction_streak"] == 1
+
+    # same direction, fresh poll -> continues
+    assert storage.next_direction_streak(path, "QQQ", "bullish") == 2
+    storage.insert_signal_snapshot(path, "QQQ", "bullish", 61.0, 0.61, "r", {}, direction_streak=2)
+    assert storage.next_direction_streak(path, "QQQ", "bullish") == 3
+    # flip resets
+    assert storage.next_direction_streak(path, "QQQ", "bearish") == 1
+
+
+def test_next_direction_streak_resets_after_a_long_gap(tmp_path):
+    path = make_temp_db(tmp_path)
+    import sqlite3 as _sq
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    storage.insert_signal_snapshot(path, "QQQ", "bullish", 60.0, 0.6, "r", {}, direction_streak=9)
+    # age the snapshot past the gap threshold (simulating the overnight break)
+    stale = (_dt.now(_tz.utc) - _td(hours=17)).isoformat()
+    conn = _sq.connect(path)
+    conn.execute("UPDATE signal_snapshots SET timestamp = ?", (stale,))
+    conn.commit(); conn.close()
+    assert storage.next_direction_streak(path, "QQQ", "bullish") == 1  # not 10
+
+
+def test_backfill_direction_streaks_over_existing_history(tmp_path):
+    import sqlite3 as _sq
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    path = str(tmp_path / "legacy.db")
+    # build a table WITHOUT direction_streak, like a pre-upgrade database
+    conn = _sq.connect(path)
+    conn.execute("""CREATE TABLE signal_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, timestamp TEXT NOT NULL,
+        direction TEXT NOT NULL, confidence REAL NOT NULL, composite_score REAL NOT NULL,
+        recommendation TEXT NOT NULL, subscores_json TEXT NOT NULL, spot_price REAL)""")
+    base = _dt(2026, 7, 6, 14, 0, tzinfo=_tz.utc)
+    # bullish x3, bearish x2, then a 17h gap then bullish (streak must restart)
+    plan = [(0, "bullish"), (1, "bullish"), (2, "bullish"),
+            (3, "bearish"), (4, "bearish"), (17 * 60 + 5, "bullish")]
+    for offset, direction in plan:
+        conn.execute(
+            "INSERT INTO signal_snapshots (ticker,timestamp,direction,confidence,"
+            "composite_score,recommendation,subscores_json) VALUES ('QQQ',?,?,50,0.5,'r','{}')",
+            ((base + _td(minutes=offset)).isoformat(), direction),
+        )
+    conn.commit(); conn.close()
+
+    storage.init_db(path)  # triggers the ALTER + backfill
+
+    conn = _sq.connect(path)
+    streaks = [r[0] for r in conn.execute(
+        "SELECT direction_streak FROM signal_snapshots ORDER BY timestamp")]
+    conn.close()
+    assert streaks == [1, 2, 3, 1, 2, 1]  # runs counted; the overnight gap restarts

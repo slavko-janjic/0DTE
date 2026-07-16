@@ -95,8 +95,10 @@ def _accuracy_analysis(rows_tuple: tuple, horizon_minutes: float):
             "confidence": confidence,
             "composite_score": composite_score,
             "subscores": json.loads(subscores_json),
+            "direction_streak": direction_streak,
         }
-        for ts, direction, spot_price, confidence, composite_score, subscores_json in rows_tuple
+        for ts, direction, spot_price, confidence, composite_score, subscores_json,
+            direction_streak in rows_tuple
     ]
     evaluated = accuracy.evaluate_signal_accuracy(snapshots, horizon_minutes)
     category_results = accuracy.evaluate_category_accuracy(snapshots, horizon_minutes)
@@ -430,6 +432,14 @@ with left_col:
                     unsafe_allow_html=True,
                 )
                 st.caption(f"Dealer gamma: {blurb}. Approximate (front-expiry).")
+
+            # how long this call has held - the composite itself is memoryless,
+            # so a 1-min blip and a 40-min conviction otherwise look identical
+            streak = snap["direction_streak"]
+            if streak and direction != "neutral":
+                poll_min = max(1, storage.get_poll_interval_seconds(db_path) // 60)
+                st.caption(f":material/timelapse: {direction} for {streak * poll_min} min "
+                           f"({streak} consecutive polls)")
             render_signal_freshness(snap)
 
             with st.expander("How is this score calculated? (ELI5)"):
@@ -526,7 +536,7 @@ with left_col:
             horizon_minutes = config["accuracy_horizon_minutes"]
             rows_tuple = tuple(
                 (row["timestamp"], row["direction"], row["spot_price"], row["confidence"],
-                 row["composite_score"], row["subscores_json"])
+                 row["composite_score"], row["subscores_json"], row["direction_streak"])
                 for row in history_rows
             )
             snapshots, evaluated, category_results, calibration = _accuracy_analysis(
@@ -818,6 +828,8 @@ with left_col:
                     tod = accuracy.bucket_evaluated(
                         evaluated, lambda s: accuracy.context_time_of_day(s, tz_name))
                     vol = accuracy.bucket_evaluated(evaluated, accuracy.context_volatility_regime)
+                    streaks = accuracy.bucket_evaluated(
+                        evaluated, accuracy.context_direction_streak)
                     if any(b["graded"] for b in tod.values()) or any(b["graded"] for b in vol.values()):
                         st.subheader("Accuracy by market context")
                         st.caption("The same graded calls, split by *when* and *what kind of day* - "
@@ -836,7 +848,9 @@ with left_col:
 
                         tod_rows = _ctx_rows(tod, ["morning", "midday", "afternoon"])
                         vol_rows = _ctx_rows(vol, ["calm", "stressed"])
-                        ctx_a, ctx_b = st.columns(2)
+                        streak_rows = _ctx_rows(
+                            streaks, ["fresh (1-3)", "building (4-15)", "sustained (16+)"])
+                        ctx_a, ctx_b, ctx_c = st.columns(3)
                         with ctx_a:
                             st.markdown("**By time of day** (ET)")
                             if tod_rows:
@@ -847,6 +861,12 @@ with left_col:
                             st.markdown("**By volatility regime**")
                             if vol_rows:
                                 st.dataframe(vol_rows, hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Not enough graded calls yet.")
+                        with ctx_c:
+                            st.markdown("**By signal persistence**")
+                            if streak_rows:
+                                st.dataframe(streak_rows, hide_index=True, use_container_width=True)
                             else:
                                 st.caption("Not enough graded calls yet.")
 

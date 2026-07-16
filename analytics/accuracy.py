@@ -41,6 +41,61 @@ def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float) -> l
     return results
 
 
+# --- effective sample size ---------------------------------------------------
+# We poll every minute but grade against a price 30 minutes out, so consecutive
+# snapshots are NOT independent observations: their forward windows overlap ~29/30
+# and their subscores are near-identical. Counting raw minutes as samples inflates
+# every trust gate by ~30x (and far more for a slow signal). Two distinct sources
+# of over-counting, so two counters - the honest sample size is the stricter one.
+#
+# Accuracy PERCENTAGES still use every sample (more data = better point estimate).
+# Only the gates that decide "do we trust this yet?" use the counts below.
+
+def non_overlapping_count(evaluated_snapshots: list[dict], horizon_minutes: float) -> int:
+    """Graded observations whose forward windows don't overlap: a greedy
+    oldest-first walk that takes a sample then skips everything within
+    horizon_minutes of it. 390 contiguous 1-min snapshots at a 30-min horizon
+    give 13, not 390."""
+    graded = sorted(
+        (s for s in evaluated_snapshots if s.get("evaluated") and s.get("timestamp")),
+        key=lambda s: s["timestamp"],
+    )
+    count = 0
+    window_end = None
+    for snap in graded:
+        if window_end is None or snap["timestamp"] >= window_end:
+            count += 1
+            window_end = snap["timestamp"] + timedelta(minutes=horizon_minutes)
+    return count
+
+
+def direction_run_count(evaluated_snapshots: list[dict]) -> int:
+    """Maximal runs of the same direction among graded snapshots. A signal that
+    said 'bullish' all day made ONE call, not 390 - this is what stops a slow,
+    market-wide signal (trump_news changes once or twice a day) from looking
+    like hundreds of confirmations. Fast-flipping signals have a large run
+    count, so the window counter binds for them instead."""
+    graded = sorted(
+        (s for s in evaluated_snapshots if s.get("evaluated") and s.get("timestamp")),
+        key=lambda s: s["timestamp"],
+    )
+    runs = 0
+    previous = object()  # sentinel: never equal to a direction string
+    for snap in graded:
+        if snap.get("direction") != previous:
+            runs += 1
+            previous = snap.get("direction")
+    return runs
+
+
+def independent_observations(evaluated_snapshots: list[dict], horizon_minutes: float) -> int:
+    """The honest sample size: the stricter of the two over-counting corrections."""
+    return min(
+        non_overlapping_count(evaluated_snapshots, horizon_minutes),
+        direction_run_count(evaluated_snapshots),
+    )
+
+
 def daily_accuracy_summary(evaluated_snapshots: list[dict], tz_name: str = "America/New_York") -> list[dict]:
     """Groups evaluated signals by trading day (in tz_name) into hit-rate buckets."""
     tz = ZoneInfo(tz_name)
@@ -125,6 +180,22 @@ def context_time_of_day(snap: dict, tz_name: str = "America/New_York") -> str:
     return "morning" if hour < 11 else ("midday" if hour < 14 else "afternoon")
 
 
+def context_direction_streak(snap: dict) -> str | None:
+    """How settled the call was when it was made: fresh (just flipped), building,
+    or sustained. Answers whether persistence is worth anything - a 1-minute blip
+    and a 40-minute conviction currently produce an identical confidence, so this
+    is the first look at whether they deserve the same trust. None on snapshots
+    predating streak tracking."""
+    streak = snap.get("direction_streak")
+    if streak is None:
+        return None
+    if streak <= 3:
+        return "fresh (1-3)"
+    if streak <= 15:
+        return "building (4-15)"
+    return "sustained (16+)"
+
+
 def context_volatility_regime(snap: dict) -> str | None:
     """Calm vs stressed, from the volatility_regime subscore already stored on
     each snapshot (positive = contango/low-VVIX/calm, negative = backwardation/
@@ -145,7 +216,10 @@ def evaluate_category_accuracy(history: list[dict], horizon_minutes: float) -> d
     A category missing from a given snapshot's subscores is treated as neutral
     for that snapshot (excluded from grading), not as a wrong call.
 
-    Returns {category: {"accuracy_pct": float|None, "graded_count": int}}.
+    Returns {category: {"accuracy_pct", "graded_count", "independent_count"}}.
+    graded_count is every graded minute (what the accuracy_pct is computed over);
+    independent_count is the honest sample size the trust gates use - see
+    independent_observations().
     """
     categories: set[str] = set()
     for row in history:
@@ -169,6 +243,7 @@ def evaluate_category_accuracy(history: list[dict], horizon_minutes: float) -> d
         results[category] = {
             "accuracy_pct": overall_accuracy_pct(evaluated),
             "graded_count": sum(1 for s in evaluated if s["evaluated"]),
+            "independent_count": independent_observations(evaluated, horizon_minutes),
         }
     return results
 
@@ -198,17 +273,24 @@ def confidence_calibration(
     return results
 
 
+def _sample_size(result: dict) -> int:
+    """The count a trust gate should use: the honest independent count when the
+    caller supplied one, else the raw graded count (keeps older callers and any
+    hand-built dicts working)."""
+    return result.get("independent_count", result.get("graded_count", 0))
+
+
 def inversion_candidates(
     category_accuracy: dict[str, dict], min_graded: int = 10, max_accuracy_pct: float = 40.0,
 ) -> list[str]:
-    """Categories that are reliably *wrong* - enough graded samples and a hit
-    rate meaningfully below a coin flip. A consistently-wrong signal is still
-    information: its inverse is consistently right. Informational only; the
-    user opts in by listing a category under invert_categories in
-    config/settings.yaml."""
+    """Categories that are reliably *wrong* - enough INDEPENDENT samples (not raw
+    correlated minutes) and a hit rate meaningfully below a coin flip. A
+    consistently-wrong signal is still information: its inverse is consistently
+    right. Informational only; the user opts in by listing a category under
+    invert_categories in config/settings.yaml."""
     return sorted(
         cat for cat, result in category_accuracy.items()
-        if result["graded_count"] >= min_graded
+        if _sample_size(result) >= min_graded
         and result["accuracy_pct"] is not None
         and result["accuracy_pct"] <= max_accuracy_pct
     )
@@ -221,20 +303,23 @@ def suggest_weights(
     informational only, never applied automatically (the user edits config/settings.yaml
     themselves if they agree).
 
-    Only categories with at least min_graded evaluated signals are considered "proven"
-    enough to reweight; everything else keeps its current config weight untouched and
-    is excluded from the reallocation, so an under-sampled category can't be over- or
-    under-weighted on a fluke. Within the eligible set, weight is redistributed
-    proportional to how far above a coin-flip (50%) each category's accuracy is - a
-    small floor keeps every eligible category present rather than zeroing one out
-    entirely on a single bad stretch.
+    Only categories with at least min_graded INDEPENDENT samples are considered
+    "proven" enough to reweight; everything else keeps its current config weight
+    untouched and is excluded from the reallocation, so an under-sampled category
+    can't be over- or under-weighted on a fluke. Counting raw minutes here is what
+    let a slow, market-wide signal (trump_news) collect half the composite's
+    weight off a handful of real calls - see independent_observations(). Within
+    the eligible set, weight is redistributed proportional to how far above a
+    coin-flip (50%) each category's accuracy is - a small floor keeps every
+    eligible category present rather than zeroing one out entirely on a single
+    bad stretch.
 
-    Returns None if no category has enough graded history yet.
+    Returns None if no category has enough independent history yet.
     """
     eligible = {
         cat: result["accuracy_pct"]
         for cat, result in category_accuracy.items()
-        if result["graded_count"] >= min_graded
+        if _sample_size(result) >= min_graded
     }
     if not eligible:
         return None
@@ -269,11 +354,18 @@ def blend_weights(current: dict[str, float], suggested: dict[str, float], rate: 
 
 def confidence_map(
     evaluated_snapshots: list[dict],
+    horizon_minutes: float,
     bands: tuple[tuple[float, float], ...] = _DEFAULT_BANDS,
 ) -> list[dict]:
     """The storable per-ticker calibration map: confidence_calibration() plus
     the numeric band bounds, so calibrated_confidence() can look up which band
-    a raw confidence falls into without parsing labels."""
+    a raw confidence falls into without parsing labels.
+
+    Each band carries both counts: `count` (every graded minute, what the
+    observed accuracy is computed over) and `independent_count` (non-overlapping
+    windows - the honest sample size calibrated_confidence() gates on). Bands
+    mix directions, so run-counting doesn't apply here; only the window
+    correction does."""
     results = []
     for lo, hi in bands:
         in_band = [
@@ -287,6 +379,7 @@ def confidence_map(
             "lo": lo,
             "hi": hi,
             "count": len(in_band),
+            "independent_count": non_overlapping_count(in_band, horizon_minutes),
             "observed_accuracy_pct": round(hits / len(in_band) * 100.0, 1),
         })
     return results
@@ -298,12 +391,17 @@ def calibrated_confidence(
     """Maps a raw confidence to the historically observed accuracy of its band
     (from a stored confidence_map). Falls back to the raw value when there is
     no map, the raw value falls outside every stored band, or the matching band
-    has too few graded samples to trust. Clamped to 0-100."""
+    has too few INDEPENDENT samples to trust. Clamped to 0-100.
+
+    min_band_count is compared against the band's independent_count; maps stored
+    before that field existed fall back to the raw `count` and self-heal on the
+    next nightly calibration pass."""
     if not bands:
         return raw_pct
     for band in bands:
         if band["lo"] <= raw_pct < band["hi"]:
-            if band.get("count", 0) >= min_band_count:
+            sample_size = band.get("independent_count", band.get("count", 0))
+            if sample_size >= min_band_count:
                 return max(0.0, min(100.0, band["observed_accuracy_pct"]))
             return raw_pct
     return raw_pct
@@ -321,9 +419,18 @@ def history_snapshots(rows) -> list[dict]:
             "confidence": row["confidence"],
             "composite_score": row["composite_score"],
             "subscores": json.loads(row["subscores_json"]),
+            "direction_streak": _row_get(row, "direction_streak"),
         }
         for row in rows
     ]
+
+
+def _row_get(row, column: str):
+    """sqlite3.Row has no .get(), and older rows predate newer columns."""
+    try:
+        return row[column]
+    except (IndexError, KeyError):
+        return None
 
 
 def _categories_on_cooldown(
@@ -399,7 +506,7 @@ def plan_calibration(
         result = category_accuracy.get(category)
         # as-used accuracy still reliably wrong -> the inversion didn't help, undo it
         if (result is not None and category not in on_cooldown
-                and result["graded_count"] >= min_graded
+                and _sample_size(result) >= min_graded
                 and result["accuracy_pct"] is not None
                 and result["accuracy_pct"] <= max_acc):
             actions.append({
@@ -407,11 +514,11 @@ def plan_calibration(
                 "accuracy_pct": result["accuracy_pct"],
             })
 
-    # 3. confidence map: enough graded composite calls -> store observed accuracy per band
+    # 3. confidence map: enough INDEPENDENT composite calls -> store observed
+    # accuracy per band (raw minute counts would clear any gate trivially)
     evaluated = evaluate_signal_accuracy(history, horizon)
-    graded_count = sum(1 for s in evaluated if s["evaluated"])
-    if graded_count >= cfg.get("confidence_min_graded", 20):
-        bands = confidence_map(evaluated)
+    if independent_observations(evaluated, horizon) >= cfg.get("confidence_min_graded", 20):
+        bands = confidence_map(evaluated, horizon)
         if bands:
             actions.append({"kind": "confidence_map", "bands": bands})
 

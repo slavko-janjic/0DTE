@@ -26,6 +26,7 @@ def should_shadow_enter(
     subscores: dict,
     has_open_for_ticker: bool,
     entries_today: int,
+    direction_streak: int = 1,
 ) -> str | None:
     """Entry decision for one strategy on one ticker: 'call'/'put' or None.
 
@@ -45,6 +46,11 @@ def should_shadow_enter(
                                   wrong, its inverse is reliably right. Applied
                                   first, so every check below sees the direction
                                   actually being traded.
+      min_direction_streak /    - how many consecutive polls the direction must
+      max_direction_streak        have held. The composite is memoryless, so a
+                                  1-minute blip and a 40-minute conviction read
+                                  identically; these let a strategy demand a
+                                  settled signal (min) or a fresh flip (max).
     """
     if entry_cfg.get("invert"):
         direction = {"bullish": "bearish", "bearish": "bullish"}.get(direction, direction)
@@ -69,6 +75,13 @@ def should_shadow_enter(
         return None
 
     if gamma_regime is not None and gamma_regime in entry_cfg.get("gamma_block", []):
+        return None
+
+    min_streak = entry_cfg.get("min_direction_streak")
+    max_streak = entry_cfg.get("max_direction_streak")
+    if min_streak is not None and direction_streak < min_streak:
+        return None
+    if max_streak is not None and direction_streak > max_streak:
         return None
 
     agree_category = entry_cfg.get("require_agree")

@@ -295,24 +295,34 @@ def _cal_cfg(**overrides):
 
 
 def _history_for_category(direction_correct: bool, n: int, category: str):
-    """Builds a run of snapshots that all make a bullish call for `category`,
-    with a monotonic price path so every graded call is consistently right
-    (rising price) or wrong (falling price). Snapshots are 30 min apart so each
-    one has the next as its 30-min grading point."""
+    """Snapshots 30 min apart whose call ALTERNATES bullish/bearish, with a price
+    path that makes every graded call consistently right or wrong.
+
+    Alternating matters: a constantly-bullish run is one independent observation
+    no matter how many minutes it spans (see independent_observations), so a
+    constant-direction fixture can never clear a trust gate. Each snapshot here
+    is a distinct call (its own direction run) landing in its own non-overlapping
+    30-min window, so n snapshots really are ~n independent observations."""
     base = datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
-    step = 1.0 if direction_correct else -1.0
-    score = 0.5  # bullish call
-    return [
-        {
+    rows = []
+    for i in range(n):
+        bullish = i % 2 == 0
+        # correct: bullish@200 -> 201 (up, hit), bearish@201 -> 200 (down, hit)
+        # wrong:   bullish@200 -> 199 (down, miss), bearish@199 -> 200 (up, miss)
+        if direction_correct:
+            spot = 200.0 if bullish else 201.0
+        else:
+            spot = 200.0 if bullish else 199.0
+        score = 0.5 if bullish else -0.5
+        rows.append({
             "timestamp": base + timedelta(minutes=30 * i),
-            "spot_price": 200.0 + step * i,
-            "direction": "bullish",
+            "spot_price": spot,
+            "direction": "bullish" if bullish else "bearish",
             "confidence": 50.0,
             "composite_score": score,
             "subscores": {category: score},
-        }
-        for i in range(n)
-    ]
+        })
+    return rows
 
 
 def test_plan_calibration_adds_inversion_for_wrong_category():
@@ -402,3 +412,100 @@ def test_accuracy_by_context_per_category():
         history, 30, accuracy.context_volatility_regime, category="technicals")
     assert result["calm"]["graded"] == 1
     assert result["calm"]["accuracy_pct"] == 100.0
+
+
+# --- effective sample size ---------------------------------------------------
+
+def _graded(minute, direction="bullish", hit=True, confidence=50.0):
+    return {"timestamp": datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc) + timedelta(minutes=minute),
+            "direction": direction, "evaluated": True, "hit": hit, "confidence": confidence}
+
+
+def test_non_overlapping_count_collapses_contiguous_minutes():
+    # THE regression test: 30 contiguous 1-min snapshots graded at a 30-min
+    # horizon are ONE independent observation, not 30.
+    snaps = [_graded(m) for m in range(30)]
+    assert accuracy.non_overlapping_count(snaps, horizon_minutes=30) == 1
+    # 390 minutes (a full session) at a 30-min horizon -> 13
+    session = [_graded(m) for m in range(390)]
+    assert accuracy.non_overlapping_count(session, horizon_minutes=30) == 13
+
+
+def test_non_overlapping_count_keeps_well_spaced_samples():
+    snaps = [_graded(0), _graded(60), _graded(120)]
+    assert accuracy.non_overlapping_count(snaps, horizon_minutes=30) == 3
+
+
+def test_non_overlapping_count_ignores_ungraded():
+    snaps = [_graded(0), dict(_graded(60), evaluated=False)]
+    assert accuracy.non_overlapping_count(snaps, horizon_minutes=30) == 1
+
+
+def test_direction_run_count():
+    # constant direction all session = ONE call, not 390
+    assert accuracy.direction_run_count([_graded(m, "bullish") for m in range(390)]) == 1
+    # alternating every sample = a distinct call each time
+    alt = [_graded(m, "bullish" if m % 2 == 0 else "bearish") for m in range(6)]
+    assert accuracy.direction_run_count(alt) == 6
+    # two runs
+    two = [_graded(0, "bullish"), _graded(1, "bullish"), _graded(2, "bearish")]
+    assert accuracy.direction_run_count(two) == 2
+    assert accuracy.direction_run_count([]) == 0
+
+
+def test_independent_observations_takes_the_stricter_counter():
+    # a slow signal: constant direction across a full session.
+    # windows say 13, runs say 1 -> the honest answer is 1.
+    slow = [_graded(m, "bullish") for m in range(390)]
+    assert accuracy.non_overlapping_count(slow, 30) == 13
+    assert accuracy.direction_run_count(slow) == 1
+    assert accuracy.independent_observations(slow, 30) == 1
+
+    # a fast signal: flips every minute across a session.
+    # runs say 390, windows say 13 -> the honest answer is 13.
+    fast = [_graded(m, "bullish" if m % 2 == 0 else "bearish") for m in range(390)]
+    assert accuracy.independent_observations(fast, 30) == 13
+
+
+def test_gates_use_independent_count_not_raw_minutes():
+    # 600 raw graded minutes but only 3 independent observations
+    thin = {"slow_signal": {"accuracy_pct": 20.0, "graded_count": 600, "independent_count": 3}}
+    assert accuracy.suggest_weights(thin, {"slow_signal": 1.0}, min_graded=10) is None
+    assert accuracy.inversion_candidates(thin, min_graded=10) == []
+    # same category with genuinely independent samples clears the gate
+    thick = {"slow_signal": {"accuracy_pct": 20.0, "graded_count": 600, "independent_count": 40}}
+    assert accuracy.inversion_candidates(thick, min_graded=10) == ["slow_signal"]
+
+
+def test_gates_fall_back_to_graded_count_when_independent_absent():
+    legacy = {"cat": {"accuracy_pct": 20.0, "graded_count": 40}}
+    assert accuracy.inversion_candidates(legacy, min_graded=10) == ["cat"]
+
+
+def test_calibrated_confidence_distrusts_a_thin_band():
+    # exactly the NVDA case: 14 raw samples in the 60-100 band, ~1 real one
+    band = [{"lo": 60, "hi": 101, "count": 14, "independent_count": 1,
+             "observed_accuracy_pct": 7.1}]
+    assert accuracy.calibrated_confidence(65.0, band, min_band_count=5) == 65.0  # falls back to raw
+    fat = [{"lo": 60, "hi": 101, "count": 600, "independent_count": 20,
+            "observed_accuracy_pct": 7.1}]
+    assert accuracy.calibrated_confidence(65.0, fat, min_band_count=5) == 7.1
+
+
+def test_confidence_map_reports_both_counts():
+    snaps = [_graded(m, confidence=65.0) for m in range(60)]
+    bands = accuracy.confidence_map(snaps, horizon_minutes=30)
+    band = next(b for b in bands if b["lo"] == 60)
+    assert band["count"] == 60          # every graded minute
+    assert band["independent_count"] == 2   # 60 min / 30 min horizon
+
+
+def test_context_direction_streak_buckets():
+    assert accuracy.context_direction_streak({"direction_streak": 1}) == "fresh (1-3)"
+    assert accuracy.context_direction_streak({"direction_streak": 3}) == "fresh (1-3)"
+    assert accuracy.context_direction_streak({"direction_streak": 4}) == "building (4-15)"
+    assert accuracy.context_direction_streak({"direction_streak": 15}) == "building (4-15)"
+    assert accuracy.context_direction_streak({"direction_streak": 16}) == "sustained (16+)"
+    # snapshots from before streak tracking are excluded, not bucketed as fresh
+    assert accuracy.context_direction_streak({"direction_streak": None}) is None
+    assert accuracy.context_direction_streak({}) is None

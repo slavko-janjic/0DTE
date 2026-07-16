@@ -212,6 +212,9 @@ def poll_ticker(
     # dealer-gamma regime (rangebound vs trending) from the chain we already
     # fetched - a tactic gate + display hint, not a directional subscore
     gamma_score, gamma_regime = _gamma_from_chain(chain, config)
+    # how long this direction has held - the composite itself is memoryless, so
+    # persistence is tracked here (O(1), off the previous snapshot)
+    direction_streak = storage.next_direction_streak(db_path, ticker, signal.direction)
 
     storage.insert_signal_snapshot(
         db_path, ticker, signal.direction, raw_confidence,
@@ -219,13 +222,15 @@ def poll_ticker(
         spot_price=spot,
         calibrated_confidence=calibrated if calibrated != raw_confidence else None,
         gamma_score=gamma_score, gamma_regime=gamma_regime,
+        direction_streak=direction_streak,
     )
     print(f"[{ticker}] {signal.recommendation} (score={signal.composite_score:.2f})")
 
     check_open_positions(ticker, config, db_path, chain, signal.composite_score)
     # shadow lab is bookkeeping only - a bug there must never break the real loop
     try:
-        process_shadow_strategies(ticker, config, db_path, chain, signal, gamma_regime)
+        process_shadow_strategies(ticker, config, db_path, chain, signal,
+                                  gamma_regime, direction_streak)
     except Exception as exc:
         print(f"[{ticker}] shadow lab failed: {exc}")
     return signal, chain
@@ -385,7 +390,8 @@ def _catalyst_imminent(config: dict, now: datetime | None = None) -> bool:
 
 def process_shadow_strategies(ticker: str, config: dict, db_path: str,
                               chain: market_data.OptionChainSnapshot | None,
-                              signal, gamma_regime: str | None) -> None:
+                              signal, gamma_regime: str | None,
+                              direction_streak: int = 1) -> None:
     """Runs every configured shadow strategy against this ticker's fresh signal:
     manages exits on their open virtual positions (same evaluate_exit machinery
     and honest bid-side fills as the real book), then considers one entry per
@@ -443,6 +449,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             gamma_regime, signal.subscores_used,
             has_open,
             storage.count_shadow_entries_today(db_path, name, ticker, today.isoformat()),
+            direction_streak,
         )
         if option_type is None:
             continue
@@ -457,6 +464,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             "confidence_pct": signal.confidence_pct,
             "composite_score": signal.composite_score,
             "gamma_regime": gamma_regime,
+            "direction_streak": direction_streak,
             "minutes_since_open": round(minutes_since_open, 1),
             "subscores": signal.subscores_used,
         }

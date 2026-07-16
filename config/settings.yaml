@@ -55,7 +55,15 @@ account:
 confidence_floor_pct: 40
 
 accuracy_horizon_minutes: 30  # how far ahead a signal's direction is graded against actual price movement
-weight_suggestion_min_graded: 10  # min graded signals before a category is "proven" enough to suggest reweighting
+# Min INDEPENDENT observations before a category is "proven" enough to reweight.
+# Independent, not raw minutes: polling every minute but grading 30 minutes out
+# means consecutive samples overlap ~29/30, and a signal that holds one direction
+# all day made ONE call, not 390 (see analytics.accuracy.independent_observations).
+# Counting raw minutes is what let trump_news - which has ~3 real observations in
+# 11 days - collect half of IWM's composite weight. At 30, a fast signal
+# (technicals, greeks_iv) qualifies within a couple of weeks; a slow market-wide
+# one correctly never does on its own.
+weight_suggestion_min_graded: 30
 
 # Categories whose score should be used contrarian (sign-flipped) - e.g. if the
 # accuracy panel shows a signal is reliably wrong, listing it here makes its
@@ -182,6 +190,20 @@ shadow_strategies:
              no_entry_last_minutes: 60, gamma_block: [positive] }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
             time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  # --- does signal persistence mean anything? --------------------------------
+  # The composite is memoryless: a 1-minute blip and a 40-minute conviction
+  # produce an identical reading. These two test opposite hypotheses - settled
+  # signal = real, vs fresh flip = new information.
+  - name: persistent          # only trade a direction that has held ~10 min
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 180,
+             no_entry_last_minutes: 60, min_direction_streak: 10 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: fresh_flip          # only trade a direction that JUST flipped
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 180,
+             no_entry_last_minutes: 60, max_direction_streak: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
 
 # Dealer gamma exposure (GEX): a rangebound-vs-trending regime read computed from
 # the option chain we already fetch. Not a directional signal - it gates the
@@ -197,8 +219,10 @@ gamma:
 calibration:
   learning_rate: 0.25           # fraction of the suggested weight change applied per day
   inversion_cooldown_days: 5    # a category can't flip (or flip back) more often than this
-  confidence_min_graded: 20     # graded composite calls needed before storing a confidence map
-  band_min_count: 5             # graded calls a band needs before it recalibrates a raw confidence
+  # Both counts below are INDEPENDENT observations (non-overlapping forward
+  # windows), not raw graded minutes - see weight_suggestion_min_graded above.
+  confidence_min_graded: 30     # independent composite calls needed before storing a confidence map
+  band_min_count: 10            # independent calls a band needs before it recalibrates a raw confidence
 
 exit_rules:
   profit_target_pct: 50
