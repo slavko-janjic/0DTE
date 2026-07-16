@@ -95,3 +95,16 @@ def test_strategy_scorecard_profit_factor_edge_cases():
     all_losses = strategy_scorecard([_closed("s", -10.0, "t")])["s"]
     assert all_losses["profit_factor"] == 0.0
     assert strategy_scorecard([]) == {}
+
+
+def test_shadow_enter_invert_flips_direction():
+    cfg = {**BASE_ENTRY, "invert": True}
+    assert _enter(entry_cfg=cfg, direction="bullish") == "put"   # fades the bullish call
+    assert _enter(entry_cfg=cfg, direction="bearish") == "call"
+    assert _enter(entry_cfg=cfg, direction="neutral") is None    # nothing to fade
+
+
+def test_shadow_enter_invert_still_respects_other_gates():
+    cfg = {**BASE_ENTRY, "invert": True}
+    assert _enter(entry_cfg=cfg, confidence=40.0) is None   # confidence floor still applies
+    assert _enter(entry_cfg=cfg, since_open=200) is None    # window still applies

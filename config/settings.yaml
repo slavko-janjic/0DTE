@@ -162,6 +162,26 @@ shadow_strategies:
              no_entry_last_minutes: 45 }
     exit: { profit_target_pct: 30, stop_loss_pct: -25,
             time_cutoff_minutes_before_close: 20, reversal_confidence_pct: 60 }
+  # --- contrarian tests -------------------------------------------------------
+  # The graded history says the composite's higher-confidence bands are LESS
+  # accurate than its low ones (NVDA 60-100% band: 7% right over 14 samples;
+  # IWM/TSLA 40-60% bands: 33-37%). If a band is reliably wrong, its inverse is
+  # reliably right - these test that directly instead of theorising about it.
+  - name: contrarian          # baseline's setup, opposite direction
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60, invert: true }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: fade_conviction     # fades ONLY the high-conviction band (the 7%-accurate one)
+    entry: { min_confidence_pct: 60, window_start_minutes: 30, window_end_minutes: 240,
+             no_entry_last_minutes: 60, invert: true, max_entries_per_day: 2 }
+    exit: { profit_target_pct: 40, stop_loss_pct: -30,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: gamma_gate_only     # isolates the gamma gate: trade only non-rangebound days
+    entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 180,
+             no_entry_last_minutes: 60, gamma_block: [positive] }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
 
 # Dealer gamma exposure (GEX): a rangebound-vs-trending regime read computed from
 # the option chain we already fetch. Not a directional signal - it gates the

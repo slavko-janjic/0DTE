@@ -37,9 +37,18 @@ def should_shadow_enter(
       max_entries_per_day       - per ticker (default 1)
       gamma_block               - list of gamma regimes to stand down in
       require_agree             - a category whose subscore sign must match the
-                                  composite direction (confluence); missing
+                                  traded direction (confluence); missing
                                   subscore blocks the entry
+      invert                    - trade the OPPOSITE of the composite's call.
+                                  Tests the contrarian hypothesis: if the graded
+                                  history says a confidence band is reliably
+                                  wrong, its inverse is reliably right. Applied
+                                  first, so every check below sees the direction
+                                  actually being traded.
     """
+    if entry_cfg.get("invert"):
+        direction = {"bullish": "bearish", "bearish": "bullish"}.get(direction, direction)
+
     if direction == "bullish":
         option_type = "call"
     elif direction == "bearish":
