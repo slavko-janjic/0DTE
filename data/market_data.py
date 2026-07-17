@@ -86,16 +86,47 @@ def get_premarket_quote(ticker: str, proxy: str | None = None) -> float | None:
         return None
 
 
-def get_overnight_range(ticker: str, proxy: str | None = None) -> tuple[float, float] | None:
-    """(overnight_high, overnight_low) from extended-hours bars - best-effort.
-    Uses the proxy's continuous session when given, else the ticker's own
-    pre/post bars. None when unavailable."""
+def get_overnight_range(
+    ticker: str, proxy: str | None = None, tz_name: str = "America/New_York",
+) -> tuple[float, float] | None:
+    """(high, low) of the OVERNIGHT session only: everything traded after the
+    last regular-session bar, i.e. the prior close through the coming open.
+
+    Was previously max/min over a full `period="1d", prepost=True` window -
+    which includes the regular session - so it reported the whole day's range
+    mislabeled as "overnight" (QQQ: 719.83/681.27, a 5.4% span, against a ~706
+    spot), and that wrong level was shown on the dashboard AND drawn on the
+    price chart as a key level.
+
+    Built from CLOSES, not High/Low. Extended-hours bars carry no volume and
+    their High/Low fields are contaminated with bad ticks: a real SPY bar showed
+    close=749.86, low=749.82 and high=754.68 on zero volume, and another printed
+    a low of 701.68 against a ~750 median. Taking max(High)/min(Low) hoovered up
+    exactly that garbage and reported a 7.5% overnight range for SPY. The closes
+    are clean, and with almost no trading overnight they approximate the range
+    honestly.
+
+    Returns None during the regular session, when no overnight session is in
+    progress - which is honest, rather than quietly handing back today's range.
+    """
     symbol = proxy or ticker
     try:
-        df = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True)
+        df = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True)
         if df is None or df.empty:
             return None
-        return float(df["High"].max()), float(df["Low"].min())
+        local = df.tz_convert(tz_name) if df.index.tz is not None else df
+        minutes = local.index.hour * 60 + local.index.minute
+        is_regular = (minutes >= 570) & (minutes < 960)   # 09:30-16:00 ET
+        if not is_regular.any():
+            return None
+        # everything after the last regular-session bar IS the overnight session
+        last_regular = local.index[is_regular][-1]
+        overnight = local[local.index > last_regular]
+        closes = overnight["Close"].dropna()
+        closes = closes[closes > 0]
+        if closes.empty:
+            return None
+        return float(closes.max()), float(closes.min())
     except Exception:
         return None
 

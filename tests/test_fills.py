@@ -85,3 +85,65 @@ def test_find_delta_contract_none_without_greeks():
     # all-NaN deltas (BS solver failed on every strike)
     df = pd.DataFrame({"strike": [100.0], "delta": [float("nan")]})
     assert find_delta_contract(df, 0.25) is None
+
+
+# --- overnight range: two real bugs, both pinned -----------------------------
+
+def _prepost_frame():
+    """A realistic extended-hours frame: a regular session, then overnight bars
+    that carry ZERO volume and bad ticks in High/Low (exactly what yfinance
+    returns - a real SPY bar had close=749.86, low=749.82, high=754.68 on no
+    volume, and another printed low=701.68 against a ~750 median)."""
+    import pandas as pd
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    idx, rows = [], []
+    # regular session 09:30-15:55, price ~700, with a genuine 690-710 range
+    for m in range(0, 390, 5):
+        idx.append(pd.Timestamp(2026, 7, 16, 9, 30, tz=et) + pd.Timedelta(minutes=m))
+        rows.append({"Open": 700, "High": 710, "Low": 690, "Close": 700, "Volume": 500_000})
+    # overnight 16:00-18:00, price pinned ~750, but with garbage High/Low ticks
+    for m in range(0, 120, 5):
+        idx.append(pd.Timestamp(2026, 7, 16, 16, 0, tz=et) + pd.Timedelta(minutes=m))
+        rows.append({"Open": 750, "High": 754.68, "Low": 701.68, "Close": 750, "Volume": 0})
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(idx))
+
+
+def test_overnight_range_excludes_the_regular_session(monkeypatch):
+    """Bug 1: period='1d', prepost=True returns the WHOLE day, so max/min over it
+    reported the full session's range mislabeled as 'overnight' - and that wrong
+    level was drawn on the price chart."""
+    import data.market_data as md
+    frame = _prepost_frame()
+    monkeypatch.setattr(md.yf, "Ticker", lambda s: type("T", (), {
+        "history": staticmethod(lambda **k: frame)})())
+    high, low = md.get_overnight_range("SPY")
+    # the regular session traded 690-710; none of that may leak in
+    assert low > 710
+
+
+def test_overnight_range_ignores_bad_ticks_in_high_low(monkeypatch):
+    """Bug 2: overnight bars have zero volume and garbage High/Low. Using them
+    gave SPY a 7.55% overnight range against a ~750 spot. Closes are clean."""
+    import data.market_data as md
+    frame = _prepost_frame()
+    monkeypatch.setattr(md.yf, "Ticker", lambda s: type("T", (), {
+        "history": staticmethod(lambda **k: frame)})())
+    high, low = md.get_overnight_range("SPY")
+    assert (high, low) == (750.0, 750.0)      # from closes, not the 754.68/701.68 ticks
+
+
+def test_overnight_range_none_during_the_regular_session(monkeypatch):
+    """No overnight session in progress -> say so, don't hand back today's range."""
+    import pandas as pd
+    import data.market_data as md
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    idx = [pd.Timestamp(2026, 7, 16, 9, 30, tz=et) + pd.Timedelta(minutes=m)
+           for m in range(0, 60, 5)]
+    frame = pd.DataFrame(
+        [{"Open": 700, "High": 701, "Low": 699, "Close": 700, "Volume": 1}] * len(idx),
+        index=pd.DatetimeIndex(idx))
+    monkeypatch.setattr(md.yf, "Ticker", lambda s: type("T", (), {
+        "history": staticmethod(lambda **k: frame)})())
+    assert md.get_overnight_range("SPY") is None
