@@ -142,6 +142,27 @@ CREATE TABLE IF NOT EXISTS shadow_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_positions_strategy_status
     ON shadow_positions (strategy, status);
+
+-- The cost of transacting, logged every cycle. Direction is unpredictable but
+-- the bid/ask spread is a KNOWN, mechanical toll paid on every round trip, and
+-- it follows a structural intraday pattern (wide at the open, tightest
+-- mid-morning, blowing out into the close). Tracking it turns the one certain
+-- cost from an unknown into something we can time around.
+CREATE TABLE IF NOT EXISTS quote_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    option_type TEXT NOT NULL,      -- 'call' or 'put' (the ATM contract)
+    strike REAL NOT NULL,
+    spot REAL,
+    bid REAL,
+    ask REAL,
+    mid REAL,
+    spread_pct REAL,                -- (ask-bid)/mid * 100: the round-trip toll
+    minutes_since_open REAL         -- so the intraday cost curve needs no tz math later
+);
+CREATE INDEX IF NOT EXISTS idx_quote_snapshots_ticker_time
+    ON quote_snapshots (ticker, timestamp DESC);
 """
 
 
@@ -506,6 +527,47 @@ def get_day_setup(db_path: str | Path, ticker: str, date: str) -> dict | None:
             "SELECT setup_json FROM day_setups WHERE ticker = ? AND date = ?", (ticker, date)
         ).fetchone()
         return json.loads(row["setup_json"]) if row is not None else None
+
+
+# --- quote snapshots (the cost of transacting) ------------------------------
+
+def insert_quote_snapshot(
+    db_path: str | Path, ticker: str, option_type: str, strike: float,
+    spot: float | None, bid: float | None, ask: float | None,
+    mid: float | None, spread_pct: float | None, minutes_since_open: float | None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO quote_snapshots
+               (ticker, timestamp, option_type, strike, spot, bid, ask, mid,
+                spread_pct, minutes_since_open)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, _now(), option_type, strike, spot, bid, ask, mid,
+             spread_pct, minutes_since_open),
+        )
+
+
+def get_quote_history(db_path: str | Path, ticker: str | None = None,
+                      limit: int = 20000) -> list[sqlite3.Row]:
+    """Oldest-first quote history for the intraday cost curve."""
+    with connect(db_path) as conn:
+        if ticker is None:
+            return conn.execute(
+                "SELECT * FROM (SELECT * FROM quote_snapshots ORDER BY timestamp DESC "
+                "LIMIT ?) ORDER BY timestamp ASC", (limit,)
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM (SELECT * FROM quote_snapshots WHERE ticker = ? "
+            "ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC", (ticker, limit)
+        ).fetchall()
+
+
+def get_latest_quote(db_path: str | Path, ticker: str) -> sqlite3.Row | None:
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM quote_snapshots WHERE ticker = ? ORDER BY timestamp DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
 
 
 # --- shadow strategy positions (virtual book, no balance impact) ------------

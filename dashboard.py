@@ -20,6 +20,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from analytics import accuracy
+from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
 from config import load_settings
 from data import market_data
 from paper_trading.engine import calculate_contracts, calculate_pnl, close as close_position
@@ -109,7 +110,7 @@ def _accuracy_analysis(rows_tuple: tuple, horizon_minutes: float):
 st.markdown(
     """
     <style>
-    .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
+    .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card, .st-key-cost_card,
     .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
     .st-key-positions_card, .st-key-history_card {
         border-radius: 12px;
@@ -120,12 +121,12 @@ st.markdown(
        determines the app's *actual* in-app theme (which the user can set
        independently of their OS via the Streamlit menu). */
     @media (prefers-color-scheme: light) {
-        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
+        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card, .st-key-cost_card,
         .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
         .st-key-positions_card, .st-key-history_card { background-color: #f7f8fa; }
     }
     @media (prefers-color-scheme: dark) {
-        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card,
+        .st-key-signal_panel, .st-key-accuracy_panel, .st-key-day_setup_card, .st-key-strategy_lab_card, .st-key-cost_card,
         .st-key-wallet_card, .st-key-calendar_card, .st-key-order_card,
         .st-key-positions_card, .st-key-history_card { background-color: #191c24; }
     }
@@ -135,6 +136,7 @@ st.markdown(
     html[data-app-theme="light"] .st-key-accuracy_panel,
     html[data-app-theme="light"] .st-key-day_setup_card,
     html[data-app-theme="light"] .st-key-strategy_lab_card,
+    html[data-app-theme="light"] .st-key-cost_card,
     html[data-app-theme="light"] .st-key-wallet_card,
     html[data-app-theme="light"] .st-key-calendar_card,
     html[data-app-theme="light"] .st-key-order_card,
@@ -146,6 +148,7 @@ st.markdown(
     html[data-app-theme="dark"] .st-key-accuracy_panel,
     html[data-app-theme="dark"] .st-key-day_setup_card,
     html[data-app-theme="dark"] .st-key-strategy_lab_card,
+    html[data-app-theme="dark"] .st-key-cost_card,
     html[data-app-theme="dark"] .st-key-wallet_card,
     html[data-app-theme="dark"] .st-key-calendar_card,
     html[data-app-theme="dark"] .st-key-order_card,
@@ -993,6 +996,70 @@ with left_col:
             st.dataframe(table, hide_index=True, use_container_width=True)
 
         render_strategy_lab()
+
+    # --- Cost of trading: the one quantity here that isn't a forecast ----
+    with st.container(key="cost_card"):
+        st.header(":material/toll: Cost of trading")
+
+        @st.fragment(run_every="60s")
+        def render_cost_card() -> None:
+            st.caption(
+                "Direction is a coin flip at every horizon we can measure. The "
+                "bid/ask spread is the opposite: a **known toll** paid on every "
+                "round trip, with a structural daily shape (wide at the open, "
+                "tightest mid-morning, widening into the close). Avoiding a "
+                "certain cost is worth as much as forecasting an uncertain move."
+            )
+            rows = []
+            for t in config["tickers"]:
+                quotes = storage.get_quote_history(db_path, t)
+                summary = spread_summary(quotes)
+                latest = storage.get_latest_quote(db_path, t)
+                now_spread = latest["spread_pct"] if latest else None
+                rows.append({
+                    "Ticker": t,
+                    "Now": f"{now_spread:.1f}%" if now_spread is not None else "-",
+                    "Median": f"{summary['median_pct']:.1f}%" if summary["median_pct"] is not None else "-",
+                    "Best": f"{summary['best_pct']:.1f}%" if summary["best_pct"] is not None else "-",
+                    "Worst": f"{summary['worst_pct']:.1f}%" if summary["worst_pct"] is not None else "-",
+                    "Quotes": summary["samples"],
+                })
+            st.dataframe(rows, hide_index=True, use_container_width=True)
+
+            # the intraday cost curve for the selected ticker
+            quotes = storage.get_quote_history(db_path, ticker)
+            buckets = spread_by_minute_bucket(quotes, bucket_minutes=30)
+            if not buckets:
+                st.caption(f"No quote history for {ticker} yet - the worker logs one "
+                           "per cycle during market hours.")
+                return
+            st.markdown(f"**When is {ticker} cheapest to trade?** (median spread by "
+                        "time since the open)")
+            curve = pd.DataFrame([
+                {"Minutes since open": b["bucket_start"],
+                 "Median spread %": b["median_spread_pct"],
+                 "Samples": b["samples"]}
+                for b in buckets
+            ])
+            st.altair_chart(
+                alt.Chart(curve).mark_line(point=True, color="#f0a202").encode(
+                    x=alt.X("Minutes since open:Q", title="Minutes since open"),
+                    y=alt.Y("Median spread %:Q", title="Median spread (% of mid)"),
+                    tooltip=["Minutes since open", "Median spread %", "Samples"],
+                ).properties(height=200, padding={"left": 15, "right": 15,
+                                                  "top": 10, "bottom": 10}),
+                use_container_width=True,
+            )
+            best = cheapest_windows(buckets, top=3, min_samples=5)
+            if best:
+                windows = ", ".join(
+                    f"**{b['bucket_label']}** ({b['median_spread_pct']:.1f}%)" for b in best)
+                st.success(f"Cheapest windows for {ticker}: {windows}",
+                           icon=":material/savings:")
+            else:
+                st.caption("Not enough quotes per window yet to name a cheapest one.")
+
+        render_cost_card()
 
 with right_col:
     # --- Wallet card ---------------------------------------------------

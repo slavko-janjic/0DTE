@@ -2,6 +2,8 @@
 as fallbacks when quotes are missing/zero (common for stale 0DTE chains)."""
 import math
 
+import pytest
+
 from data.market_data import (
     contract_entry_price, contract_exit_price, contract_spread_pct,
 )
@@ -40,3 +42,16 @@ def test_crossed_market_ignores_mid():
 def test_spread_pct():
     assert math.isclose(contract_spread_pct(FULL), (2.10 - 1.90) / 2.00 * 100.0)
     assert contract_spread_pct({"bid": 0.0, "ask": 2.0, "lastPrice": 1.0}) is None
+
+
+def test_contract_quote_returns_full_cost_picture():
+    from data.market_data import contract_quote
+    bid, ask, mid, spread = contract_quote(FULL)
+    assert (bid, ask, mid) == (1.90, 2.10, 2.00)
+    assert spread == pytest.approx((2.10-1.90)/2.00*100)
+
+
+def test_contract_quote_with_no_quotes():
+    from data.market_data import contract_quote
+    bid, ask, mid, spread = contract_quote({"bid": 0.0, "ask": 0.0, "lastPrice": 2.0})
+    assert bid is None and ask is None and mid is None and spread is None

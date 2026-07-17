@@ -248,6 +248,18 @@ def contract_spread_pct(contract) -> float | None:
     return (ask - bid) / mid * 100.0
 
 
+def contract_quote(contract) -> tuple[float | None, float | None, float | None, float | None]:
+    """(bid, ask, mid, spread_pct) for a chain row - the raw cost picture, with
+    each leg None when that quote is missing/zero. Used to log what transacting
+    actually costs, so the intraday cost curve can be measured over time."""
+    return (
+        _quote(contract, "bid"),
+        _quote(contract, "ask"),
+        _mid(contract),
+        contract_spread_pct(contract),
+    )
+
+
 def find_contract_row(chain: "OptionChainSnapshot | None", option_type: str, strike: float):
     """The held contract's chain row by exact strike match, or None."""
     if chain is None:

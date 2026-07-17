@@ -589,3 +589,39 @@ def test_single_signal_strategy_skips_when_its_signal_has_no_data(tmp_path, monk
     worker.process_shadow_strategies("SPY", SINGLE_SIGNAL_CONFIG, db_path, _ss_chain(),
                                      sig, None)
     assert storage.get_open_shadow_positions(db_path) == []
+
+
+# --- quote snapshots (cost tracking) -----------------------------------------
+
+def test_record_quote_snapshot_logs_the_atm_spread(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "q.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=45.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"strike": 200.0, "bid": 1.90, "ask": 2.10,
+                                          "lastPrice": 2.0})
+    worker.record_quote_snapshot("NVDA", AUTO_CONFIG, db_path, _fake_chain(spot=199.8))
+    row = storage.get_latest_quote(db_path, "NVDA")
+    assert row["bid"] == 1.90 and row["ask"] == 2.10
+    assert row["mid"] == 2.00
+    assert row["spread_pct"] == pytest.approx(10.0)   # 0.20 / 2.00
+    assert row["minutes_since_open"] == 45.0
+
+
+def test_record_quote_snapshot_skipped_when_market_closed(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "q2.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, open_=False)   # after hours: no real quotes
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"strike": 200.0, "bid": 0.0, "ask": 0.0,
+                                          "lastPrice": 2.0})
+    worker.record_quote_snapshot("NVDA", AUTO_CONFIG, db_path, _fake_chain())
+    assert storage.get_latest_quote(db_path, "NVDA") is None  # no junk seeded
+
+
+def test_record_quote_snapshot_noop_without_chain(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "q3.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch)
+    worker.record_quote_snapshot("NVDA", AUTO_CONFIG, db_path, None)
+    assert storage.get_latest_quote(db_path, "NVDA") is None

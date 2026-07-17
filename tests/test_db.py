@@ -533,3 +533,35 @@ def test_backfill_direction_streaks_over_existing_history(tmp_path):
         "SELECT direction_streak FROM signal_snapshots ORDER BY timestamp")]
     conn.close()
     assert streaks == [1, 2, 3, 1, 2, 1]  # runs counted; the overnight gap restarts
+
+
+# --- quote snapshots (cost of trading) ---------------------------------------
+
+def test_quote_snapshot_roundtrip_and_history(tmp_path):
+    path = make_temp_db(tmp_path)
+    assert storage.get_latest_quote(path, "NVDA") is None
+    storage.insert_quote_snapshot(path, "NVDA", "call", 200.0, 199.5,
+                                  1.90, 2.10, 2.00, 10.0, 45.0)
+    storage.insert_quote_snapshot(path, "NVDA", "call", 201.0, 200.5,
+                                  1.95, 2.00, 1.975, 2.5, 75.0)
+    storage.insert_quote_snapshot(path, "SPY", "put", 620.0, 620.1,
+                                  1.00, 1.30, 1.15, 26.0, 45.0)
+
+    latest = storage.get_latest_quote(path, "NVDA")
+    assert latest["spread_pct"] == 2.5          # most recent NVDA row
+    assert latest["minutes_since_open"] == 75.0
+
+    nvda = storage.get_quote_history(path, "NVDA")
+    assert len(nvda) == 2
+    assert nvda[0]["spread_pct"] == 10.0        # oldest-first
+    assert [r["ticker"] for r in storage.get_quote_history(path)] == ["NVDA", "NVDA", "SPY"]
+
+
+def test_quote_snapshot_tolerates_missing_quotes(tmp_path):
+    path = make_temp_db(tmp_path)
+    # an illiquid strike with no bid/ask still records the attempt
+    storage.insert_quote_snapshot(path, "IWM", "call", 220.0, 219.0,
+                                  None, None, None, None, 30.0)
+    row = storage.get_latest_quote(path, "IWM")
+    assert row["bid"] is None and row["spread_pct"] is None
+    assert row["strike"] == 220.0

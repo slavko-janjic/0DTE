@@ -227,6 +227,12 @@ def poll_ticker(
     print(f"[{ticker}] {signal.recommendation} (score={signal.composite_score:.2f})")
 
     check_open_positions(ticker, config, db_path, chain, signal.composite_score)
+    # record what transacting costs right now - the one quantity here that's a
+    # known toll rather than a forecast. Observation only; never blocks the loop.
+    try:
+        record_quote_snapshot(ticker, config, db_path, chain)
+    except Exception as exc:
+        print(f"[{ticker}] quote snapshot failed: {exc}")
     # shadow lab is bookkeeping only - a bug there must never break the real loop
     try:
         process_shadow_strategies(ticker, config, db_path, chain, signal,
@@ -234,6 +240,27 @@ def poll_ticker(
     except Exception as exc:
         print(f"[{ticker}] shadow lab failed: {exc}")
     return signal, chain
+
+
+def record_quote_snapshot(ticker: str, config: dict, db_path: str,
+                          chain: market_data.OptionChainSnapshot | None) -> None:
+    """Logs the ATM call's bid/ask so the intraday cost curve can be built later.
+    The spread is the toll every round trip pays - unlike direction it's knowable
+    in advance, and it follows a structural daily shape worth timing around.
+
+    Market-hours only: outside them there are no live quotes (yfinance returns
+    empty bid/ask), so a `--once` run after the bell would just seed the cost
+    curve with junk."""
+    if chain is None or not is_market_open(config):
+        return
+    contract = market_data.find_atm_contract(chain.calls, chain.spot)
+    if contract is None:
+        return
+    bid, ask, mid, spread_pct = market_data.contract_quote(contract)
+    storage.insert_quote_snapshot(
+        db_path, ticker, "call", float(contract["strike"]), chain.spot,
+        bid, ask, mid, spread_pct, minutes_since_market_open(config),
+    )
 
 
 def _gamma_from_chain(chain: market_data.OptionChainSnapshot | None,
