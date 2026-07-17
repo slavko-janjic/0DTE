@@ -163,6 +163,20 @@ CREATE TABLE IF NOT EXISTS quote_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_quote_snapshots_ticker_time
     ON quote_snapshots (ticker, timestamp DESC);
+
+-- The headlines behind the trump_news score, one row per cycle (market-wide,
+-- so not duplicated per ticker). Without these a score jumping 0.1 -> 0.8 is
+-- unexplainable: you can see that something moved the needle but never what.
+-- Stored so an event can be traced back to the actual words.
+CREATE TABLE IF NOT EXISTS news_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    score REAL,                     -- the trump_news subscore this produced
+    headline_count INTEGER,
+    headlines_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_news_snapshots_time
+    ON news_snapshots (timestamp DESC);
 """
 
 
@@ -527,6 +541,37 @@ def get_day_setup(db_path: str | Path, ticker: str, date: str) -> dict | None:
             "SELECT setup_json FROM day_setups WHERE ticker = ? AND date = ?", (ticker, date)
         ).fetchone()
         return json.loads(row["setup_json"]) if row is not None else None
+
+
+# --- news snapshots (what was actually said) --------------------------------
+
+def insert_news_snapshot(db_path: str | Path, headlines: list[str] | None,
+                         score: float | None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO news_snapshots (timestamp, score, headline_count, headlines_json)
+               VALUES (?, ?, ?, ?)""",
+            (_now(), score, len(headlines or []), json.dumps(headlines or [])),
+        )
+
+
+def get_news_history(db_path: str | Path, limit: int = 5000) -> list[sqlite3.Row]:
+    """Oldest-first news history, for explaining a trump_news score move."""
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM (SELECT * FROM news_snapshots ORDER BY timestamp DESC "
+            "LIMIT ?) ORDER BY timestamp ASC", (limit,)
+        ).fetchall()
+
+
+def get_news_at(db_path: str | Path, timestamp_iso: str) -> sqlite3.Row | None:
+    """The headlines in force at a moment - the newest snapshot at or before it.
+    Used to answer 'what was said that moved this?'."""
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM news_snapshots WHERE timestamp <= ? "
+            "ORDER BY timestamp DESC LIMIT 1", (timestamp_iso,)
+        ).fetchone()
 
 
 # --- quote snapshots (the cost of transacting) ------------------------------

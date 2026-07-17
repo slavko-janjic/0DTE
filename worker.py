@@ -536,6 +536,15 @@ def run_once(config: dict, db_path: str) -> None:
     trump_headlines = news.get_trump_market_headlines(
         timespan_hours=config.get("trump_news_lookback_hours", 6)
     )
+    # Store the actual words alongside the score they produced. Without this a
+    # trump_news score jumping 0.1 -> 0.8 is unexplainable after the fact.
+    # Market-wide, so recorded once here rather than per ticker.
+    try:
+        storage.insert_news_snapshot(
+            db_path, trump_headlines, indicators.trump_headline_score(trump_headlines))
+    except Exception as exc:
+        print(f"news snapshot failed: {exc}")
+
     candidates = []
     for ticker in config["tickers"]:
         result = poll_ticker(ticker, config, db_path, trump_headlines)

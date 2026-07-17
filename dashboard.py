@@ -20,6 +20,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from analytics import accuracy
+from analytics import events as event_analysis
 from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
 from config import load_settings
 from data import market_data
@@ -660,6 +661,32 @@ with left_col:
                         )
                         price_layer = price_layer + level_rules
 
+                # market movers: moments a signal lurched, marked so you can trace
+                # what price did from there. Same vertical-rule idiom as trades.
+                shocks = []
+                for cat in ("trump_news", "sentiment"):
+                    for s in event_analysis.detect_signal_shocks(
+                            snapshots, cat, min_delta=0.3, min_gap_minutes=30):
+                        if cutoff is None or s["timestamp"] >= cutoff:
+                            shocks.append({
+                                "timestamp": s["timestamp"],
+                                "label": f"{CATEGORY_INFO.get(cat, (cat, ''))[0]} "
+                                         f"{s['from']:+.2f} -> {s['to']:+.2f}",
+                                "kind": "Signal shock",
+                            })
+                if shocks:
+                    shocks_df = pd.DataFrame(shocks)
+                    shocks_df["timestamp"] = (
+                        shocks_df["timestamp"].dt.tz_convert(market_tz).dt.tz_localize(None)
+                    )
+                    shock_rules = alt.Chart(shocks_df).mark_rule(
+                        color="#9b59b6", strokeWidth=2, opacity=0.8, strokeDash=[2, 2],
+                    ).encode(
+                        x=alt.X("timestamp:T", scale=x_scale),
+                        tooltip=["kind:N", "label:N", "timestamp:T"],
+                    )
+                    price_layer = price_layer + shock_rules
+
                 if events:
                     # use the same x field name ("timestamp") as the other layers so
                     # the shared x axis renders its labels correctly
@@ -688,7 +715,9 @@ with left_col:
                 st.caption("Dots = each signal (green bullish, red bearish, gray neutral) on the "
                            "price line. Blue stepped line = composite score (right axis). "
                            "Green/red vertical lines = trade entries/exits. Dashed horizontal "
-                           "lines = pre-market key levels (prior close/high/low, overnight range).")
+                           "lines = pre-market key levels (prior close/high/low, overnight range). "
+                           "Purple dashed verticals = market movers (a signal lurching) - hover to "
+                           "see what jumped, then trace what price did from there.")
 
             overall_pct = accuracy.overall_accuracy_pct(evaluated)
             graded_count = sum(1 for s in evaluated if s["evaluated"])
@@ -716,6 +745,64 @@ with left_col:
                         hide_index=True,
                         use_container_width=True,
                     )
+
+            with st.expander("Market movers - what moved price, and did we see it?",
+                             expanded=False):
+                st.caption(
+                    "Everything else here averages over every snapshot and asks "
+                    "'does this signal predict direction?'. This asks a different "
+                    "question: pick the moments a signal **lurched**, then trace what "
+                    "price did next. Each event path is shown against a **control** - "
+                    "the same path measured from random moments. If they look alike, "
+                    "nothing happened, however good the story sounds."
+                )
+                OFFSETS = (15, 30, 60, 120, 240)
+                shock_list = event_analysis.detect_signal_shocks(
+                    snapshots, "trump_news", min_delta=0.3, min_gap_minutes=30)
+                if not shock_list:
+                    st.caption("No trump_news shocks in this ticker's history yet.")
+                else:
+                    study = event_analysis.event_study(
+                        snapshots, shock_list, offsets=OFFSETS, control_samples=200)
+                    st.dataframe(
+                        [
+                            {
+                                "After": f"{o} min",
+                                "Following the event": (
+                                    f"{study['detail'][o]['event_mean_pct']:+.3f}%"
+                                    if study["detail"][o]["event_mean_pct"] is not None else "-"),
+                                "Random moment": (
+                                    f"{study['detail'][o]['control_mean_pct']:+.3f}%"
+                                    if study["detail"][o]["control_mean_pct"] is not None else "-"),
+                                "t": f"{study['detail'][o]['t_stat']:+.2f}",
+                            }
+                            for o in OFFSETS
+                        ],
+                        hide_index=True, use_container_width=True,
+                    )
+                    icon = (":material/check_circle:" if study["strongest_t"] >= 2
+                            else ":material/info:")
+                    st.info(f"**{study['events']} events** · {study['verdict']}. "
+                            f"(An effect needs |t| >= 2; ~100 events before that means "
+                            f"much.)", icon=icon)
+
+                    st.markdown("**The events themselves** - and what was being said")
+                    rows = []
+                    for s in reversed(shock_list[-8:]):
+                        news = storage.get_news_at(db_path, s["timestamp"].isoformat())
+                        headline = "-"
+                        if news:
+                            heads = json.loads(news["headlines_json"])
+                            headline = (heads[0][:90] + "...") if heads else "(no headlines)"
+                        rows.append({
+                            "When (ET)": s["timestamp"].astimezone(market_tz).strftime("%m-%d %H:%M"),
+                            "Score moved": f"{s['from']:+.2f} -> {s['to']:+.2f}",
+                            "Top headline at the time": headline,
+                        })
+                    st.dataframe(rows, hide_index=True, use_container_width=True)
+                    if all(r["Top headline at the time"] == "-" for r in rows):
+                        st.caption(":material/history: Headlines are only stored from today "
+                                   "onward - older events can't be explained retroactively.")
 
             with st.expander("Calibration, per-signal accuracy & weight tuning", expanded=False):
                 # --- Automatic self-calibration -----------------------------
