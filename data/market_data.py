@@ -248,6 +248,24 @@ def contract_spread_pct(contract) -> float | None:
     return (ask - bid) / mid * 100.0
 
 
+def find_delta_contract(df: pd.DataFrame, target_delta: float) -> pd.Series | None:
+    """The contract whose delta is closest to target_delta - e.g. +0.25 for an
+    OTM call, -0.25 for an OTM put. Requires enrich_with_greeks() to have run.
+
+    Real IV skew is measured ACROSS strikes (are traders paying up for crash
+    protection or for upside?). Comparing a call and put at the SAME strike is
+    meaningless: put-call parity pins them to the same IV, so the difference is
+    pure quote noise. This is how you pick the two sides honestly.
+    """
+    if df is None or df.empty or "delta" not in df:
+        return None
+    valid = df[df["delta"].notna()]
+    if valid.empty:
+        return None
+    idx = (valid["delta"] - target_delta).abs().idxmin()
+    return valid.loc[idx]
+
+
 def contract_quote(contract) -> tuple[float | None, float | None, float | None, float | None]:
     """(bid, ask, mid, spread_pct) for a chain row - the raw cost picture, with
     each leg None when that quote is missing/zero. Used to log what transacting

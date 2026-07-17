@@ -73,6 +73,19 @@ invert_categories: []
 
 trump_news_lookback_hours: 6  # how far back the Trump/tariff/economy headline scan looks each cycle
 
+# IV skew (the greeks_iv signal). Measured ACROSS strikes as a 25-delta risk
+# reversal, normalised by ATM IV. It previously compared the ATM call's IV to
+# the ATM PUT's IV at the same strike, which put-call parity pins to the same
+# value - so it was amplifying quote noise 20x and, at -0.68 correlation with
+# technicals, cancelling our least-bad signal. Any IV outside 1%-500% is
+# rejected outright (yfinance returns 0.0 when its solver fails); the signal
+# then reports no data and the composite renormalises around it.
+iv_skew:
+  call_delta: 0.25       # which OTM call defines the upside leg
+  put_delta: 0.25        # which OTM put defines the downside leg
+  baseline_ratio: 0.10   # puts are typically ~10% richer than calls, vs ATM IV
+  scale: 0.10            # deviation from baseline that maps to a full +/-1 score
+
 # Pre-market "day setup": once per trading day before the open, the worker
 # assembles the overnight gap, prior-day/overnight levels, today's catalysts,
 # and an opening bias per ticker (stored in day_setups). Feeds the day-session

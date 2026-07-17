@@ -113,16 +113,57 @@ def compute_technicals_score(
 
 
 # --- greeks / IV ---------------------------------------------------------
+# This signal previously compared the ATM call's IV to the ATM PUT's IV at the
+# SAME strike. That is provably meaningless: put-call parity is an arbitrage
+# relation, so a call and put at one strike/expiry must carry the same IV - any
+# difference is quote noise. Dividing that noise by scale=0.05 amplified it 20x,
+# handed it 15% of the composite's weight, and left it correlated -0.68 with
+# technicals - actively cancelling the one semi-useful signal we had.
+#
+# Real skew lives ACROSS strikes: what do traders pay for downside protection
+# vs upside? That's the 25-delta risk reversal below.
 
-def iv_skew_score(call_iv_atm: float | None, put_iv_atm: float | None, scale: float = 0.05) -> float | None:
-    """Higher call IV relative to put IV suggests more upside speculation (bullish lean)."""
-    if call_iv_atm is None or put_iv_atm is None:
+
+def valid_iv(iv: float | None, lo: float = 0.01, hi: float = 5.0) -> bool:
+    """Is this a believable implied volatility? Real option IV runs ~15-80%;
+    yfinance regularly returns 0.001 (or exactly 0.0) when its solver fails or
+    quotes are stale, and differencing two of those produces confident garbage.
+    Better to emit no signal than a noise signal - the composite renormalises
+    around a missing category."""
+    return iv is not None and not math.isnan(iv) and lo <= iv <= hi
+
+
+def iv_skew_score(
+    call_iv_otm: float | None, put_iv_otm: float | None, atm_iv: float | None,
+    baseline_ratio: float = 0.10, scale: float = 0.10,
+) -> float | None:
+    """25-delta risk reversal, normalised by ATM IV.
+
+    Equity skew is persistently put-heavy - crash protection is always bid - so
+    the LEVEL of skew isn't directional; a raw put_iv - call_iv would read
+    permanently bearish. What carries information is whether skew is steeper or
+    flatter than its usual state: steepening = fear being bid = bearish lean,
+    flattening = complacency / upside chase = bullish lean.
+
+    Normalising by ATM IV makes the number comparable across tickers (TSLA's
+    skew and SPY's aren't on the same scale in absolute IV points).
+
+    baseline_ratio and scale are arbitrary starting points per the project brief
+    - they say "puts are typically ~10% richer than calls relative to ATM IV".
+    Returns None unless all three IVs are believable.
+    """
+    if not (valid_iv(call_iv_otm) and valid_iv(put_iv_otm) and valid_iv(atm_iv)):
         return None
-    return _clip((call_iv_atm - put_iv_atm) / scale)
+    ratio = (put_iv_otm - call_iv_otm) / atm_iv   # >0 = the normal put skew
+    excess = ratio - baseline_ratio               # steeper than usual = fear
+    return _clip(-excess / scale)
 
 
-def compute_greeks_iv_score(call_iv_atm: float | None, put_iv_atm: float | None) -> float | None:
-    return iv_skew_score(call_iv_atm, put_iv_atm)
+def compute_greeks_iv_score(
+    call_iv_otm: float | None, put_iv_otm: float | None, atm_iv: float | None,
+    baseline_ratio: float = 0.10, scale: float = 0.10,
+) -> float | None:
+    return iv_skew_score(call_iv_otm, put_iv_otm, atm_iv, baseline_ratio, scale)
 
 
 # --- order flow ------------------------------------------------------------

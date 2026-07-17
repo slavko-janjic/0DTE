@@ -116,11 +116,21 @@ def compute_subscores(
     greeks_iv = order_flow = None
     if chain is not None:
         chain = market_data.enrich_with_greeks(chain)
+        # Real skew is measured ACROSS strikes: the 25-delta call vs the
+        # 25-delta put, normalised by ATM IV. (Comparing a call and put at the
+        # SAME strike is meaningless - put-call parity pins them equal, so the
+        # difference is pure quote noise. That was the old bug.)
+        iv_cfg = config.get("iv_skew", {})
+        otm_call = market_data.find_delta_contract(chain.calls, iv_cfg.get("call_delta", 0.25))
+        otm_put = market_data.find_delta_contract(chain.puts, -iv_cfg.get("put_delta", 0.25))
         atm_call = market_data.find_atm_contract(chain.calls, chain.spot)
-        atm_put = market_data.find_atm_contract(chain.puts, chain.spot)
-        if atm_call is not None and atm_put is not None:
+        if otm_call is not None and otm_put is not None and atm_call is not None:
             greeks_iv = indicators.compute_greeks_iv_score(
-                atm_call.get("impliedVolatility"), atm_put.get("impliedVolatility")
+                otm_call.get("impliedVolatility"),
+                otm_put.get("impliedVolatility"),
+                atm_call.get("impliedVolatility"),
+                iv_cfg.get("baseline_ratio", 0.10),
+                iv_cfg.get("scale", 0.10),
             )
 
         call_volume = chain.calls["volume"].fillna(0).sum() if not chain.calls.empty else 0

@@ -55,3 +55,33 @@ def test_contract_quote_with_no_quotes():
     from data.market_data import contract_quote
     bid, ask, mid, spread = contract_quote({"bid": 0.0, "ask": 0.0, "lastPrice": 2.0})
     assert bid is None and ask is None and mid is None and spread is None
+
+
+# --- picking the skew legs ---------------------------------------------------
+
+def test_find_delta_contract_picks_the_closest_delta():
+    import pandas as pd
+    from data.market_data import find_delta_contract
+    df = pd.DataFrame({
+        "strike": [100.0, 105.0, 110.0, 115.0],
+        "delta":  [0.70,  0.45,  0.26,  0.10],
+    })
+    assert find_delta_contract(df, 0.25)["strike"] == 110.0   # closest to 25-delta
+    assert find_delta_contract(df, 0.70)["strike"] == 100.0
+
+
+def test_find_delta_contract_handles_puts_negative_delta():
+    import pandas as pd
+    from data.market_data import find_delta_contract
+    df = pd.DataFrame({"strike": [90.0, 95.0], "delta": [-0.24, -0.60]})
+    assert find_delta_contract(df, -0.25)["strike"] == 90.0
+
+
+def test_find_delta_contract_none_without_greeks():
+    import pandas as pd
+    from data.market_data import find_delta_contract
+    assert find_delta_contract(pd.DataFrame({"strike": [100.0]}), 0.25) is None  # no delta col
+    assert find_delta_contract(pd.DataFrame(), 0.25) is None
+    # all-NaN deltas (BS solver failed on every strike)
+    df = pd.DataFrame({"strike": [100.0], "delta": [float("nan")]})
+    assert find_delta_contract(df, 0.25) is None
