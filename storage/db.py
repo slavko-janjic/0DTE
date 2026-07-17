@@ -177,6 +177,23 @@ CREATE TABLE IF NOT EXISTS news_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_news_snapshots_time
     ON news_snapshots (timestamp DESC);
+
+-- The VIX complex, one row per cycle (market-wide, not per ticker). Needed
+-- because the term structure's LEVEL isn't directional: contango (VIX9D < VIX)
+-- is the persistent normal state, so scoring the level reported "bullish"
+-- forever - volatility_regime never once went negative across 9,874 samples.
+-- Storing it lets the signal be scored against its OWN recent baseline instead
+-- of a guessed constant.
+CREATE TABLE IF NOT EXISTS vix_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    vix REAL,
+    vix9d REAL,
+    vvix REAL,
+    term_ratio REAL      -- (vix9d - vix) / vix; negative = contango = normal
+);
+CREATE INDEX IF NOT EXISTS idx_vix_snapshots_time
+    ON vix_snapshots (timestamp DESC);
 """
 
 
@@ -572,6 +589,43 @@ def get_news_at(db_path: str | Path, timestamp_iso: str) -> sqlite3.Row | None:
             "SELECT * FROM news_snapshots WHERE timestamp <= ? "
             "ORDER BY timestamp DESC LIMIT 1", (timestamp_iso,)
         ).fetchone()
+
+
+# --- VIX snapshots (so the term structure can be baselined against itself) ---
+
+def insert_vix_snapshot(db_path: str | Path, vix: float | None, vix9d: float | None,
+                        vvix: float | None) -> None:
+    term_ratio = ((vix9d - vix) / vix) if (vix and vix9d) else None
+    with connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO vix_snapshots (timestamp, vix, vix9d, vvix, term_ratio)
+               VALUES (?, ?, ?, ?, ?)""",
+            (_now(), vix, vix9d, vvix, term_ratio),
+        )
+
+
+def get_vix_baselines(db_path: str | Path, min_samples: int = 200,
+                      limit: int = 5000) -> dict | None:
+    """Median term_ratio and vvix over recent history - the "normal" state each
+    is scored against. None until min_samples exist, so the signal stays absent
+    rather than being scored against a guessed constant.
+
+    Median, not mean: one bad VIX print shouldn't move the baseline.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT term_ratio, vvix FROM (SELECT * FROM vix_snapshots "
+            "ORDER BY timestamp DESC LIMIT ?)", (limit,)
+        ).fetchall()
+    ratios = sorted(r["term_ratio"] for r in rows if r["term_ratio"] is not None)
+    vvixes = sorted(r["vvix"] for r in rows if r["vvix"] is not None)
+    if len(ratios) < min_samples or len(vvixes) < min_samples:
+        return None
+    return {
+        "term_ratio": ratios[len(ratios) // 2],
+        "vvix": vvixes[len(vvixes) // 2],
+        "samples": len(ratios),
+    }
 
 
 # --- quote snapshots (the cost of transacting) ------------------------------

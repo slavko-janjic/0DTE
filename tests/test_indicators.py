@@ -230,70 +230,122 @@ def test_prediction_market_score_none_when_no_data():
     assert indicators.prediction_market_score([], spot=100) is None
 
 
-def test_term_structure_score_bearish_on_backwardation():
-    # VIX9D above VIX = near-term stress = bearish
-    score = indicators.term_structure_score(vix9d=20, vix=16)
-    assert score is not None
+# --- volatility regime: scored against its OWN normal, not its level --------
+# Contango (VIX9D < VIX) is the persistent normal state. Scoring the LEVEL meant
+# reporting "bullish" forever: 0 negative readings in 9,874 samples, a constant
+# +0.066 contribution to the composite. Live VIX9D 13.98 / VIX 18.47 saturated
+# the old scale to exactly +1.000.
+
+BASE = {"term_ratio": -0.10, "vvix": 95.0}   # a "normal" median from history
+
+
+def test_term_structure_neutral_at_its_own_baseline():
+    # exactly the usual contango -> no information -> ~0, not "+1 bullish"
+    score = indicators.term_structure_score(vix9d=90, vix=100, baseline_ratio=-0.10)
+    assert score == pytest.approx(0.0)
+
+
+def test_term_structure_bearish_when_curve_flattens_vs_normal():
+    # less contango than usual = near-term stress being priced
+    score = indicators.term_structure_score(vix9d=98, vix=100, baseline_ratio=-0.10)
     assert score < 0
 
 
-def test_term_structure_score_bullish_on_contango():
-    # VIX9D below VIX = calm/normal = mildly bullish
-    score = indicators.term_structure_score(vix9d=12, vix=16)
-    assert score is not None
+def test_term_structure_bullish_when_contango_steepens_vs_normal():
+    score = indicators.term_structure_score(vix9d=80, vix=100, baseline_ratio=-0.10)
     assert score > 0
 
 
-def test_term_structure_score_none_when_missing_data():
-    assert indicators.term_structure_score(None, 16) is None
-    assert indicators.term_structure_score(12, None) is None
+def test_term_structure_none_without_a_baseline():
+    """No baseline -> no signal. A hardcoded constant is a guess, and guessing is
+    exactly how this became a permanent +1."""
+    assert indicators.term_structure_score(vix9d=90, vix=100, baseline_ratio=None) is None
+    assert indicators.term_structure_score(None, 100, -0.10) is None
+    assert indicators.term_structure_score(90, None, -0.10) is None
 
 
-def test_vvix_score_bearish_when_elevated():
-    assert indicators.vvix_score(vvix=130) < 0
+def test_vvix_score_relative_to_its_own_median():
+    assert indicators.vvix_score(vvix=95.0, baseline=95.0) == pytest.approx(0.0)
+    assert indicators.vvix_score(vvix=120, baseline=95.0) < 0     # elevated = stress
+    assert indicators.vvix_score(vvix=80, baseline=95.0) > 0
+    assert indicators.vvix_score(vvix=95, baseline=None) is None
+    assert indicators.vvix_score(None, 95.0) is None
 
 
-def test_vvix_score_bullish_when_low():
-    assert indicators.vvix_score(vvix=60) > 0
+def test_volatility_regime_absent_until_baselines_exist():
+    """An honest absence beats a constant: the composite renormalises around a
+    missing category, rather than averaging in a permanent bullish tilt."""
+    assert indicators.compute_volatility_regime_score(12, 16, 70, None) is None
+    assert indicators.compute_volatility_regime_score(12, 16, 70, {}) is None
 
 
-def test_vvix_score_none_when_missing():
-    assert indicators.vvix_score(None) is None
-
-
-def test_compute_volatility_regime_score_combines_components():
-    score = indicators.compute_volatility_regime_score(vix9d=12, vix=16, vvix=70)
+def test_volatility_regime_combines_components_when_baselined():
+    score = indicators.compute_volatility_regime_score(90, 100, 95.0, BASE)
     assert score is not None
     assert -1.0 <= score <= 1.0
 
 
-def test_compute_volatility_regime_score_none_when_all_missing():
-    assert indicators.compute_volatility_regime_score(None, None, None) is None
+def test_volatility_regime_is_centred_at_normal():
+    """THE regression: at the normal state the signal must read ~0, not +0.44."""
+    score = indicators.compute_volatility_regime_score(
+        vix9d=90, vix=100, vvix=95.0, baselines=BASE)
+    assert abs(score) < 0.05
 
 
-def test_trump_headline_score_bearish_on_tariff_heavy_headlines():
+# --- trump_news: was a bearish generator, not a signal -----------------------
+
+def test_trump_headline_score_IGNORES_the_words_we_searched_for():
+    """THE bug: the GDELT query is "Trump (tariff OR tariffs OR economy OR ...)"
+    and the bearish lexicon contained "tariff"/"tariffs" - so every result was
+    guaranteed bearish evidence, while NO query term was in the bullish lexicon.
+    Four purely descriptive headlines scored -1.0, maximum bearish. Hence 82% of
+    all readings pinned at +/-1, mean -0.798."""
+    descriptive = [
+        "Trump discusses tariff policy at press conference",
+        "Analysis: what Trump's tariff plan means for trade",
+        "Trump tariff timeline: what we know",
+        "Markets steady as Trump trade talks continue",
+    ]
+    # says nothing bearish - mentions the query terms and nothing else
+    assert indicators.trump_headline_score(descriptive) == 0.0
+
+
+def test_query_terms_are_excluded_from_both_lexicons():
+    for word in indicators.QUERY_TERMS:
+        assert word not in indicators._TRUMP_BEARISH_WORDS
+        assert word not in indicators._TRUMP_BULLISH_WORDS
+
+
+def test_trump_headline_score_bearish_on_genuinely_bearish_language():
     headlines = [
-        "Trump announces new tariffs on China",
-        "Markets brace for tariff crisis as Trump threatens sanctions",
+        "Markets brace for crisis as Trump threatens sanctions",
+        "Stocks plunge on recession warning",
     ]
     score = indicators.trump_headline_score(headlines)
-    assert score is not None
-    assert score < 0
+    assert score is not None and score < 0
 
 
-def test_trump_headline_score_bullish_on_deal_heavy_headlines():
+def test_trump_headline_score_bullish_on_genuinely_bullish_language():
     headlines = [
-        "Trump announces trade deal and ceasefire agreement",
+        "Trump announces deal and ceasefire agreement",
         "Stocks rally on stimulus optimism after Trump remarks",
     ]
     score = indicators.trump_headline_score(headlines)
-    assert score is not None
-    assert score > 0
+    assert score is not None and score > 0
+
+
+def test_trump_headline_score_is_a_RATE_not_a_volume():
+    """Second bug: the score used RAW counts over a fixed scale of 3.0, so 20
+    headlines each carrying one bearish word saturated exactly like 3 did. It
+    measured how much Trump news there was, not what it said."""
+    three = ["Trump crisis"] * 3
+    twenty = ["Trump crisis"] * 20
+    # same tone at both volumes -> same score
+    assert indicators.trump_headline_score(three) == indicators.trump_headline_score(twenty)
 
 
 def test_trump_headline_score_neutral_when_no_keyword_hits():
-    headlines = ["Trump visits Ohio for campaign event"]
-    assert indicators.trump_headline_score(headlines) == 0.0
+    assert indicators.trump_headline_score(["Trump visits Ohio for campaign event"]) == 0.0
 
 
 def test_trump_headline_score_none_when_no_headlines():

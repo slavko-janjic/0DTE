@@ -155,11 +155,15 @@ def compute_subscores(
         if buckets is not None and index_spot is not None:
             prediction_markets = indicators.prediction_market_score(buckets, index_spot)
 
+    # Scored against its OWN recent median, not its level: contango is the
+    # normal state, so scoring the level reported "bullish" permanently (never
+    # once negative in 9,874 samples). Absent until enough history exists.
     volatility_regime = None
     vix_data = market_data.get_vix_term_structure()
     if vix_data is not None:
+        baselines = storage.get_vix_baselines(db_path) if db_path else None
         volatility_regime = indicators.compute_volatility_regime_score(
-            vix_data["vix9d"], vix_data["vix"], vix_data["vvix"]
+            vix_data["vix9d"], vix_data["vix"], vix_data["vvix"], baselines,
         )
 
     trump_news = indicators.trump_headline_score(trump_headlines)
@@ -556,6 +560,15 @@ def run_once(config: dict, db_path: str) -> None:
             db_path, trump_headlines, indicators.trump_headline_score(trump_headlines))
     except Exception as exc:
         print(f"news snapshot failed: {exc}")
+
+    # The VIX complex, market-wide, once per cycle - this is what lets
+    # volatility_regime be scored against its own normal instead of a guess.
+    try:
+        vix = market_data.get_vix_term_structure()
+        if vix is not None:
+            storage.insert_vix_snapshot(db_path, vix["vix"], vix["vix9d"], vix["vvix"])
+    except Exception as exc:
+        print(f"vix snapshot failed: {exc}")
 
     candidates = []
     for ticker in config["tickers"]:

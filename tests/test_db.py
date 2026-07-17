@@ -609,3 +609,37 @@ def test_get_news_at_returns_what_was_in_force(tmp_path):
     assert storage.get_news_at(path, "2026-07-10T17:00:00+00:00")["score"] == 0.9
     # before any news exists -> nothing
     assert storage.get_news_at(path, "2026-07-01T00:00:00+00:00") is None
+
+
+# --- VIX snapshots + baselines -----------------------------------------------
+
+def test_vix_snapshot_computes_term_ratio(tmp_path):
+    path = make_temp_db(tmp_path)
+    storage.insert_vix_snapshot(path, vix=20.0, vix9d=18.0, vvix=95.0)
+    import sqlite3 as _sq
+    conn = _sq.connect(path); conn.row_factory = _sq.Row
+    row = conn.execute("SELECT * FROM vix_snapshots").fetchone()
+    conn.close()
+    assert row["term_ratio"] == pytest.approx((18.0 - 20.0) / 20.0)   # -0.10 contango
+    assert row["vvix"] == 95.0
+
+
+def test_vix_baselines_none_until_enough_history(tmp_path):
+    """No baseline -> volatility_regime stays absent. Better than scoring
+    against a guessed constant, which is how it became a permanent +0.44."""
+    path = make_temp_db(tmp_path)
+    for _ in range(10):
+        storage.insert_vix_snapshot(path, 20.0, 18.0, 95.0)
+    assert storage.get_vix_baselines(path, min_samples=200) is None
+
+
+def test_vix_baselines_median_is_robust_to_a_bad_print(tmp_path):
+    path = make_temp_db(tmp_path)
+    for _ in range(199):
+        storage.insert_vix_snapshot(path, 20.0, 18.0, 95.0)      # ratio -0.10
+    storage.insert_vix_snapshot(path, 20.0, 2.0, 9999.0)         # one garbage print
+    b = storage.get_vix_baselines(path, min_samples=200)
+    assert b is not None
+    assert b["term_ratio"] == pytest.approx(-0.10)   # median shrugs it off
+    assert b["vvix"] == pytest.approx(95.0)
+    assert b["samples"] == 200

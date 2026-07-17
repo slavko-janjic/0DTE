@@ -332,27 +332,51 @@ def prediction_market_score(buckets: list[dict], spot: float) -> float | None:
 
 # --- volatility regime (VIX / VIX9D / VVIX) --------------------------------
 
-def term_structure_score(vix9d: float, vix: float, scale: float = 0.15) -> float | None:
-    """VIX9D > VIX (backwardation) signals near-term stress -> bearish lean.
-    VIX9D < VIX (contango) is the calm/normal state -> mildly bullish lean."""
-    if vix is None or vix9d is None or vix == 0:
+def term_structure_score(
+    vix9d: float, vix: float, baseline_ratio: float | None = None, scale: float = 0.08,
+) -> float | None:
+    """VIX9D vs VIX, scored against the NORMAL state rather than its level.
+
+    Contango (VIX9D < VIX) is the persistent normal - the curve slopes upward
+    almost always - so scoring the level meant reporting "bullish" permanently.
+    Across 9,874 stored samples this signal never once went negative (range
+    +0.11 to +0.60), contributing a constant +0.066 to the composite: a bias,
+    not information. Live values make it obvious: VIX9D 13.98 vs VIX 18.47 is a
+    -0.24 ratio, which the old scale=0.15 saturated to exactly +1.000.
+
+    What carries information is the curve FLATTENING or INVERTING relative to
+    its own recent normal - that's near-term stress being priced. baseline_ratio
+    is the median of recent history (see storage.get_vix_baselines); None until
+    enough history exists, at which point this returns None rather than being
+    scored against a guessed constant.
+    """
+    if vix is None or vix9d is None or vix == 0 or baseline_ratio is None:
         return None
     relative_diff = (vix9d - vix) / vix
-    return _clip(-relative_diff / scale)
+    excess = relative_diff - baseline_ratio   # >0 = flatter/inverted than usual
+    return _clip(-excess / scale)
 
 
-def vvix_score(vvix: float, baseline: float = 90.0, scale: float = 20.0) -> float | None:
-    """Elevated VVIX (vol-of-vol) reflects hedging stress -> bearish lean."""
-    if vvix is None:
+def vvix_score(vvix: float, baseline: float | None = None, scale: float = 8.0) -> float | None:
+    """VVIX (vol-of-vol) against its own recent median. Elevated = hedging
+    stress = bearish lean. baseline None -> no signal, for the same reason as
+    above: a hardcoded 90.0 is a guess, and VVIX's normal level drifts."""
+    if vvix is None or baseline is None:
         return None
     return _clip(-(vvix - baseline) / scale)
 
 
-def compute_volatility_regime_score(vix9d: float | None, vix: float | None, vvix: float | None) -> float | None:
+def compute_volatility_regime_score(
+    vix9d: float | None, vix: float | None, vvix: float | None,
+    baselines: dict | None = None,
+) -> float | None:
+    """None until baselines exist - an honest absence beats a constant."""
+    if not baselines:
+        return None
     scores = [
         s for s in (
-            term_structure_score(vix9d, vix),
-            vvix_score(vvix),
+            term_structure_score(vix9d, vix, baselines.get("term_ratio")),
+            vvix_score(vvix, baselines.get("vvix")),
         ) if s is not None
     ]
     return sum(scores) / len(scores) if scores else None
@@ -360,25 +384,50 @@ def compute_volatility_regime_score(vix9d: float | None, vix: float | None, vvix
 
 # --- Trump / political headline tone (GDELT) --------------------------------
 
-_TRUMP_BEARISH_WORDS = (
-    "tariff", "tariffs", "sanction", "sanctions", "recession", "crash",
+# Words the GDELT query itself searches for. Their presence in a result carries
+# ZERO information about tone - every headline returned is guaranteed to contain
+# one. "tariff"/"tariffs" used to sit in the bearish lexicon below while ALSO
+# being query terms, so the signal searched for tariff headlines and then scored
+# them bearish for being about tariffs. Four purely descriptive headlines
+# ("Trump tariff timeline: what we know") scored -1.0, maximum bearish. Hence
+# 82% of readings pinned at +/-1 with a mean of -0.798.
+QUERY_TERMS = frozenset({
+    "trump", "tariff", "tariffs", "economy", "trade", "fed", "market", "stocks",
+})
+
+_TRUMP_BEARISH_WORDS = tuple(w for w in (
+    "sanction", "sanctions", "recession", "crash",
     "selloff", "sell-off", "threat", "threatens", "shutdown", "default",
     "crisis", "plunge", "warns", "war",
-)
-_TRUMP_BULLISH_WORDS = (
+) if w not in QUERY_TERMS)
+_TRUMP_BULLISH_WORDS = tuple(w for w in (
     "deal", "agreement", "rally", "boom", "growth", "record high",
     "rate cut", "ceasefire", "truce", "stimulus", "surge", "optimism",
-)
+) if w not in QUERY_TERMS)
 
 
-def trump_headline_score(headlines: list[str] | None, scale: float = 3.0) -> float | None:
-    """Simple bearish/bullish keyword lexicon over recent Trump-related market
-    headlines - the same style of approach as the StockTwits bull/bear tagging,
-    applied to news headlines instead of social posts. None only when there are
-    no headlines at all; a tie in keyword hits still yields a neutral 0.0."""
+def trump_headline_score(headlines: list[str] | None, scale: float = 0.5) -> float | None:
+    """Net bearish/bullish keyword RATE across recent Trump-related headlines.
+
+    Two bugs fixed here, both of which made this a bearish generator rather than
+    a signal:
+
+    1. Circularity. The query is "Trump (tariff OR tariffs OR economy OR ...)"
+       and the bearish lexicon contained "tariff"/"tariffs" - so every result
+       arrived pre-loaded with bearish evidence, while NO query term appeared in
+       the bullish lexicon. Query terms are now excluded outright.
+
+    2. Volume masquerading as tone. The score was (bullish - bearish) / 3.0 on
+       RAW counts, so 20 headlines each carrying one bearish word saturated at
+       -1.0 exactly as 3 headlines would. It measured how much Trump news there
+       was, not what it said. Now it's a per-headline rate.
+
+    None only when there are no headlines at all; a tie still yields 0.0.
+    """
     if not headlines:
         return None
     text = " ".join(headlines).lower()
     bearish_hits = sum(text.count(word) for word in _TRUMP_BEARISH_WORDS)
     bullish_hits = sum(text.count(word) for word in _TRUMP_BULLISH_WORDS)
-    return _clip((bullish_hits - bearish_hits) / scale)
+    rate = (bullish_hits - bearish_hits) / len(headlines)
+    return _clip(rate / scale)
