@@ -19,12 +19,21 @@ TICKER_SERIES_MAP = {
 }
 
 
-def get_strike_ladder(series_ticker: str) -> list[tuple[float, float]] | None:
-    """Returns [(floor_strike, prob_above)] for the nearest upcoming daily
-    event in this series, using only 'greater than' strike markets (which
-    directly give P(index above strike) from the yes bid/ask midpoint).
+def get_price_distribution(series_ticker: str) -> list[dict] | None:
+    """The nearest daily event's full probability distribution over price
+    buckets: [{"floor", "cap", "prob"}] where floor/cap may be None for a tail.
 
-    None on any failure or if no 'greater' markets are found.
+    Kalshi quotes these as ~28 'between' buckets (7825-7850, 7850-7875, ...)
+    plus two tails: one 'greater' than the top strike and one 'less' than the
+    bottom. The buckets ARE the distribution.
+
+    This previously kept ONLY the single 'greater' market and called it a
+    "ladder". That left a 1-point ladder pinned at the far upper tail - so
+    P(above spot) was really P(above the highest strike in the market), i.e.
+    ~0.5%, and the signal sat at -0.99 (maximum bearish) for its entire life
+    while carrying 15% of the composite's weight on SPY and QQQ.
+
+    None on any failure or if no buckets are found.
     """
     try:
         resp = requests.get(
@@ -41,18 +50,25 @@ def get_strike_ladder(series_ticker: str) -> list[tuple[float, float]] | None:
         return None
 
     nearest_event = min(markets, key=lambda m: m.get("occurrence_datetime", ""))["event_ticker"]
-    ladder = []
+    buckets = []
     for market in markets:
         if market.get("event_ticker") != nearest_event:
             continue
-        if market.get("strike_type") != "greater" or "floor_strike" not in market:
+        strike_type = market.get("strike_type")
+        if strike_type not in ("between", "greater", "less"):
             continue
         try:
             yes_bid = float(market["yes_bid_dollars"])
             yes_ask = float(market["yes_ask_dollars"])
-            prob_above = (yes_bid + yes_ask) / 2.0
-            ladder.append((float(market["floor_strike"]), prob_above))
+            prob = (yes_bid + yes_ask) / 2.0
+            floor = market.get("floor_strike")
+            cap = market.get("cap_strike")
+            buckets.append({
+                "floor": float(floor) if floor is not None else None,
+                "cap": float(cap) if cap is not None else None,
+                "prob": prob,
+            })
         except (KeyError, TypeError, ValueError):
             continue
 
-    return ladder or None
+    return buckets or None

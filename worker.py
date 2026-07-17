@@ -148,10 +148,12 @@ def compute_subscores(
     series_map = kalshi.TICKER_SERIES_MAP.get(ticker)
     if series_map:
         kalshi_series, index_ticker = series_map
-        ladder = kalshi.get_strike_ladder(kalshi_series)
+        # the full bucket distribution, not just the far upper tail (which used
+        # to pin this signal at -0.99 for its entire life)
+        buckets = kalshi.get_price_distribution(kalshi_series)
         index_spot = market_data.get_current_price(index_ticker)
-        if ladder is not None and index_spot is not None:
-            prediction_markets = indicators.prediction_market_score(ladder, index_spot)
+        if buckets is not None and index_spot is not None:
+            prediction_markets = indicators.prediction_market_score(buckets, index_spot)
 
     volatility_regime = None
     vix_data = market_data.get_vix_term_structure()

@@ -271,38 +271,63 @@ def gamma_regime(score: float | None, deadband: float = 0.15) -> str | None:
 
 # --- prediction markets (Kalshi) --------------------------------------------
 
-def interpolate_probability_above(strikes_with_prob: list[tuple[float, float]], spot: float) -> float | None:
-    """Given (strike, P(index above strike)) pairs sorted or unsorted, linearly
-    interpolate P(index above spot). Probability decreases as strike increases,
-    so this is interpolating a monotonically non-increasing step function.
+def probability_above(buckets: list[dict], spot: float,
+                      min_total: float = 0.80, max_total: float = 1.25) -> float | None:
+    """P(index settles above spot), from Kalshi's bucket distribution.
 
-    Strikes outside the available range clamp to the nearest endpoint's
-    probability (flat extrapolation) rather than guessing. None if given no data.
+    buckets: [{"floor", "cap", "prob"}] - 'between' buckets plus the two tails
+    (floor=None means the bottom tail, cap=None the top). Sums the probability
+    of every bucket entirely above spot, plus the proportional slice of the
+    bucket containing spot (uniform within a bucket).
+
+    Returns None when the quotes can't be trusted:
+      - the probabilities don't sum to ~1 (thin or stale quotes - after hours
+        every bid is 0 and the whole book sums to ~0.3)
+      - spot sits outside the ladder entirely, so no bucket brackets it
+
+    That refusal is the point. The old code clamped instead: with a 1-point
+    ladder at the far upper tail it returned P(above the HIGHEST strike) and
+    called it P(above spot), pinning the signal at -0.99 forever.
     """
-    if not strikes_with_prob:
+    if not buckets:
         return None
-    points = sorted(strikes_with_prob, key=lambda p: p[0])
 
-    if spot <= points[0][0]:
-        return points[0][1]
-    if spot >= points[-1][0]:
-        return points[-1][1]
+    total = sum(b["prob"] for b in buckets)
+    if not (min_total <= total <= max_total):
+        return None   # book doesn't add up - don't invent a probability from it
 
-    for (strike_lo, prob_lo), (strike_hi, prob_hi) in zip(points, points[1:]):
-        if strike_lo <= spot <= strike_hi:
-            if strike_hi == strike_lo:
-                return prob_lo
-            fraction = (spot - strike_lo) / (strike_hi - strike_lo)
-            return prob_lo + fraction * (prob_hi - prob_lo)
-    return None
+    above = 0.0
+    bracketed = False
+    for bucket in buckets:
+        floor, cap, prob = bucket["floor"], bucket["cap"], bucket["prob"]
+        if floor is None:                       # bottom tail: below cap
+            if spot < cap:
+                return None                     # spot is inside the open-ended tail
+            continue                            # entirely below spot
+        if cap is None:                         # top tail: above floor
+            if spot > floor:
+                return None                     # spot is beyond the ladder's top
+            above += prob
+            bracketed = True
+            continue
+        if spot <= floor:
+            above += prob
+        elif spot >= cap:
+            pass                                # entirely below spot
+        else:
+            above += prob * (cap - spot) / (cap - floor)   # spot splits this bucket
+            bracketed = True
+
+    return above / total if bracketed else None
 
 
-def prediction_market_score(strikes_with_prob: list[tuple[float, float]], spot: float) -> float | None:
-    """Converts P(index closes above current spot) into a -1..1 directional score."""
-    prob_above = interpolate_probability_above(strikes_with_prob, spot)
-    if prob_above is None:
+def prediction_market_score(buckets: list[dict], spot: float) -> float | None:
+    """Converts P(index closes above current spot) into a -1..1 directional
+    score. 50/50 -> 0, certain up -> +1, certain down -> -1."""
+    prob = probability_above(buckets, spot)
+    if prob is None:
         return None
-    return _clip(2 * prob_above - 1)
+    return _clip(2 * prob - 1)
 
 
 # --- volatility regime (VIX / VIX9D / VVIX) --------------------------------

@@ -158,37 +158,72 @@ def test_compute_order_flow_score_combines_components():
     assert -1.0 <= score <= 1.0
 
 
-def test_interpolate_probability_above_exact_strike_match():
-    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
-    assert indicators.interpolate_probability_above(ladder, spot=110) == 0.5
+def _kalshi_book(spot_center=7500, width=25, n=8):
+    """A realistic Kalshi book: `between` buckets around a centre, plus the two
+    open-ended tails, with probabilities summing to ~1."""
+    buckets = []
+    lo = spot_center - (n // 2) * width
+    for i in range(n):
+        f = lo + i * width
+        buckets.append({"floor": f, "cap": f + width, "prob": 1.0 / (n + 2)})
+    buckets.append({"floor": lo + n * width, "cap": None, "prob": 1.0 / (n + 2)})  # top tail
+    buckets.append({"floor": None, "cap": lo, "prob": 1.0 / (n + 2)})              # bottom tail
+    return buckets
 
 
-def test_interpolate_probability_above_between_strikes():
-    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
-    # halfway between 100 and 110 -> halfway between 0.8 and 0.5
-    assert indicators.interpolate_probability_above(ladder, spot=105) == pytest.approx(0.65)
+def test_probability_above_is_about_half_at_the_centre():
+    book = _kalshi_book(spot_center=7500, width=25, n=8)
+    # centre of the book -> roughly a coin flip, NOT -0.99
+    p = indicators.probability_above(book, spot=7500)
+    assert p is not None
+    assert 0.35 < p < 0.65
 
 
-def test_interpolate_probability_above_clamps_below_range():
-    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
-    assert indicators.interpolate_probability_above(ladder, spot=50) == 0.8
+def test_probability_above_high_when_spot_is_low():
+    book = _kalshi_book(spot_center=7500, width=25, n=8)
+    p = indicators.probability_above(book, spot=7405)  # near the bottom of the ladder
+    assert p > 0.8
 
 
-def test_interpolate_probability_above_clamps_above_range():
-    ladder = [(100, 0.8), (110, 0.5), (120, 0.2)]
-    assert indicators.interpolate_probability_above(ladder, spot=200) == 0.2
+def test_probability_above_uses_the_whole_distribution_not_just_the_tail():
+    """THE bug: the old code kept only the single 'greater' market (the far
+    upper tail) and read its ~0.5% as P(above spot). That pinned the signal at
+    -0.99 for its entire life while holding 15% of the composite on SPY/QQQ."""
+    book = _kalshi_book(spot_center=7500, width=25, n=8)
+    top_tail = [b for b in book if b["cap"] is None][0]
+    assert top_tail["prob"] < 0.15                    # the tail alone is tiny...
+    p = indicators.probability_above(book, spot=7500)
+    assert p > 0.3                                    # ...but the real answer isn't
 
 
-def test_interpolate_probability_above_none_when_empty():
-    assert indicators.interpolate_probability_above([], spot=100) is None
+def test_probability_above_rejects_a_book_that_doesnt_sum_to_one():
+    """After hours every bid is 0 and the whole book sums to ~0.3. Refuse rather
+    than invent a probability from quotes nobody is standing behind."""
+    thin = [{"floor": 7500, "cap": 7525, "prob": 0.005},
+            {"floor": 7525, "cap": None, "prob": 0.005},
+            {"floor": None, "cap": 7500, "prob": 0.005}]
+    assert indicators.probability_above(thin, spot=7510) is None
+
+
+def test_probability_above_rejects_spot_outside_the_ladder():
+    book = _kalshi_book(spot_center=7500, width=25, n=8)
+    # spot far above the top tail's floor -> nothing brackets it
+    assert indicators.probability_above(book, spot=99999) is None
+    assert indicators.probability_above(book, spot=1) is None
+
+
+def test_probability_above_none_when_empty():
+    assert indicators.probability_above([], spot=100) is None
 
 
 def test_prediction_market_score_maps_probability_to_directional_score():
-    ladder = [(100, 0.9), (110, 0.1)]
-    # spot exactly at the strike implying 90% chance of closing higher -> strongly bullish
-    assert indicators.prediction_market_score(ladder, spot=100) == pytest.approx(0.8)
-    # 10% chance of closing higher -> strongly bearish
-    assert indicators.prediction_market_score(ladder, spot=110) == pytest.approx(-0.8)
+    book = _kalshi_book(spot_center=7500, width=25, n=8)
+    score = indicators.prediction_market_score(book, spot=7500)
+    assert score is not None
+    assert abs(score) < 0.35        # a balanced book is near-neutral, not pinned
+    # bullish when spot sits low in the distribution
+    assert indicators.prediction_market_score(book, spot=7405) > 0.5
+
 
 
 def test_prediction_market_score_none_when_no_data():
