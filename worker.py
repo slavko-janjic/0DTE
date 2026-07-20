@@ -587,7 +587,6 @@ def run_premarket_setup(config: dict, db_path: str) -> None:
     every fetch degrades to None (a partial setup is still useful)."""
     tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
     today = datetime.now(tz).date()
-    proxies = config.get("premarket_proxies", {})
     scale = config.get("premarket", {}).get("gap_bias_scale_pct", 0.5)
     catalysts_today = day_setup_mod.catalysts_for_date(
         config.get("market_catalysts", []), today,
@@ -597,25 +596,30 @@ def run_premarket_setup(config: dict, db_path: str) -> None:
         if storage.get_day_setup(db_path, ticker, today.isoformat()) is not None:
             continue
         try:
-            proxy = proxies.get(ticker)
-            premarket_quote = market_data.get_premarket_quote(ticker, proxy)
+            # Everything comes from the TICKER's own data, all in its own price
+            # units. The old code sourced the overnight quote and range from an
+            # index-futures proxy (QQQ->NQ=F etc.) but compared/stored them
+            # against the ETF's own close: gap came out at +4023% (28,727 vs
+            # 696.7) and the overnight range was NASDAQ-100 index levels (~28,879)
+            # drawn on a ~696 QQQ chart, squashing the price line flat.
+            premarket_quote = market_data.get_premarket_quote(ticker)
             prior_high = prior_low = prior_close = None
             daily = market_data.get_daily_bars(ticker, period="5d")
             if daily is not None and not daily.empty:
                 prior = daily.iloc[-1]  # last completed daily bar (yesterday)
                 prior_high, prior_low, prior_close = (
                     float(prior["High"]), float(prior["Low"]), float(prior["Close"]))
-            overnight = market_data.get_overnight_range(ticker, proxy)
+            overnight = market_data.get_overnight_range(ticker)
             overnight_high, overnight_low = overnight if overnight else (None, None)
 
             gap = day_setup_mod.gap_pct(premarket_quote, prior_close)
-            # single names: fold an earnings-today flag into the catalyst list
+            # fold an earnings-today flag into the catalyst list (ETFs have no
+            # earnings, so get_next_earnings_date returns None for them)
             ticker_catalysts = list(catalysts_today)
-            if not proxy:
-                earnings = market_data.get_next_earnings_date(ticker)
-                if earnings == today.isoformat():
-                    ticker_catalysts.append(
-                        {"time": None, "label": f"{ticker} earnings", "impact": "high"})
+            earnings = market_data.get_next_earnings_date(ticker)
+            if earnings == today.isoformat():
+                ticker_catalysts.append(
+                    {"time": None, "label": f"{ticker} earnings", "impact": "high"})
 
             setup = day_setup_mod.build_day_setup(
                 ticker, gap, prior_high, prior_low, prior_close,

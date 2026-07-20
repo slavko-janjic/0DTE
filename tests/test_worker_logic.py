@@ -280,7 +280,6 @@ PREMARKET_CONFIG = {
     **CONFIG,
     "tickers": ["QQQ", "TSLA"],
     "premarket": {"window_minutes": 90, "gap_bias_scale_pct": 0.5},
-    "premarket_proxies": {"QQQ": "NQ=F"},
     "market_catalysts": [{"date": "2026-07-06", "time": "08:30", "label": "CPI", "impact": "high"}],
 }
 
@@ -302,11 +301,11 @@ def test_in_premarket_window_skips_weekend_and_holiday():
 def _patch_premarket_fetchers(monkeypatch, quote=105.0, daily_close=100.0):
     import pandas as pd
     monkeypatch.setattr(worker.market_data, "get_premarket_quote",
-                        lambda t, proxy=None: quote)
+                        lambda t: quote)
     df = pd.DataFrame({"High": [101.0, 102.0], "Low": [98.0, 99.0], "Close": [99.5, daily_close]})
     monkeypatch.setattr(worker.market_data, "get_daily_bars", lambda t, period="5d": df)
     monkeypatch.setattr(worker.market_data, "get_overnight_range",
-                        lambda t, proxy=None: (103.0, 97.0))
+                        lambda t: (103.0, 97.0))
     monkeypatch.setattr(worker.market_data, "get_next_earnings_date", lambda t: None)
 
 
@@ -335,7 +334,7 @@ def test_run_premarket_setup_stores_and_is_idempotent(tmp_path, monkeypatch):
     # second run same day -> idempotent (would overwrite; assert it doesn't re-fetch
     # by pointing the quote fetcher at a sentinel that must not be used)
     monkeypatch.setattr(worker.market_data, "get_premarket_quote",
-                        lambda t, proxy=None: (_ for _ in ()).throw(AssertionError("re-fetched")))
+                        lambda t: (_ for _ in ()).throw(AssertionError("re-fetched")))
     run_premarket_setup(PREMARKET_CONFIG, db_path)  # should skip existing, not raise
     assert storage.get_day_setup(db_path, "QQQ", "2026-07-06")["gap_pct"] == 5.0
 
@@ -345,7 +344,7 @@ def test_run_premarket_setup_graceful_partial(tmp_path, monkeypatch):
     storage.init_db(db_path)
     _patch_premarket_fetchers(monkeypatch)
     # overnight quote unavailable -> gap None, but levels still stored
-    monkeypatch.setattr(worker.market_data, "get_premarket_quote", lambda t, proxy=None: None)
+    monkeypatch.setattr(worker.market_data, "get_premarket_quote", lambda t: None)
 
     import worker as _w
     class _FrozenDT(datetime):

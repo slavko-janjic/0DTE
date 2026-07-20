@@ -71,12 +71,15 @@ def get_daily_bars(ticker: str, period: str = "5d") -> pd.DataFrame | None:
         return None
 
 
-def get_premarket_quote(ticker: str, proxy: str | None = None) -> float | None:
-    """Overnight / pre-market last price. When a futures proxy is given (index
-    ETFs -> NQ/ES/RTY, which trade overnight) use its live price; otherwise pull
-    extended-hours intraday bars and take the latest close. None on failure."""
-    if proxy:
-        return get_current_price(proxy)
+def get_premarket_quote(ticker: str) -> float | None:
+    """Overnight / pre-market last price from the ticker's OWN extended-hours
+    bars (latest close). None on failure.
+
+    Previously accepted an index-futures proxy for the ETFs, but that returned
+    an index-scale price (NQ=F ~28,727) which the caller then differenced
+    against the ETF's own close (~696.7) - a units mismatch that produced a
+    +4023% gap. The ETF's own pre/post closes are real and in the right units.
+    """
     try:
         df = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=True)
         if df is None or df.empty:
@@ -87,10 +90,12 @@ def get_premarket_quote(ticker: str, proxy: str | None = None) -> float | None:
 
 
 def get_overnight_range(
-    ticker: str, proxy: str | None = None, tz_name: str = "America/New_York",
+    ticker: str, tz_name: str = "America/New_York",
 ) -> tuple[float, float] | None:
     """(high, low) of the OVERNIGHT session only: everything traded after the
     last regular-session bar, i.e. the prior close through the coming open.
+    From the ticker's OWN extended-hours bars (a futures-proxy variant used to
+    store index-scale levels on the ETF chart - see get_premarket_quote).
 
     Was previously max/min over a full `period="1d", prepost=True` window -
     which includes the regular session - so it reported the whole day's range
@@ -109,9 +114,8 @@ def get_overnight_range(
     Returns None during the regular session, when no overnight session is in
     progress - which is honest, rather than quietly handing back today's range.
     """
-    symbol = proxy or ticker
     try:
-        df = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True)
+        df = yf.Ticker(ticker).history(period="2d", interval="5m", prepost=True)
         if df is None or df.empty:
             return None
         local = df.tz_convert(tz_name) if df.index.tz is not None else df

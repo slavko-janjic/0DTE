@@ -93,11 +93,10 @@ iv_skew:
 premarket:
   window_minutes: 90            # how long before the open the setup pass runs (~08:00 ET)
   gap_bias_scale_pct: 0.5       # gap% that maps to a full +/-1 opening bias
-
-premarket_proxies:              # index-futures proxy for overnight gap; single stocks use extended-hours last
-  QQQ: "NQ=F"
-  SPY: "ES=F"
-  IWM: "RTY=F"
+  # (Index-futures proxies were removed: comparing an index-scale futures price
+  # to an ETF's own close produced a +4023% gap and drew index-level overnight
+  # highs/lows on the ETF chart. Each ticker now uses its own extended-hours
+  # data, so everything is in that ticker's price units.)
 
 # High-impact scheduled events, hand-maintained like market_holidays. The
 # auto-pilot stands down near these and won't hold an auto position into one
