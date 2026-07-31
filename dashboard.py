@@ -20,6 +20,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from analytics import accuracy
+from analytics import charting
 from analytics import events as event_analysis
 from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
 from config import load_settings
@@ -548,23 +549,42 @@ with left_col:
 
             # Range filters the chart only - the accuracy stats below always
             # cover full history, since they measure long-run performance.
-            range_choice = st.segmented_control(
-                "Chart range", ["Today", "Last 4h", "3 days", "All"], default="Today",
-                key="chart_range",
-            ) or "Today"
             market_tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
             now_market = datetime.now(market_tz)
-            # "Today" and "Last 4h" pin the x-axis to a fixed window with 2h of
-            # headroom on the right (naive market-local wall-clock, matching the
-            # data conversion below); the other ranges auto-fit to the data.
+            tz_name = config["market_hours"].get("timezone", "America/New_York")
+
+            range_choice = st.segmented_control(
+                "Chart range", ["Session", "Last 4h", "3 days", "All"], default="Session",
+                key="chart_range",
+            ) or "Session"
+
+            # "Session" plots one whole trading day, defaulting to the most
+            # recent day that HAS data rather than the calendar today - otherwise
+            # the chart is empty every evening, weekend and holiday, which reads
+            # as breakage rather than "the market is closed".
+            sessions = charting.session_dates(snapshots, tz_name)
+            cutoff = until = None
             x_scale = alt.Scale()
-            if range_choice == "Today":
-                open_h, open_m = (int(v) for v in config["market_hours"]["open"].split(":"))
-                cutoff = now_market.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
-                x_scale = alt.Scale(domain=[
-                    cutoff.replace(tzinfo=None),
-                    (now_market + timedelta(hours=2)).replace(tzinfo=None),
-                ])
+            picked_session = sessions[0] if sessions else None
+
+            if range_choice == "Session" and sessions:
+                picked_session = st.selectbox(
+                    "Trading day", sessions, index=0, key="chart_session",
+                    format_func=lambda d: (
+                        f"{d:%a %d %b %Y}"
+                        + (" · today" if d == now_market.date() else "")
+                    ),
+                    help="Browse previous sessions. Defaults to the latest day with data.",
+                )
+                close_time = config["market_hours"].get("close", "16:00")
+                if picked_session.isoformat() in config.get("market_half_days", []):
+                    close_time = "13:00"
+                start_naive, end_naive = charting.session_window(
+                    picked_session, config["market_hours"].get("open", "09:30"), close_time,
+                )
+                x_scale = alt.Scale(domain=[start_naive, end_naive])
+                cutoff = start_naive.replace(tzinfo=market_tz)
+                until = end_naive.replace(tzinfo=market_tz)
             elif range_choice == "Last 4h":
                 cutoff = now_market - timedelta(hours=4)
                 x_scale = alt.Scale(domain=[
@@ -573,12 +593,12 @@ with left_col:
                 ])
             elif range_choice == "3 days":
                 cutoff = now_market - timedelta(days=3)
-            else:
-                cutoff = None
 
             chart_rows = [
                 s for s in snapshots
-                if s["spot_price"] is not None and (cutoff is None or s["timestamp"] >= cutoff)
+                if s["spot_price"] is not None
+                and (cutoff is None or s["timestamp"] >= cutoff)
+                and (until is None or s["timestamp"] <= until)
             ]
             chart_df = pd.DataFrame(chart_rows)
             if chart_df.empty:
@@ -635,21 +655,45 @@ with left_col:
 
                 # pre-market key levels as horizontal reference lines - these
                 # prior-day / overnight levels are the day's intraday support &
-                # resistance. Shares the spot_price (left) y scale.
-                today_iso = now_market.date().isoformat()
-                day_setup_row = storage.get_day_setup(db_path, ticker, today_iso)
+                # resistance. Shares the spot_price (left) y scale, which is
+                # exactly why they're filtered: a level far from the plotted
+                # prices expands the y-axis and squashes the price line flat.
+                # (A units bug once stored NASDAQ-100 levels ~28,000 on a QQQ
+                # chart trading near 700 and did precisely that, for two weeks.)
+                setup_date = (picked_session or now_market.date()).isoformat()
+                day_setup_row = storage.get_day_setup(db_path, ticker, setup_date)
                 if day_setup_row:
-                    level_defs = [
-                        ("Prior close", day_setup_row.get("prior_close"), "#f0a202"),
-                        ("Prior high", day_setup_row.get("prior_high"), "#4a90d9"),
-                        ("Prior low", day_setup_row.get("prior_low"), "#4a90d9"),
-                        ("O/N high", day_setup_row.get("overnight_high"), "#9b59b6"),
-                        ("O/N low", day_setup_row.get("overnight_low"), "#9b59b6"),
+                    level_colors = {
+                        "Prior close": "#f0a202", "Prior high": "#4a90d9",
+                        "Prior low": "#4a90d9", "O/N high": "#9b59b6",
+                        "O/N low": "#9b59b6",
+                    }
+                    candidate_levels = {
+                        "Prior close": day_setup_row.get("prior_close"),
+                        "Prior high": day_setup_row.get("prior_high"),
+                        "Prior low": day_setup_row.get("prior_low"),
+                        "O/N high": day_setup_row.get("overnight_high"),
+                        "O/N low": day_setup_row.get("overnight_low"),
+                    }
+                    drawable = charting.visible_levels(
+                        candidate_levels,
+                        price_low=float(chart_df["spot_price"].min()),
+                        price_high=float(chart_df["spot_price"].max()),
+                    )
+                    hidden = [
+                        name for name, v in candidate_levels.items()
+                        if isinstance(v, (int, float)) and name not in drawable
                     ]
                     level_rows = [
-                        {"level": v, "label": name, "color": color}
-                        for name, v, color in level_defs if isinstance(v, (int, float))
+                        {"level": v, "label": name, "color": level_colors[name]}
+                        for name, v in drawable.items()
                     ]
+                    if hidden:
+                        st.caption(
+                            f":material/visibility_off: Hid {', '.join(hidden)} - "
+                            "too far from the traded range to plot without flattening "
+                            "the price line (likely stale or bad data)."
+                        )
                     if level_rows:
                         levels_df = pd.DataFrame(level_rows)
                         level_rules = alt.Chart(levels_df).mark_rule(

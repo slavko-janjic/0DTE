@@ -71,6 +71,39 @@ def minutes_to_next_catalyst(
     return min(upcoming) if upcoming else None
 
 
+# An index ETF does not gap 4000% overnight, and its overnight range does not sit
+# 40x away from yesterday's close. Values like that are a data fault (a units
+# mismatch once fed NASDAQ-100 index levels into a QQQ setup), and storing them
+# poisons everything downstream - the day-setup card printed "+4076.43%" and the
+# chart drew a 28,000 level on a 683 stock. Reject at the point of construction
+# so nothing downstream has to defend itself.
+MAX_PLAUSIBLE_GAP_PCT = 25.0
+MAX_LEVEL_DEVIATION_PCT = 30.0
+
+
+def plausible_gap(gap_percent: float | None,
+                  max_pct: float = MAX_PLAUSIBLE_GAP_PCT) -> float | None:
+    """The gap if it could physically be one, else None. NaN is rejected too."""
+    if not isinstance(gap_percent, (int, float)) or isinstance(gap_percent, bool):
+        return None
+    if gap_percent != gap_percent:          # NaN
+        return None
+    return gap_percent if abs(gap_percent) <= max_pct else None
+
+
+def plausible_level(level: float | None, reference: float | None,
+                    max_deviation_pct: float = MAX_LEVEL_DEVIATION_PCT) -> float | None:
+    """A price level if it sits within max_deviation_pct of a reference price
+    (yesterday's close), else None - it is in the wrong units or simply wrong."""
+    if not isinstance(level, (int, float)) or isinstance(level, bool):
+        return None
+    if level != level or level <= 0:
+        return None
+    if not isinstance(reference, (int, float)) or not reference or reference <= 0:
+        return level                        # nothing to check against; pass through
+    return level if abs(level - reference) / reference <= (max_deviation_pct / 100.0) else None
+
+
 def build_day_setup(
     ticker: str,
     gap_percent: float | None,
@@ -84,7 +117,18 @@ def build_day_setup(
 ) -> dict:
     """Assembles the per-ticker setup dict persisted in day_setups. Any field may
     be None (a partial setup is still useful - e.g. levels without a gap when the
-    overnight quote is unavailable)."""
+    overnight quote is unavailable).
+
+    Implausible values are dropped rather than stored: a missing field reads
+    honestly as "unknown", whereas a stored +4076% gap is presented to the user
+    as fact and drawn on charts.
+    """
+    gap_percent = plausible_gap(gap_percent)
+    overnight_high = plausible_level(overnight_high, prior_close)
+    overnight_low = plausible_level(overnight_low, prior_close)
+    prior_high = plausible_level(prior_high, prior_close)
+    prior_low = plausible_level(prior_low, prior_close)
+
     if gap_percent is None:
         gap_direction = None
     elif gap_percent > 0.05:
