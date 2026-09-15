@@ -9,10 +9,14 @@ Run a single poll cycle immediately (for testing, ignores market hours):
 """
 import argparse
 import json
+import os
+import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import single_instance
 
 from analytics import accuracy
 from config import load_settings
@@ -724,11 +728,14 @@ def maybe_disarm_day_session(config: dict, db_path: str) -> None:
 
 
 def run_loop(config: dict, db_path: str) -> None:
+    pid = os.getpid()
     while True:
         if is_market_open(config):
             run_once(config, db_path)
+            note = "polled"
         else:
             print("market closed, sleeping")
+            note = "market closed"
             try:
                 maybe_disarm_day_session(config, db_path)
             except Exception as exc:
@@ -750,6 +757,12 @@ def run_loop(config: dict, db_path: str) -> None:
                 storage.backup_db(db_path, Path(db_path).parent / "backups")
             except Exception as exc:
                 print(f"backup failed: {exc}")
+        # heartbeat every cycle (open or closed) so the dashboard can tell a
+        # live worker from a dead one - a silent outage cost ~2 weeks of data
+        try:
+            storage.record_heartbeat(db_path, pid, note)
+        except Exception as exc:
+            print(f"heartbeat failed: {exc}")
         # read fresh each cycle so the dashboard can change it without a restart
         time.sleep(storage.get_poll_interval_seconds(db_path))
 
@@ -769,8 +782,19 @@ def main() -> None:
 
     if args.once:
         run_once(config, db_path)
-    else:
-        run_loop(config, db_path)
+        return
+
+    # Refuse to start if another worker is already polling. Two workers racing
+    # is how bad pre-market data kept getting regenerated and how snapshots got
+    # written twice - the second instance must exit, not run alongside. The
+    # socket is held in a local so it lives as long as the process.
+    try:
+        _lock = single_instance.acquire()  # noqa: F841 - held for process lifetime
+    except single_instance.AlreadyRunning as exc:
+        print(f"another 0DTE worker is already running - exiting. ({exc})")
+        sys.exit(0)
+    print(f"worker started (pid {os.getpid()}) - holding single-instance lock")
+    run_loop(config, db_path)
 
 
 if __name__ == "__main__":

@@ -280,6 +280,37 @@ def render_close_progress() -> None:
 render_close_progress()
 
 
+@st.fragment(run_every="30s")
+def render_worker_status() -> None:
+    """Make a dead worker impossible to miss. A silent worker outage cost ~2
+    weeks of data before anyone noticed; this turns 'is it running?' into a
+    line at the top of the page."""
+    hb = storage.get_heartbeat(db_path)
+    poll = storage.get_poll_interval_seconds(db_path)
+    # a worker that missed several polls is stale; a couple of cycles' grace
+    # avoids false alarms from one slow fetch
+    stale_after = max(poll * 3, 300)
+    if hb is None:
+        st.error(":material/error: Worker has never run against this database - "
+                 "no data is being collected.", icon=":material/warning:")
+        return
+    age = hb["age_seconds"]
+    if age <= stale_after:
+        mins = int(age // 60)
+        ago = f"{int(age)}s ago" if age < 90 else f"{mins}m ago"
+        st.caption(f":material/check_circle: Worker alive · pid {hb['pid']} · "
+                   f"last beat {ago} · {hb['note'] or ''}")
+    else:
+        hrs = age / 3600
+        last = f"{age/60:.0f} min ago" if hrs < 1 else f"{hrs:.1f} h ago"
+        st.error(f":material/error: Worker looks DOWN - last heartbeat {last} "
+                 f"(pid {hb['pid']}). Data collection has stopped; restart the "
+                 f"0DTE-Worker task.", icon=":material/warning:")
+
+
+render_worker_status()
+
+
 def _signal_age(snap) -> timedelta:
     return datetime.now(timezone.utc) - datetime.fromisoformat(snap["timestamp"])
 

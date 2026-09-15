@@ -194,6 +194,13 @@ CREATE TABLE IF NOT EXISTS vix_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_vix_snapshots_time
     ON vix_snapshots (timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS worker_heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    pid INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,       -- UTC ISO; the dashboard compares against now()
+    note TEXT                       -- last cycle summary, e.g. "polled 5 tickers"
+);
 """
 
 
@@ -296,6 +303,32 @@ def connect(path: str | Path):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# --- worker heartbeat (liveness so a dead worker is visible, not silent) -----
+
+def record_heartbeat(db_path: str | Path, pid: int, note: str | None = None) -> None:
+    """Stamp the worker's pid + time each cycle. A silent worker outage is what
+    let two weeks of data quietly go missing; this makes 'alive?' answerable."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO worker_heartbeat (id, pid, updated_at, note) VALUES (1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET pid = excluded.pid,
+                   updated_at = excluded.updated_at, note = excluded.note""",
+            (pid, _now(), note),
+        )
+
+
+def get_heartbeat(db_path: str | Path) -> dict | None:
+    """Latest worker heartbeat as {pid, updated_at, note, age_seconds}, or None
+    if the worker has never run against this DB."""
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT pid, updated_at, note FROM worker_heartbeat WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds()
+    return {"pid": row["pid"], "updated_at": row["updated_at"], "note": row["note"],
+            "age_seconds": age}
 
 
 def backup_db(db_path: str | Path, backup_dir: str | Path, keep: int = 14) -> Path | None:

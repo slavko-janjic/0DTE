@@ -85,19 +85,22 @@ def test_backup_db_skips_when_todays_backup_exists(tmp_path):
 
 
 def test_backup_db_prunes_to_keep_newest(tmp_path):
+    from datetime import date
     path = make_temp_db(tmp_path)
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
-    # simulate two weeks of older backups
+    # simulate two weeks of older backups, dated well before today
     for day in range(1, 16):
-        (backup_dir / f"0dte_2026-06-{day:02d}.db").touch()
+        (backup_dir / f"0dte_2020-06-{day:02d}.db").touch()
 
     storage.backup_db(path, backup_dir, keep=14)
 
     remaining = sorted(p.name for p in backup_dir.glob("0dte_*.db"))
     assert len(remaining) == 14
-    assert "0dte_2026-06-01.db" not in remaining  # oldest pruned
-    assert remaining[-1].startswith("0dte_2026-07")  # today's backup kept
+    assert "0dte_2020-06-01.db" not in remaining  # oldest pruned
+    # today's backup is the newest and is kept (date-agnostic - the suite must
+    # not break just because the calendar rolled forward)
+    assert remaining[-1] == f"0dte_{date.today().isoformat()}.db"
 
 
 def test_weight_overrides_roundtrip(tmp_path):
@@ -643,3 +646,38 @@ def test_vix_baselines_median_is_robust_to_a_bad_print(tmp_path):
     assert b["term_ratio"] == pytest.approx(-0.10)   # median shrugs it off
     assert b["vvix"] == pytest.approx(95.0)
     assert b["samples"] == 200
+
+
+# --- worker heartbeat (liveness) ---------------------------------------------
+
+def test_heartbeat_none_before_worker_runs(tmp_path):
+    path = make_temp_db(tmp_path)
+    assert storage.get_heartbeat(path) is None
+
+
+def test_heartbeat_roundtrip_and_upsert(tmp_path):
+    path = make_temp_db(tmp_path)
+    storage.record_heartbeat(path, pid=1234, note="polled")
+    hb = storage.get_heartbeat(path)
+    assert hb["pid"] == 1234 and hb["note"] == "polled"
+    assert hb["age_seconds"] < 5      # just written
+
+    # single row - a second heartbeat overwrites, not appends
+    storage.record_heartbeat(path, pid=5678, note="market closed")
+    hb = storage.get_heartbeat(path)
+    assert hb["pid"] == 5678 and hb["note"] == "market closed"
+    import sqlite3
+    with sqlite3.connect(path) as c:
+        assert c.execute("SELECT COUNT(*) FROM worker_heartbeat").fetchone()[0] == 1
+
+
+def test_heartbeat_age_reflects_a_stale_write(tmp_path):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    path = make_temp_db(tmp_path)
+    storage.record_heartbeat(path, pid=1, note="old")
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    with sqlite3.connect(path) as c:
+        c.execute("UPDATE worker_heartbeat SET updated_at = ? WHERE id = 1", (stale,))
+    hb = storage.get_heartbeat(path)
+    assert hb["age_seconds"] > 300    # ~10 min -> clearly stale
