@@ -737,10 +737,33 @@ def run_loop(config: dict, db_path: str) -> None:
         time.sleep(storage.get_poll_interval_seconds(db_path))
 
 
+def _setup_file_logging() -> None:
+    """In scheduled / non-interactive runs, tee stdout+stderr to worker.log
+    with simple size rotation - this replaces the old run_worker.bat wrapper.
+    Running the task as python.exe directly (no cmd.exe parent) means Task
+    Scheduler tracks and terminates the worker process itself, so stopping the
+    task can no longer leave an orphaned python child holding the lock.
+    Interactive runs keep printing to the console."""
+    stdout = sys.stdout
+    if stdout is not None and stdout.isatty():
+        return
+    log = Path(__file__).resolve().parent / "worker.log"
+    try:
+        if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
+            os.replace(log, log.parent / (log.name + ".old"))
+    except OSError:
+        pass
+    handle = open(log, "a", buffering=1, encoding="utf-8")
+    sys.stdout = handle
+    sys.stderr = handle
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run a single poll cycle and exit")
     args = parser.parse_args()
+    if not args.once:
+        _setup_file_logging()
 
     config = load_settings()
     db_path = config["database"]["path"]

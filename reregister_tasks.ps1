@@ -40,10 +40,9 @@ if (-not $isAdmin) {
     exit 1
 }
 
-$root      = 'C:\Users\slavk\OneDrive\Documents\Projects\0DTE'
-$python    = 'C:\Users\slavk\.pyenv\pyenv-win\versions\3.13.2\python.exe'
-$workerBat = Join-Path $root 'run_worker.bat'
-$userId    = "$env:USERDOMAIN\$env:USERNAME"
+$root   = 'C:\Users\slavk\OneDrive\Documents\Projects\0DTE'
+$python = 'C:\Users\slavk\.pyenv\pyenv-win\versions\3.13.2\python.exe'
+$userId = "$env:USERDOMAIN\$env:USERNAME"
 
 Write-Host "Re-registering 0DTE scheduled tasks as user '$userId' (Limited level, StopExisting policy)..." -ForegroundColor Cyan
 
@@ -115,8 +114,12 @@ $argLine      <WorkingDirectory>$WorkingDir</WorkingDirectory>
 }
 
 # --- 4. worker ---------------------------------------------------------------
+# Launch python.exe DIRECTLY (not via run_worker.bat): with no cmd.exe parent,
+# Task Scheduler tracks the python process itself and terminates it on stop, so
+# a stopped task cannot leave an orphaned worker holding the lock. worker.py now
+# does its own log rotation + file logging (see _setup_file_logging).
 $workerXml = New-TaskXml -Description '0DTE background worker (polls signals)' `
-    -Command $workerBat -Arguments '' -WorkingDir $root -User $userId
+    -Command $python -Arguments '-u worker.py' -WorkingDir $root -User $userId
 Register-ScheduledTask -TaskName '0DTE-Worker' -Xml $workerXml -User $userId -Force | Out-Null
 Write-Host "  registered 0DTE-Worker" -ForegroundColor Green
 
