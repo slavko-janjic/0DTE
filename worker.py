@@ -20,7 +20,7 @@ import single_instance
 
 from analytics import accuracy
 from config import load_settings
-from data import kalshi, market_data, news
+from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
     close as close_position, evaluate_exit, should_auto_enter,
@@ -104,8 +104,7 @@ def _in_premarket_window(config: dict, now: datetime | None = None) -> bool:
 
 
 def compute_subscores(
-    ticker: str, config: dict, trump_headlines: list[str] | None = None,
-    db_path: str | None = None,
+    ticker: str, config: dict, db_path: str | None = None,
 ) -> tuple[dict, market_data.OptionChainSnapshot | None, float | None]:
     bars = market_data.get_intraday_bars(ticker)
     technicals = None
@@ -148,17 +147,6 @@ def compute_subscores(
 
     sentiment_result = get_sentiment(ticker, config)
 
-    prediction_markets = None
-    series_map = kalshi.TICKER_SERIES_MAP.get(ticker)
-    if series_map:
-        kalshi_series, index_ticker = series_map
-        # the full bucket distribution, not just the far upper tail (which used
-        # to pin this signal at -0.99 for its entire life)
-        buckets = kalshi.get_price_distribution(kalshi_series)
-        index_spot = market_data.get_current_price(index_ticker)
-        if buckets is not None and index_spot is not None:
-            prediction_markets = indicators.prediction_market_score(buckets, index_spot)
-
     # Scored against its OWN recent median, not its level: contango is the
     # normal state, so scoring the level reported "bullish" permanently (never
     # once negative in 9,874 samples). Absent until enough history exists.
@@ -170,16 +158,12 @@ def compute_subscores(
             vix_data["vix9d"], vix_data["vix"], vix_data["vvix"], baselines,
         )
 
-    trump_news = indicators.trump_headline_score(trump_headlines)
-
     subscores = {
         "technicals": technicals,
         "greeks_iv": greeks_iv,
         "order_flow": order_flow,
         "sentiment": sentiment_result.score,
-        "prediction_markets": prediction_markets,
         "volatility_regime": volatility_regime,
-        "trump_news": trump_news,
     }
     # manual config inversions plus any auto-calibration-added per-ticker ones
     if db_path is not None:
@@ -202,12 +186,12 @@ def apply_inversions(subscores: dict, invert_categories: list[str]) -> dict:
 
 
 def poll_ticker(
-    ticker: str, config: dict, db_path: str, trump_headlines: list[str] | None = None,
+    ticker: str, config: dict, db_path: str,
 ) -> tuple[object, market_data.OptionChainSnapshot | None] | None:
     """Polls one ticker and returns (signal, chain) so run_once can pick the
     strongest auto-entry candidate across ALL tickers, not the first in list
     order. Returns None when no data was available this cycle."""
-    subscores, chain, spot = compute_subscores(ticker, config, trump_headlines, db_path)
+    subscores, chain, spot = compute_subscores(ticker, config, db_path)
     # read fresh each cycle so a dashboard-applied override takes effect without a restart
     weights = storage.effective_weights(db_path, config, ticker)
     signal = compute_signal(ticker, subscores, weights, config["confidence_floor_pct"])
@@ -551,20 +535,6 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
 
 
 def run_once(config: dict, db_path: str) -> None:
-    # Fetched once per cycle, not per ticker - it's market-wide, and GDELT's free
-    # tier expects light request pacing.
-    trump_headlines = news.get_trump_market_headlines(
-        timespan_hours=config.get("trump_news_lookback_hours", 6)
-    )
-    # Store the actual words alongside the score they produced. Without this a
-    # trump_news score jumping 0.1 -> 0.8 is unexplainable after the fact.
-    # Market-wide, so recorded once here rather than per ticker.
-    try:
-        storage.insert_news_snapshot(
-            db_path, trump_headlines, indicators.trump_headline_score(trump_headlines))
-    except Exception as exc:
-        print(f"news snapshot failed: {exc}")
-
     # The VIX complex, market-wide, once per cycle - this is what lets
     # volatility_regime be scored against its own normal instead of a guess.
     try:
@@ -576,7 +546,7 @@ def run_once(config: dict, db_path: str) -> None:
 
     candidates = []
     for ticker in config["tickers"]:
-        result = poll_ticker(ticker, config, db_path, trump_headlines)
+        result = poll_ticker(ticker, config, db_path)
         if result is not None:
             signal, chain = result
             candidates.append((ticker, signal, chain))

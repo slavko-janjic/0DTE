@@ -330,9 +330,9 @@ def test_inversions_add_get_remove(tmp_path):
 def test_effective_inversions_unions_config_and_db(tmp_path):
     path = make_temp_db(tmp_path)
     storage.add_inversion(path, "QQQ", "sentiment")
-    config = {"invert_categories": ["trump_news"]}
-    assert storage.effective_inversions(path, config, "QQQ") == ["sentiment", "trump_news"]
-    assert storage.effective_inversions(path, config, "SPY") == ["trump_news"]
+    config = {"invert_categories": ["greeks_iv"]}
+    assert storage.effective_inversions(path, config, "QQQ") == ["greeks_iv", "sentiment"]
+    assert storage.effective_inversions(path, config, "SPY") == ["greeks_iv"]
 
 
 def test_confidence_bands_roundtrip_and_clear(tmp_path):

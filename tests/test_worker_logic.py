@@ -49,11 +49,11 @@ def test_minutes_to_close_on_normal_day():
 
 
 def test_apply_inversions_flips_only_listed_categories():
-    subscores = {"sentiment": 0.4, "technicals": -0.2, "trump_news": None}
+    subscores = {"sentiment": 0.4, "technicals": -0.2, "volatility_regime": None}
     result = apply_inversions(subscores, ["sentiment"])
     assert result["sentiment"] == -0.4
     assert result["technicals"] == -0.2
-    assert result["trump_news"] is None
+    assert result["volatility_regime"] is None
 
 
 def test_apply_inversions_noop_when_list_empty():

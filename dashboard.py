@@ -47,13 +47,8 @@ CATEGORY_INFO = {
     "order_flow": ("Order flow", "Are more contracts trading as calls or puts, and where would "
                                   "price 'settle' to hurt the most option holders (max pain)."),
     "sentiment": ("Social sentiment", "What retail traders are saying right now on Reddit and StockTwits."),
-    "prediction_markets": ("Prediction markets", "What real-money bettors on Kalshi think the odds "
-                                                  "are of the index finishing higher today."),
     "volatility_regime": ("Volatility regime", "Is the overall market calm or fearful right now "
                                                 "(VIX/VVIX) - fear tends to precede lower prices."),
-    "trump_news": ("Trump / political headlines", "How much tariff, trade, and Fed-related news "
-                                                    "involving Trump is in the cycle right now, and "
-                                                    "whether the tone leans bearish or bullish."),
 }
 
 DIRECTION_COLOR = {"bullish": "#2ecc71", "bearish": "#e74c3c", "neutral": "#95a5a6"}
@@ -739,7 +734,7 @@ with left_col:
                 # market movers: moments a signal lurched, marked so you can trace
                 # what price did from there. Same vertical-rule idiom as trades.
                 shocks = []
-                for cat in ("trump_news", "sentiment"):
+                for cat in ("sentiment",):
                     for s in event_analysis.detect_signal_shocks(
                             snapshots, cat, min_delta=0.3, min_gap_minutes=30):
                         if cutoff is None or s["timestamp"] >= cutoff:
@@ -821,63 +816,6 @@ with left_col:
                         use_container_width=True,
                     )
 
-            with st.expander("Market movers - what moved price, and did we see it?",
-                             expanded=False):
-                st.caption(
-                    "Everything else here averages over every snapshot and asks "
-                    "'does this signal predict direction?'. This asks a different "
-                    "question: pick the moments a signal **lurched**, then trace what "
-                    "price did next. Each event path is shown against a **control** - "
-                    "the same path measured from random moments. If they look alike, "
-                    "nothing happened, however good the story sounds."
-                )
-                OFFSETS = (15, 30, 60, 120, 240)
-                shock_list = event_analysis.detect_signal_shocks(
-                    snapshots, "trump_news", min_delta=0.3, min_gap_minutes=30)
-                if not shock_list:
-                    st.caption("No trump_news shocks in this ticker's history yet.")
-                else:
-                    study = event_analysis.event_study(
-                        snapshots, shock_list, offsets=OFFSETS, control_samples=200)
-                    st.dataframe(
-                        [
-                            {
-                                "After": f"{o} min",
-                                "Following the event": (
-                                    f"{study['detail'][o]['event_mean_pct']:+.3f}%"
-                                    if study["detail"][o]["event_mean_pct"] is not None else "-"),
-                                "Random moment": (
-                                    f"{study['detail'][o]['control_mean_pct']:+.3f}%"
-                                    if study["detail"][o]["control_mean_pct"] is not None else "-"),
-                                "t": f"{study['detail'][o]['t_stat']:+.2f}",
-                            }
-                            for o in OFFSETS
-                        ],
-                        hide_index=True, use_container_width=True,
-                    )
-                    icon = (":material/check_circle:" if study["strongest_t"] >= 2
-                            else ":material/info:")
-                    st.info(f"**{study['events']} events** · {study['verdict']}. "
-                            f"(An effect needs |t| >= 2; ~100 events before that means "
-                            f"much.)", icon=icon)
-
-                    st.markdown("**The events themselves** - and what was being said")
-                    rows = []
-                    for s in reversed(shock_list[-8:]):
-                        news = storage.get_news_at(db_path, s["timestamp"].isoformat())
-                        headline = "-"
-                        if news:
-                            heads = json.loads(news["headlines_json"])
-                            headline = (heads[0][:90] + "...") if heads else "(no headlines)"
-                        rows.append({
-                            "When (ET)": s["timestamp"].astimezone(market_tz).strftime("%m-%d %H:%M"),
-                            "Score moved": f"{s['from']:+.2f} -> {s['to']:+.2f}",
-                            "Top headline at the time": headline,
-                        })
-                    st.dataframe(rows, hide_index=True, use_container_width=True)
-                    if all(r["Top headline at the time"] == "-" for r in rows):
-                        st.caption(":material/history: Headlines are only stored from today "
-                                   "onward - older events can't be explained retroactively.")
 
             with st.expander("Calibration, per-signal accuracy & weight tuning", expanded=False):
                 # --- Automatic self-calibration -----------------------------
