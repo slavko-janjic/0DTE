@@ -42,11 +42,8 @@ st.set_page_config(page_title="0DTE Paper Trading", layout="wide")
 CATEGORY_INFO = {
     "technicals": ("Technicals", "Is the short-term price trend pointing up or down right now "
                                   "(momentum, RSI, price vs. volume-weighted average)."),
-    "greeks_iv": ("Options pricing (IV skew)", "Are options traders paying more for calls or puts "
-                                                "right now - a bet on which way price goes."),
     "order_flow": ("Order flow", "Are more contracts trading as calls or puts, and where would "
                                   "price 'settle' to hurt the most option holders (max pain)."),
-    "sentiment": ("Social sentiment", "What retail traders are saying right now on Reddit and StockTwits."),
     "volatility_regime": ("Volatility regime", "Is the overall market calm or fearful right now "
                                                 "(VIX/VVIX) - fear tends to precede lower prices."),
 }
@@ -734,7 +731,7 @@ with left_col:
                 # market movers: moments a signal lurched, marked so you can trace
                 # what price did from there. Same vertical-rule idiom as trades.
                 shocks = []
-                for cat in ("sentiment",):
+                for cat in ("technicals",):
                     for s in event_analysis.detect_signal_shocks(
                             snapshots, cat, min_delta=0.3, min_gap_minutes=30):
                         if cutoff is None or s["timestamp"] >= cutoff:

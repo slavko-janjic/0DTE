@@ -27,7 +27,6 @@ from paper_trading.engine import (
 )
 from paper_trading.models import Position
 from paper_trading.shadow import shadow_position_from_row, should_shadow_enter
-from sentiment.aggregate import get_sentiment
 from signals import day_setup as day_setup_mod
 from signals import indicators
 from signals.composite import build_recommendation, compute_signal, direction_from_score
@@ -116,26 +115,9 @@ def compute_subscores(
         technicals = indicators.compute_technicals_score(closes, volumes, highs, lows)
 
     chain = market_data.get_option_chain(ticker)
-    greeks_iv = order_flow = None
+    order_flow = None
     if chain is not None:
         chain = market_data.enrich_with_greeks(chain)
-        # Real skew is measured ACROSS strikes: the 25-delta call vs the
-        # 25-delta put, normalised by ATM IV. (Comparing a call and put at the
-        # SAME strike is meaningless - put-call parity pins them equal, so the
-        # difference is pure quote noise. That was the old bug.)
-        iv_cfg = config.get("iv_skew", {})
-        otm_call = market_data.find_delta_contract(chain.calls, iv_cfg.get("call_delta", 0.25))
-        otm_put = market_data.find_delta_contract(chain.puts, -iv_cfg.get("put_delta", 0.25))
-        atm_call = market_data.find_atm_contract(chain.calls, chain.spot)
-        if otm_call is not None and otm_put is not None and atm_call is not None:
-            greeks_iv = indicators.compute_greeks_iv_score(
-                otm_call.get("impliedVolatility"),
-                otm_put.get("impliedVolatility"),
-                atm_call.get("impliedVolatility"),
-                iv_cfg.get("baseline_ratio", 0.10),
-                iv_cfg.get("scale", 0.10),
-            )
-
         call_volume = chain.calls["volume"].fillna(0).sum() if not chain.calls.empty else 0
         put_volume = chain.puts["volume"].fillna(0).sum() if not chain.puts.empty else 0
         max_pain = indicators.compute_max_pain(
@@ -145,7 +127,6 @@ def compute_subscores(
         ) if not chain.calls.empty and not chain.puts.empty else None
         order_flow = indicators.compute_order_flow_score(call_volume, put_volume, max_pain, chain.spot)
 
-    sentiment_result = get_sentiment(ticker, config)
 
     # Scored against its OWN recent median, not its level: contango is the
     # normal state, so scoring the level reported "bullish" permanently (never
@@ -160,9 +141,7 @@ def compute_subscores(
 
     subscores = {
         "technicals": technicals,
-        "greeks_iv": greeks_iv,
         "order_flow": order_flow,
-        "sentiment": sentiment_result.score,
         "volatility_regime": volatility_regime,
     }
     # manual config inversions plus any auto-calibration-added per-ticker ones

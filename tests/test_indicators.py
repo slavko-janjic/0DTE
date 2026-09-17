@@ -76,58 +76,6 @@ def test_compute_technicals_score_works_without_highs_lows():
     assert indicators.compute_technicals_score(closes, volumes, None, None) is not None
 
 
-# --- IV skew: a 25-delta risk reversal, normalised by ATM IV -----------------
-# The old version differenced the ATM call's IV against the ATM PUT's IV at the
-# same strike, which put-call parity pins equal - it was scoring quote noise.
-
-def test_iv_skew_score_neutral_at_the_baseline():
-    # puts exactly 10% richer than calls relative to ATM IV = the normal state
-    score = indicators.iv_skew_score(call_iv_otm=0.27, put_iv_otm=0.30, atm_iv=0.30,
-                                     baseline_ratio=0.10, scale=0.10)
-    assert score == pytest.approx(0.0)
-
-
-def test_iv_skew_score_bearish_when_skew_steepens():
-    # puts much richer than usual -> crash protection being bid -> fear
-    score = indicators.iv_skew_score(call_iv_otm=0.24, put_iv_otm=0.30, atm_iv=0.30,
-                                     baseline_ratio=0.10, scale=0.10)
-    assert score < 0
-
-
-def test_iv_skew_score_bullish_when_skew_flattens():
-    # puts barely richer than calls -> complacency / upside chase
-    score = indicators.iv_skew_score(call_iv_otm=0.30, put_iv_otm=0.30, atm_iv=0.30,
-                                     baseline_ratio=0.10, scale=0.10)
-    assert score > 0
-
-
-def test_iv_skew_score_normalises_across_tickers():
-    """The same RELATIVE skew on a low-vol name and a high-vol name must score
-    the same - otherwise TSLA's IV points swamp SPY's."""
-    low = indicators.iv_skew_score(0.09, 0.11, 0.10, 0.10, 0.10)   # 20% ratio
-    high = indicators.iv_skew_score(0.72, 0.88, 0.80, 0.10, 0.10)  # 20% ratio
-    assert low == pytest.approx(high)
-
-
-def test_iv_skew_score_rejects_garbage_iv_rather_than_scoring_it():
-    """yfinance returns 0.0 / 0.001 when its solver fails. Differencing those
-    produced a confident score from nothing - the actual bug. No data must mean
-    NO SIGNAL, so the composite renormalises around it."""
-    assert indicators.iv_skew_score(0.001, 0.0, 0.30) is None      # solver failed
-    assert indicators.iv_skew_score(0.27, 0.30, 0.0) is None       # dead ATM IV
-    assert indicators.iv_skew_score(0.27, 9.9, 0.30) is None       # 990% IV
-    assert indicators.iv_skew_score(None, 0.30, 0.30) is None
-    assert indicators.iv_skew_score(float("nan"), 0.30, 0.30) is None
-
-
-def test_valid_iv_bounds():
-    assert indicators.valid_iv(0.30) is True
-    assert indicators.valid_iv(0.0) is False       # yfinance's failure value
-    assert indicators.valid_iv(0.001) is False     # 0.1% IV isn't real
-    assert indicators.valid_iv(6.0) is False       # 600% IV isn't real
-    assert indicators.valid_iv(None) is False
-
-
 def test_call_put_volume_score_bullish_when_calls_dominate():
     score = indicators.call_put_volume_score(call_volume=800, put_volume=200)
     assert score == 0.6

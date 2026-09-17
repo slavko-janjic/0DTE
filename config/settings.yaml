@@ -61,7 +61,7 @@ accuracy_horizon_minutes: 30  # how far ahead a signal's direction is graded aga
 # all day made ONE call, not 390 (see analytics.accuracy.independent_observations).
 # Counting raw minutes is what let trump_news - which has ~3 real observations in
 # 11 days - collect half of IWM's composite weight. At 30, a fast signal
-# (technicals, greeks_iv) qualifies within a couple of weeks; a slow market-wide
+# technicals qualifies within a couple of weeks; a slow market-wide
 # one correctly never does on its own.
 weight_suggestion_min_graded: 30
 
@@ -70,19 +70,6 @@ weight_suggestion_min_graded: 30
 # inverse contribute to the composite instead. Applies at the worker, so stored
 # subscores and accuracy grading reflect the flipped signal.
 invert_categories: []
-
-# IV skew (the greeks_iv signal). Measured ACROSS strikes as a 25-delta risk
-# reversal, normalised by ATM IV. It previously compared the ATM call's IV to
-# the ATM PUT's IV at the same strike, which put-call parity pins to the same
-# value - so it was amplifying quote noise 20x and, at -0.68 correlation with
-# technicals, cancelling our least-bad signal. Any IV outside 1%-500% is
-# rejected outright (yfinance returns 0.0 when its solver fails); the signal
-# then reports no data and the composite renormalises around it.
-iv_skew:
-  call_delta: 0.25       # which OTM call defines the upside leg
-  put_delta: 0.25        # which OTM put defines the downside leg
-  baseline_ratio: 0.10   # puts are typically ~10% richer than calls, vs ATM IV
-  scale: 0.10            # deviation from baseline that maps to a full +/-1 score
 
 # Pre-market "day setup": once per trading day before the open, the worker
 # assembles the overnight gap, prior-day/overnight levels, today's catalysts,
@@ -119,11 +106,10 @@ market_catalysts:
   - { date: "2026-12-10", time: "08:30", label: "CPI",         impact: "high" }
 
 weights:
-  technicals: 0.20
-  greeks_iv: 0.20
-  order_flow: 0.20
-  sentiment: 0.20
-  volatility_regime: 0.20    # VIX/VIX9D term structure + VVIX - market-wide fear gauge
+  # equal weights; the composite renormalises over whatever is non-None each cycle
+  technicals: 0.33
+  order_flow: 0.33
+  volatility_regime: 0.33    # VIX/VIX9D term structure + VVIX - market-wide fear gauge
 
 # Auto-pilot: automated paper entries (on/off lives in the DB, toggled from the
 # dashboard - these are the tunables). Manual trading always stays available.
