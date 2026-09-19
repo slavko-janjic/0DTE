@@ -114,6 +114,7 @@ weights:
 # Auto-pilot: automated paper entries (on/off lives in the DB, toggled from the
 # dashboard - these are the tunables). Manual trading always stays available.
 autopilot:
+  tickers: [QQQ, SPY]           # only auto-enter these tickers (empty/absent = all polled tickers)
   min_confidence_pct: 55        # only enter on signals at least this confident
   profit_target_pct: 50         # auto-set on every auto trade at entry
   stop_loss_pct: -35            # auto-set on every auto trade at entry (negative)
@@ -127,7 +128,7 @@ autopilot:
   tactic: opening_range         # opening_range = one deliberate decision per day-session; continuous = enter any time guard rails pass
   decision_start_minutes: 30    # opening_range: decision window opens this many minutes after open
   decision_end_minutes: 90      # opening_range: ...and closes this many minutes after open
-  max_entries_per_session: 1    # opening_range: the single best trade per day
+  max_entries_per_session: 2    # opening_range: best trade per allowed ticker (one QQQ + one SPY/day)
   no_entry_before_catalyst_minutes: 15  # stand down this close to a scheduled high-impact catalyst
   close_before_catalyst_minutes: 5      # don't hold into one: force-close AUTO positions (suggest for manual) this close to it (0 = off)
   positive_gamma_confidence_penalty: 10 # in a rangebound (positive-gamma) regime, require this much more confidence to auto-enter (0 = off)

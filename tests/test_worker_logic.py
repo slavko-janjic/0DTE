@@ -624,3 +624,24 @@ def test_record_quote_snapshot_noop_without_chain(tmp_path, monkeypatch):
     _patch_market_clock(monkeypatch)
     worker.record_quote_snapshot("NVDA", AUTO_CONFIG, db_path, None)
     assert storage.get_latest_quote(db_path, "NVDA") is None
+
+
+def test_maybe_auto_enter_best_respects_ticker_whitelist(tmp_path, monkeypatch):
+    """autopilot.tickers narrows auto-entry to a whitelist: the strongest overall
+    candidate is skipped if it is not on the list."""
+    db_path = _auto_db(tmp_path)
+    _patch_market_clock(monkeypatch)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0})
+    cfg = {**AUTO_CONFIG,
+           "autopilot": {**AUTO_CONFIG["autopilot"], "tickers": ["QQQ", "SPY"]}}
+    candidates = [
+        ("IWM", _fake_signal(80.0), _fake_chain()),   # strongest, but NOT whitelisted
+        ("QQQ", _fake_signal(60.0), _fake_chain()),   # whitelisted -> should win
+    ]
+    maybe_auto_enter_best(candidates, cfg, db_path)
+
+    open_rows = storage.get_open_positions(db_path)
+    assert len(open_rows) == 1
+    assert open_rows[0]["ticker"] == "QQQ"
+    assert open_rows[0]["opened_by"] == "auto"

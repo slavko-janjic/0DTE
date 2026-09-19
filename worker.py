@@ -280,6 +280,14 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
         return
 
     autopilot_cfg = config.get("autopilot", {})
+    # Optional whitelist: auto-enter only these tickers (the worker still polls
+    # and stores signals for ALL tickers - this only narrows what autopilot
+    # trades). Empty/absent = every polled ticker is eligible.
+    allowed = autopilot_cfg.get("tickers")
+    if allowed:
+        candidates = [c for c in candidates if c[0] in allowed]
+        if not candidates:
+            return
     tz_name = config["market_hours"].get("timezone", "America/New_York")
     minutes_since_open = minutes_since_market_open(config)
     minutes_to_close = minutes_to_market_close(config)
