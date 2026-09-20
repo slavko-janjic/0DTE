@@ -579,24 +579,28 @@ def _selected_ticker() -> str:
     return sel if sel in tks else tks[0]
 
 
-@st.fragment(run_every="30s")
 def render_sentiment_strip() -> None:
-    """Read-only all-ticker lean: name + confidence, green (call) / red (put)."""
-    chips = []
-    for t in config["tickers"]:
-        snap = storage.get_latest_signal(db_path, t)
-        if snap is None:
-            chips.append(f"<span style='opacity:.5;font-family:monospace'>{t} —</span>")
-            continue
-        conf, _ = _display_confidence(snap)
-        color = DIRECTION_COLOR.get(snap["direction"], "#95a5a6")
-        chips.append(
-            f"<span style='font-family:monospace;font-weight:600;border:1px solid {color}55;"
-            f"border-left:3px solid {color};border-radius:8px;padding:4px 10px;'>"
-            f"{t} <span style='color:{color}'>{conf:.0f}%</span></span>")
-    st.markdown(
-        "<div style='display:flex;gap:7px;flex-wrap:wrap;margin-bottom:.6rem'>"
-        + "".join(chips) + "</div>", unsafe_allow_html=True)
+    """All-ticker lean AND the ticker switcher: click a chip to open its signal.
+    Coloured green (call lean) / red (put lean); the selected one is ringed."""
+    tks = config["tickers"]
+    current = _selected_ticker()
+    snaps = {t: storage.get_latest_signal(db_path, t) for t in tks}
+    css = ["<style>"]
+    for t in tks:
+        snap = snaps[t]
+        color = DIRECTION_COLOR.get(snap["direction"], "#95a5a6") if snap is not None else "#95a5a6"
+        css.append(f".st-key-senti_{t} button{{font-family:monospace;font-weight:600;"
+                   f"color:{color};border-color:{color}55;border-left:3px solid {color};}}")
+        if t == current:
+            css.append(f".st-key-senti_{t} button{{border-color:{color};box-shadow:0 0 0 1px {color};}}")
+    css.append("</style>")
+    st.markdown("".join(css), unsafe_allow_html=True)
+    cols = st.columns(len(tks))
+    for col, t in zip(cols, tks):
+        snap = snaps[t]
+        conf = f"{_display_confidence(snap)[0]:.0f}%" if snap is not None else "—"
+        col.button(f"{t}  {conf}", key=f"senti_{t}", use_container_width=True,
+                   on_click=lambda t=t: st.session_state.__setitem__("sel_ticker", t))
 
 
 @st.fragment(run_every="15s")
@@ -626,14 +630,10 @@ def render_system_alert() -> None:
 
 
 def page_signals() -> None:
-    ticker = st.segmented_control("Ticker", config["tickers"],
-                                  default=_selected_ticker(), key="ticker_seg")
-    if not ticker:
-        ticker = config["tickers"][0]
-    st.session_state["sel_ticker"] = ticker
+    render_sentiment_strip()
+    ticker = _selected_ticker()
 
     render_wallet()
-    render_sentiment_strip()
     render_live_price(ticker)
 
     with st.container(key="signal_panel"):
@@ -1509,85 +1509,6 @@ def section_place_trade(ticker) -> None:
     with st.container(key="order_card"):
         st.subheader(":material/shopping_cart: Place a paper trade")
 
-        # --- Auto-pilot mode: worker-side automated entries. Manual trading
-        # below always stays available regardless of this control. ------------
-        _AP_MODE_LABELS = {"off": "Off", "day": "Day session", "continuous": "Continuous"}
-        _AP_LABEL_MODES = {label: mode for mode, label in _AP_MODE_LABELS.items()}
-        ap_mode, ap_armed_date = storage.get_autopilot_state(db_path)
-        market_tz_ap = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
-        now_ap = datetime.now(market_tz_ap)
-        today_ap = now_ap.date()
-
-        # sync widget <- DB when the DB changed outside this widget (worker's
-        # day-session auto-disarm, another browser tab) so a stale widget value
-        # never re-arms a session the worker just ended
-        db_label = _AP_MODE_LABELS[ap_mode]
-        if st.session_state.get("autopilot_mode_synced") != db_label:
-            st.session_state["autopilot_mode_control"] = db_label
-            st.session_state["autopilot_mode_synced"] = db_label
-
-        selected_label = st.segmented_control(
-            "Auto-pilot",
-            list(_AP_MODE_LABELS.values()),
-            key="autopilot_mode_control",
-            help="Day session: arms the worker for one trading day - it waits for the "
-                 "opening range, makes ONE decision (the strongest qualifying signal "
-                 "across all tickers), manages the exit, force-closes the auto position "
-                 "before the bell, and disarms itself afterwards. Continuous: the worker "
-                 "may enter any time guard rails pass. Manual trading below keeps "
-                 "working either way.",
-        )
-        # clicking the selected segment deselects it -> read that as Off
-        selected_mode = _AP_LABEL_MODES.get(selected_label, "off")
-        if selected_label != st.session_state["autopilot_mode_synced"]:
-            st.session_state["autopilot_mode_synced"] = _AP_MODE_LABELS[selected_mode]
-            if selected_mode == "day":
-                # arm for today if the session can still trade, else the next trading day
-                if (is_market_open(config) or
-                        (today_ap.weekday() < 5
-                         and today_ap.isoformat() not in config.get("market_holidays", [])
-                         and minutes_to_market_close(config) > 0)):
-                    armed = today_ap
-                else:
-                    armed = next_trading_day(config, today_ap)
-                storage.set_autopilot_state(db_path, "day", armed.isoformat())
-            else:
-                storage.set_autopilot_state(db_path, selected_mode)
-            ap_mode, ap_armed_date = storage.get_autopilot_state(db_path)
-
-        ap_cfg = config.get("autopilot", {})
-        if ap_mode == "day" and ap_armed_date:
-            tactic = ap_cfg.get("tactic", "opening_range").replace("_", " ")
-            open_hm = config["market_hours"].get("open", "09:30")
-            open_h, open_m = (int(p) for p in open_hm.split(":"))
-            open_minutes = open_h * 60 + open_m
-            d_start = open_minutes + ap_cfg.get("decision_start_minutes", 30)
-            d_end = open_minutes + ap_cfg.get("decision_end_minutes", 90)
-            st.caption(f":material/event_available: Armed for **{ap_armed_date}** · "
-                       f"tactic: {tactic} · decides between "
-                       f"{d_start // 60:02d}:{d_start % 60:02d}-{d_end // 60:02d}:{d_end % 60:02d} ET · "
-                       f"{ap_cfg.get('max_entries_per_session', 1)} trade max · "
-                       f"ends flat before the bell · disarms after the session")
-        if ap_mode != "off":
-            def _today_ap(iso_ts):
-                return bool(iso_ts) and datetime.fromisoformat(iso_ts).astimezone(market_tz_ap).date() == today_ap
-
-            all_rows = list(storage.get_open_positions(db_path)) + list(storage.get_closed_positions(db_path))
-            auto_today = sum(1 for r in all_rows if r["opened_by"] == "auto" and _today_ap(r["entry_time"]))
-            auto_pnl_today = sum((r["pnl"] or 0.0) for r in storage.get_closed_positions(db_path)
-                                 if r["opened_by"] == "auto" and _today_ap(r["exit_time"]))
-            limit = ap_cfg.get("daily_loss_limit_pct", 10) / 100.0 * config["account"]["starting_balance"]
-            breaker = " · :material/block: circuit breaker TRIPPED" if auto_pnl_today <= -limit else ""
-            trades_cap = (ap_cfg.get("max_entries_per_session", 1)
-                          if ap_mode == "day" and ap_cfg.get("tactic", "opening_range") == "opening_range"
-                          else ap_cfg.get("max_trades_per_day", 4))
-            st.caption(f":material/smart_toy: Auto-pilot {_AP_MODE_LABELS[ap_mode].upper()} · "
-                       f"trades today {auto_today}/{trades_cap} · "
-                       f"auto P&L today ${auto_pnl_today:+,.0f}{breaker} · "
-                       f"enters on ≥{ap_cfg.get('min_confidence_pct', 55)}% confidence, "
-                       f"target +{ap_cfg.get('profit_target_pct', 50)}% / "
-                       f"stop {ap_cfg.get('stop_loss_pct', -35)}%")
-
         # read fresh here (the wallet balance now lives in its own fragment scope)
         balance = storage.get_balance(db_path)
         default_amount = round(balance * config["account"]["risk_per_trade_pct"] / 100.0, 2)
@@ -1810,8 +1731,92 @@ def page_trades() -> None:
     section_calendar()
 
 
+def section_autopilot_controls() -> None:
+    """Auto-pilot arming (Off / Day session / Continuous) + live status."""
+    # --- Auto-pilot mode: worker-side automated entries. Manual trading
+    # below always stays available regardless of this control. ------------
+    _AP_MODE_LABELS = {"off": "Off", "day": "Day session", "continuous": "Continuous"}
+    _AP_LABEL_MODES = {label: mode for mode, label in _AP_MODE_LABELS.items()}
+    ap_mode, ap_armed_date = storage.get_autopilot_state(db_path)
+    market_tz_ap = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    now_ap = datetime.now(market_tz_ap)
+    today_ap = now_ap.date()
+
+    # sync widget <- DB when the DB changed outside this widget (worker's
+    # day-session auto-disarm, another browser tab) so a stale widget value
+    # never re-arms a session the worker just ended
+    db_label = _AP_MODE_LABELS[ap_mode]
+    if st.session_state.get("autopilot_mode_synced") != db_label:
+        st.session_state["autopilot_mode_control"] = db_label
+        st.session_state["autopilot_mode_synced"] = db_label
+
+    selected_label = st.segmented_control(
+        "Auto-pilot",
+        list(_AP_MODE_LABELS.values()),
+        key="autopilot_mode_control",
+        help="Day session: arms the worker for one trading day - it waits for the "
+             "opening range, makes ONE decision (the strongest qualifying signal "
+             "across all tickers), manages the exit, force-closes the auto position "
+             "before the bell, and disarms itself afterwards. Continuous: the worker "
+             "may enter any time guard rails pass. Manual trading below keeps "
+             "working either way.",
+    )
+    # clicking the selected segment deselects it -> read that as Off
+    selected_mode = _AP_LABEL_MODES.get(selected_label, "off")
+    if selected_label != st.session_state["autopilot_mode_synced"]:
+        st.session_state["autopilot_mode_synced"] = _AP_MODE_LABELS[selected_mode]
+        if selected_mode == "day":
+            # arm for today if the session can still trade, else the next trading day
+            if (is_market_open(config) or
+                    (today_ap.weekday() < 5
+                     and today_ap.isoformat() not in config.get("market_holidays", [])
+                     and minutes_to_market_close(config) > 0)):
+                armed = today_ap
+            else:
+                armed = next_trading_day(config, today_ap)
+            storage.set_autopilot_state(db_path, "day", armed.isoformat())
+        else:
+            storage.set_autopilot_state(db_path, selected_mode)
+        ap_mode, ap_armed_date = storage.get_autopilot_state(db_path)
+
+    ap_cfg = config.get("autopilot", {})
+    if ap_mode == "day" and ap_armed_date:
+        tactic = ap_cfg.get("tactic", "opening_range").replace("_", " ")
+        open_hm = config["market_hours"].get("open", "09:30")
+        open_h, open_m = (int(p) for p in open_hm.split(":"))
+        open_minutes = open_h * 60 + open_m
+        d_start = open_minutes + ap_cfg.get("decision_start_minutes", 30)
+        d_end = open_minutes + ap_cfg.get("decision_end_minutes", 90)
+        st.caption(f":material/event_available: Armed for **{ap_armed_date}** · "
+                   f"tactic: {tactic} · decides between "
+                   f"{d_start // 60:02d}:{d_start % 60:02d}-{d_end // 60:02d}:{d_end % 60:02d} ET · "
+                   f"{ap_cfg.get('max_entries_per_session', 1)} trade max · "
+                   f"ends flat before the bell · disarms after the session")
+    if ap_mode != "off":
+        def _today_ap(iso_ts):
+            return bool(iso_ts) and datetime.fromisoformat(iso_ts).astimezone(market_tz_ap).date() == today_ap
+
+        all_rows = list(storage.get_open_positions(db_path)) + list(storage.get_closed_positions(db_path))
+        auto_today = sum(1 for r in all_rows if r["opened_by"] == "auto" and _today_ap(r["entry_time"]))
+        auto_pnl_today = sum((r["pnl"] or 0.0) for r in storage.get_closed_positions(db_path)
+                             if r["opened_by"] == "auto" and _today_ap(r["exit_time"]))
+        limit = ap_cfg.get("daily_loss_limit_pct", 10) / 100.0 * config["account"]["starting_balance"]
+        breaker = " · :material/block: circuit breaker TRIPPED" if auto_pnl_today <= -limit else ""
+        trades_cap = (ap_cfg.get("max_entries_per_session", 1)
+                      if ap_mode == "day" and ap_cfg.get("tactic", "opening_range") == "opening_range"
+                      else ap_cfg.get("max_trades_per_day", 4))
+        st.caption(f":material/smart_toy: Auto-pilot {_AP_MODE_LABELS[ap_mode].upper()} · "
+                   f"trades today {auto_today}/{trades_cap} · "
+                   f"auto P&L today ${auto_pnl_today:+,.0f}{breaker} · "
+                   f"enters on ≥{ap_cfg.get('min_confidence_pct', 55)}% confidence, "
+                   f"target +{ap_cfg.get('profit_target_pct', 50)}% / "
+                   f"stop {ap_cfg.get('stop_loss_pct', -35)}%")
+
+
+
 def page_autopilot() -> None:
     render_wallet()
+    section_autopilot_controls()
     render_autopilot_intent()
 
 
