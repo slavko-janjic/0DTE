@@ -270,7 +270,6 @@ def render_close_progress() -> None:
     )
 
 
-render_close_progress()
 
 
 @st.fragment(run_every="30s")
@@ -301,7 +300,6 @@ def render_worker_status() -> None:
                  f"0DTE-Worker task.", icon=":material/warning:")
 
 
-render_worker_status()
 
 
 _ALERT_SOUND_BYTES = None
@@ -469,7 +467,6 @@ def render_autopilot_intent() -> None:
             _dispatch_autopilot_alerts(events)
 
 
-render_autopilot_intent()
 
 
 def _signal_age(snap) -> timedelta:
@@ -576,16 +573,67 @@ def render_live_price(selected_ticker: str) -> None:
                    f"**${price:,.2f}** &middot; updated {now_str}")
 
 
-# Split into left/right at the very top so the right panel spans the full page
-# height alongside the signal view, rather than starting below the banners.
-left_col, right_col = st.columns([2, 1], gap="large")
+def _selected_ticker() -> str:
+    tks = config["tickers"]
+    sel = st.session_state.get("sel_ticker")
+    return sel if sel in tks else tks[0]
 
-with left_col:
-    ticker = st.segmented_control("Ticker", config["tickers"], default=config["tickers"][0])
+
+@st.fragment(run_every="30s")
+def render_sentiment_strip() -> None:
+    """Read-only all-ticker lean: name + confidence, green (call) / red (put)."""
+    chips = []
+    for t in config["tickers"]:
+        snap = storage.get_latest_signal(db_path, t)
+        if snap is None:
+            chips.append(f"<span style='opacity:.5;font-family:monospace'>{t} —</span>")
+            continue
+        conf, _ = _display_confidence(snap)
+        color = DIRECTION_COLOR.get(snap["direction"], "#95a5a6")
+        chips.append(
+            f"<span style='font-family:monospace;font-weight:600;border:1px solid {color}55;"
+            f"border-left:3px solid {color};border-radius:8px;padding:4px 10px;'>"
+            f"{t} <span style='color:{color}'>{conf:.0f}%</span></span>")
+    st.markdown(
+        "<div style='display:flex;gap:7px;flex-wrap:wrap;margin-bottom:.6rem'>"
+        + "".join(chips) + "</div>", unsafe_allow_html=True)
+
+
+@st.fragment(run_every="15s")
+def render_wallet() -> None:
+    with st.container(key="wallet_mini"):
+        balance = storage.get_balance(db_path)
+        pnl = summarize_pnl(
+            storage.get_open_positions(db_path), storage.get_closed_positions(db_path),
+            tz_name=config["market_hours"].get("timezone", "America/New_York"))
+        c0, c1, c2, c3 = st.columns(4)
+        c0.metric("Balance", f"${balance:,.0f}")
+        c1.metric("Today", f"${pnl['realized_today']:,.0f}",
+                  delta=f"{pnl['realized_today']:+,.0f}" if pnl['realized_today'] else None)
+        c2.metric("Total P&L", f"${pnl['realized_total']:,.0f}",
+                  delta=f"{pnl['realized_total']:+,.0f}" if pnl['realized_total'] else None)
+        c3.metric("Open", f"${pnl['unrealized_open']:,.0f}",
+                  delta=f"{pnl['unrealized_open']:+,.0f}" if pnl['unrealized_open'] else None)
+
+
+def render_system_alert() -> None:
+    """Silent when healthy; a red note in the sidebar only if the worker is down."""
+    hb = storage.get_heartbeat(db_path)
+    poll = storage.get_poll_interval_seconds(db_path)
+    if hb is None or hb["age_seconds"] > max(poll * 3, 300):
+        st.sidebar.error(":material/error: Worker is down - data collection has stopped.",
+                         icon=":material/warning:")
+
+
+def page_signals() -> None:
+    ticker = st.segmented_control("Ticker", config["tickers"],
+                                  default=_selected_ticker(), key="ticker_seg")
     if not ticker:
         ticker = config["tickers"][0]
+    st.session_state["sel_ticker"] = ticker
 
-    render_status_banners(ticker)
+    render_wallet()
+    render_sentiment_strip()
     render_live_price(ticker)
 
     with st.container(key="signal_panel"):
@@ -1202,6 +1250,10 @@ with left_col:
         render_accuracy_panel()
 
     # --- Strategy lab: shadow strategies' track records -----------------
+    section_place_trade(ticker)
+
+
+def page_lab() -> None:
     with st.container(key="strategy_lab_card"):
         st.header(":material/science: Strategy lab")
 
@@ -1263,6 +1315,8 @@ with left_col:
 
         render_strategy_lab()
 
+def page_cost() -> None:
+    ticker = _selected_ticker()
     # --- Cost of trading: the one quantity here that isn't a forecast ----
     with st.container(key="cost_card"):
         st.header(":material/toll: Cost of trading")
@@ -1327,7 +1381,7 @@ with left_col:
 
         render_cost_card()
 
-with right_col:
+def section_wallet_full() -> None:
     # --- Wallet card ---------------------------------------------------
     with st.container(key="wallet_card"):
         top_account, top_settings = st.columns([3, 1])
@@ -1377,6 +1431,7 @@ with right_col:
 
         render_wallet_metrics()
 
+def section_calendar() -> None:
     # --- Daily P&L calendar card ----------------------------------------
     with st.container(key="calendar_card"):
         st.subheader(":material/calendar_month: Daily P&L")
@@ -1449,6 +1504,7 @@ with right_col:
 
             render_calendar()
 
+def section_place_trade(ticker) -> None:
     # --- Place order card -----------------------------------------------
     with st.container(key="order_card"):
         st.subheader(":material/shopping_cart: Place a paper trade")
@@ -1617,6 +1673,7 @@ with right_col:
 
         render_trade_buttons()
 
+def section_positions() -> None:
     # --- Open positions card ---------------------------------------------
     with st.container(key="positions_card"):
         st.subheader(":material/list_alt: Open positions")
@@ -1723,6 +1780,7 @@ with right_col:
 
         render_open_positions()
 
+def section_history() -> None:
     # --- Trade history card ------------------------------------------------
     with st.container(key="history_card"):
         st.subheader(":material/history: Trade history")
@@ -1743,3 +1801,26 @@ with right_col:
                 ], hide_index=True, use_container_width=True)
 
             render_trade_history()
+
+
+def page_trades() -> None:
+    section_wallet_full()
+    section_positions()
+    section_history()
+    section_calendar()
+
+
+def page_autopilot() -> None:
+    render_wallet()
+    render_autopilot_intent()
+
+
+_PAGES = [
+    st.Page(page_signals, title="Signals", icon=":material/insights:", default=True),
+    st.Page(page_lab, title="Strategy Lab", icon=":material/science:"),
+    st.Page(page_cost, title="Cost of Trading", icon=":material/toll:"),
+    st.Page(page_trades, title="Trades", icon=":material/receipt_long:"),
+    st.Page(page_autopilot, title="Autopilot", icon=":material/smart_toy:"),
+]
+render_system_alert()
+st.navigation(_PAGES).run()
