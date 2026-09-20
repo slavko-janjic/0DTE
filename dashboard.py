@@ -188,6 +188,22 @@ st.markdown(
         border-color: #e74c3c !important;
         color: #e74c3c !important;
     }
+    /* --- redesign polish ------------------------------------------------ */
+    [class*="st-key-signal_panel"], [class*="st-key-accuracy_panel"], [class*="st-key-day_setup_card"],
+    [class*="st-key-strategy_lab_card"], [class*="st-key-cost_card"], [class*="st-key-wallet_card"],
+    [class*="st-key-wallet_mini"], [class*="st-key-calendar_card"], [class*="st-key-order_card"],
+    [class*="st-key-positions_card"], [class*="st-key-history_card"] {
+        border: 1px solid rgba(128,128,128,0.18);
+    }
+    [class*="st-key-wallet_mini"] { border-radius:12px; padding:0.9rem 1.1rem; margin-bottom:1rem; }
+    html[data-app-theme="light"] [class*="st-key-wallet_mini"] { background-color:#f7f8fa; }
+    html[data-app-theme="dark"] [class*="st-key-wallet_mini"] { background-color:#191c24; }
+    [class*="st-key-senti_"] button {
+        border-radius:9px !important; background:transparent !important;
+        padding:0.4rem 0.3rem !important; font-size:0.9rem !important;
+    }
+    [class*="st-key-senti_"] button:hover { background:rgba(128,128,128,0.08) !important; }
+    .block-container { padding-top:2.2rem !important; }
     </style>
     """,
     unsafe_allow_html=True,
