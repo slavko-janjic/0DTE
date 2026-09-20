@@ -304,29 +304,108 @@ def render_worker_status() -> None:
 render_worker_status()
 
 
+_ALERT_SOUND_BYTES = None
+
+
+def _alert_sound_bytes() -> bytes:
+    """A short two-tone WAV synthesized once in-memory (no asset file) for the
+    ARMED/OPENED heads-up. Played via st.audio(autoplay=True)."""
+    global _ALERT_SOUND_BYTES
+    if _ALERT_SOUND_BYTES is None:
+        import io, math, struct, wave
+        sr = 44100
+
+        def tone(freq, dur, vol=0.35):
+            return [int(32767 * vol * math.sin(2 * math.pi * freq * n / sr))
+                    for n in range(int(sr * dur))]
+
+        samples = tone(880, 0.14) + tone(1320, 0.17)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(b"".join(struct.pack("<h", x) for x in samples))
+        _ALERT_SOUND_BYTES = buf.getvalue()
+    return _ALERT_SOUND_BYTES
+
+
+def _dispatch_autopilot_alerts(events: list[dict]) -> None:
+    """Fire the dashboard heads-up for a list of {kind, ticker, message} events:
+    a prominent banner, a sound, and a best-effort browser desktop notification.
+    (Phone push will later hook the same events server-side in the worker.)"""
+    for ev in events:
+        st.error(f":material/notifications_active: **{ev['ticker']} {ev['kind']}** - {ev['message']}")
+    # sound - native autoplay works once the user has interacted with the app
+    with st.container(key="ap_alert_sound"):
+        st.audio(_alert_sound_bytes(), format="audio/wav", autoplay=True)
+    st.markdown("<style>.st-key-ap_alert_sound{display:none;}</style>", unsafe_allow_html=True)
+    # best-effort desktop popup (needs one-time permission via the Enable button)
+    body = " | ".join(f"{e['ticker']} {e['kind']}: {e['message']}" for e in events)
+    components.html(
+        "<script>try{if(window.Notification&&Notification.permission==='granted'){"
+        f"new Notification('0DTE autopilot', {{body: {json.dumps(body)}}});"
+        "}}catch(e){}</script>",
+        height=0,
+    )
+
+
+_ENABLE_ALERTS_HTML = """
+<div style="font:13px system-ui,sans-serif;display:flex;gap:8px;align-items:center;">
+  <button id="apEn" style="cursor:pointer;padding:4px 10px;border-radius:6px;
+    border:1px solid #888;background:transparent;color:inherit;">Enable desktop popups</button>
+  <span id="apSt" style="opacity:.65;"></span>
+</div>
+<script>
+  const b=document.getElementById('apEn'), s=document.getElementById('apSt');
+  function upd(){ s.textContent = window.Notification ? ('('+Notification.permission+')') : '(unsupported)'; }
+  upd();
+  b.onclick=function(){ if(window.Notification){ Notification.requestPermission().then(function(p){
+    upd(); if(p==='granted'){ new Notification('0DTE autopilot',{body:'Desktop alerts enabled.'}); } }); } };
+</script>
+"""
+
+
 @st.fragment(run_every="30s")
 def render_autopilot_intent() -> None:
-    """Live pre-trade insight: for each ticker the autopilot may trade, a dry-run
-    of its own entry decision - what it would do THIS cycle and, if it's standing
-    down, exactly why. Deterministic, so this is the bot's real intent, not a
-    guess. Only shown while autopilot is armed."""
+    """Live pre-trade insight AND heads-up: for each ticker the autopilot may
+    trade, a dry-run of its own entry decision (what it would do this cycle and,
+    if standing down, exactly why), plus a banner + sound the moment a ticker
+    ARMS or the bot OPENS a position - so trades can be copied by hand in time.
+    Deterministic, so this is the bot's real intent. Shown only while armed."""
     if not storage.get_autopilot_enabled(db_path):
         return
     ap = config.get("autopilot", {})
     tickers = ap.get("tickers") or config["tickers"]
     tz_name = config["market_hours"].get("timezone", "America/New_York")
     now = datetime.now(ZoneInfo(tz_name))
+    pt = ap.get("profit_target_pct", 50)
+    sl = ap.get("stop_loss_pct", -35)
 
     with st.container(key="autopilot_intent_card"):
-        st.markdown("**Autopilot intent — what it's about to do**")
+        st.markdown("**Autopilot intent - what it's about to do**")
         st.caption(
             f":material/info: Plan: one {' / '.join(tickers)} 0DTE trade per name "
             f"in the {ap.get('decision_start_minutes', 30):.0f}-{ap.get('decision_end_minutes', 90):.0f} "
-            f"min post-open window, at ≥{ap.get('min_confidence_pct', 55):.0f}% confidence, "
-            f"exit +{ap.get('profit_target_pct', 50):.0f}% / {ap.get('stop_loss_pct', -35):.0f}%."
+            f"min post-open window, at \u2265{ap.get('min_confidence_pct', 55):.0f}% confidence, "
+            f"exit +{pt:.0f}% / {sl:.0f}%."
         )
+
+        # alert controls - usable even with the market closed, so setup/testing works
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            components.html(_ENABLE_ALERTS_HTML, height=44)
+        with c2:
+            if st.button("Send test alert", key="ap_test_alert_btn"):
+                _dispatch_autopilot_alerts([{
+                    "kind": "TEST", "ticker": "Alert",
+                    "message": "if you heard a sound (and saw a popup, if enabled), you're set.",
+                }])
+
         if not is_market_open(config):
             st.caption(":material/bedtime: Market closed - autopilot stands down until the next session.")
+            # reset the alert baseline so re-open doesn't fire stale transitions
+            st.session_state["ap_alert_init"] = False
             return
 
         since_open = minutes_since_market_open(config)
@@ -337,6 +416,7 @@ def render_autopilot_intent() -> None:
         open_rows = storage.get_open_positions(db_path)
         closed_rows = storage.get_closed_positions(db_path)
 
+        intents = []
         for t in tickers:
             sig = storage.get_latest_signal(db_path, t)
             if sig is None:
@@ -351,12 +431,12 @@ def render_autopilot_intent() -> None:
                 starting_balance=config["account"]["starting_balance"], now=now,
                 tz_name=tz_name, minutes_to_catalyst=mtc, gamma_regime=sig["gamma_regime"],
             )
+            intents.append(intent)
             if intent.would_enter:
                 st.success(
                     f":material/bolt: **{t}** - ARMED: would buy **{intent.lean}s** now "
-                    f"({intent.confidence_pct:.0f}% ≥ {intent.min_confidence_pct:.0f}% gate). "
-                    f"Mirror it: ATM 0DTE {intent.lean}, +{ap.get('profit_target_pct', 50):.0f}% / "
-                    f"{ap.get('stop_loss_pct', -35):.0f}%."
+                    f"({intent.confidence_pct:.0f}% \u2265 {intent.min_confidence_pct:.0f}% gate). "
+                    f"Mirror it: ATM 0DTE {intent.lean}, +{pt:.0f}% / {sl:.0f}%."
                 )
             else:
                 lean = intent.lean or "neutral"
@@ -364,6 +444,29 @@ def render_autopilot_intent() -> None:
                     f":material/pause_circle: **{t}** - {lean} {intent.confidence_pct:.0f}% - "
                     f"standing down: {intent.blocker}"
                 )
+
+        # edge-triggered heads-up: fire only on transitions INTO armed / new opens
+        armed = {i.ticker for i in intents if i.would_enter}
+        auto_open_ids = {r["id"] for r in open_rows if r["opened_by"] == "auto"}
+        events = []
+        if st.session_state.get("ap_alert_init"):
+            for t in armed - st.session_state.get("ap_prev_armed", set()):
+                it = next(i for i in intents if i.ticker == t)
+                events.append({
+                    "kind": "ARMED", "ticker": t,
+                    "message": f"would buy {it.lean}s now - mirror ATM 0DTE {it.lean}, +{pt:.0f}%/{sl:.0f}%.",
+                })
+            for oid in auto_open_ids - st.session_state.get("ap_prev_open_ids", set()):
+                r = next(r for r in open_rows if r["id"] == oid)
+                events.append({
+                    "kind": "OPENED", "ticker": r["ticker"],
+                    "message": f"{r['option_type']} {r['strike']:g} just opened - copy now.",
+                })
+        st.session_state["ap_prev_armed"] = armed
+        st.session_state["ap_prev_open_ids"] = auto_open_ids
+        st.session_state["ap_alert_init"] = True
+        if events:
+            _dispatch_autopilot_alerts(events)
 
 
 render_autopilot_intent()
