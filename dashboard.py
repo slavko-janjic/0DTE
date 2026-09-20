@@ -209,6 +209,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.markdown(
+    """
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+    <style>
+    html, body, .stApp, button, input, select, textarea { font-family:'IBM Plex Sans', system-ui, sans-serif; }
+    [data-testid="stMetricValue"] { font-family:'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric:tabular-nums; font-size:1.5rem; font-weight:600; letter-spacing:-0.01em; }
+    [data-testid="stMetricLabel"] p { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; opacity:0.6; }
+    [data-testid="stMetricDelta"] { font-family:'IBM Plex Mono', ui-monospace, monospace; }
+    h2 { font-size:1.15rem !important; } h3 { font-size:1.02rem !important; }
+    [class*="st-key-signal_panel"],[class*="st-key-accuracy_panel"],[class*="st-key-day_setup_card"],[class*="st-key-strategy_lab_card"],[class*="st-key-cost_card"],[class*="st-key-wallet_card"],[class*="st-key-wallet_mini"],[class*="st-key-calendar_card"],[class*="st-key-order_card"],[class*="st-key-positions_card"],[class*="st-key-history_card"] { box-shadow:0 1px 2px rgba(11,17,35,0.06); }
+    [class*="st-key-senti_"] button p { font-family:'IBM Plex Mono', ui-monospace, monospace; font-weight:600; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Streamlit's in-app theme switcher (menu -> Settings -> theme) is independent of
 # the OS/browser dark-mode setting our CSS media queries key off. This detects the
 # *actual* rendered theme by reading the app's background color and tags <html>
@@ -1836,6 +1852,38 @@ def page_autopilot() -> None:
     render_autopilot_intent()
 
 
+def _render_mobile_nav(active_path: str) -> None:
+    """A fixed bottom tab bar for phone width - links to the real st.navigation
+    page URLs, so it drives the same pages the sidebar nav does. Hidden on desktop."""
+    items = [("", "insights", "Signals"), ("page_lab", "science", "Lab"),
+             ("page_cost", "toll", "Cost"), ("page_trades", "receipt_long", "Trades"),
+             ("page_autopilot", "smart_toy", "Auto")]
+    links = []
+    for path, icon, label in items:
+        cls = "mnav-item mnav-active" if path == active_path else "mnav-item"
+        links.append(
+            f"<a class='{cls}' href='/{path}' target='_self'>"
+            f"<span class='msr'>{icon}</span><span>{label}</span></a>")
+    st.markdown(
+        "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded'>"
+        "<style>"
+        ".mnav{display:none}"
+        "@media(max-width:760px){"
+        "  .mnav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:1000000;"
+        "    justify-content:space-around;background:#ffffff;border-top:1px solid rgba(128,128,128,.25);"
+        "    padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));}"
+        "  html[data-app-theme='dark'] .mnav{background:#0e1117;}"
+        "  .mnav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;"
+        "    text-decoration:none;color:inherit;opacity:.55;font-size:10px;font-weight:600;padding:3px 0;}"
+        "  .mnav-item .msr{font-family:'Material Symbols Rounded';font-size:22px;line-height:1;}"
+        "  .mnav-active{opacity:1;color:#3a5bd9;}"
+        "  .block-container{padding-bottom:84px !important;}"
+        "}"
+        "</style>"
+        "<nav class='mnav'>" + "".join(links) + "</nav>",
+        unsafe_allow_html=True)
+
+
 _PAGES = [
     st.Page(page_signals, title="Signals", icon=":material/insights:", default=True),
     st.Page(page_lab, title="Strategy Lab", icon=":material/science:"),
@@ -1844,4 +1892,6 @@ _PAGES = [
     st.Page(page_autopilot, title="Autopilot", icon=":material/smart_toy:"),
 ]
 render_system_alert()
-st.navigation(_PAGES).run()
+_current_page = st.navigation(_PAGES)
+_render_mobile_nav(_current_page.url_path)
+_current_page.run()
