@@ -23,7 +23,7 @@ from config import load_settings
 from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
-    close as close_position, evaluate_exit, should_auto_enter,
+    close as close_position, evaluate_exit, explain_auto_decision, should_auto_enter,
 )
 from paper_trading.models import Position
 from paper_trading.shadow import shadow_position_from_row, should_shadow_enter
@@ -298,21 +298,26 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
         config.get("market_catalysts", []), now.date(), tz_name)
     minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts_today, now, tz_name)
 
+    # Dry-run the decision for EVERY candidate first, log a one-line intent
+    # summary (the "what's it about to do" trail), then act on the top qualifier.
+    # At most one entry per cycle, so a single pre-cycle rows snapshot is exact.
+    open_rows = storage.get_open_positions(db_path)
+    closed_rows = storage.get_closed_positions(db_path)
+    intents = []
     for ticker, signal, chain in sorted(
         candidates, key=lambda c: c[1].confidence_pct, reverse=True,
     ):
         if chain is None:
             continue
         _, gamma_regime = _gamma_from_chain(chain, config)
-        # guard rails re-read per candidate: an entry above changes open_rows
-        option_type = should_auto_enter(
+        intent = explain_auto_decision(
             ticker=ticker,
             direction=signal.direction,
             confidence_pct=signal.confidence_pct,
             minutes_since_open=minutes_since_open,
             minutes_to_close=minutes_to_close,
-            open_rows=storage.get_open_positions(db_path),
-            closed_rows=storage.get_closed_positions(db_path),
+            open_rows=open_rows,
+            closed_rows=closed_rows,
             autopilot_cfg=autopilot_cfg,
             starting_balance=config["account"]["starting_balance"],
             now=now,
@@ -320,8 +325,20 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=gamma_regime,
         )
-        if option_type is None:
+        intents.append((intent, ticker, signal, chain))
+
+    if intents:
+        summary = " | ".join(
+            f"{i.ticker} {i.lean or 'neutral'} {i.confidence_pct:.0f}% "
+            + ("-> WOULD ENTER" if i.would_enter else f"({i.blocker})")
+            for i, _, _, _ in intents
+        )
+        print(f"autopilot intent: {summary}")
+
+    for intent, ticker, signal, chain in intents:
+        if not intent.would_enter:
             continue
+        option_type = intent.lean
 
         df = chain.calls if option_type == "call" else chain.puts
         contract = market_data.find_atm_contract(df, chain.spot)

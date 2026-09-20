@@ -7,6 +7,7 @@ are exercised by the worker/dashboard, not unit tested directly.
 """
 import calendar as _cal
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -200,6 +201,116 @@ def late_session_stop_exit(
     return "time_decay_stop" if pnl_pct <= late_stop else None
 
 
+@dataclass
+class AutoIntent:
+    """A dry-run of the autopilot entry decision for one ticker: what it WOULD do
+    right now, and - if it is standing down - the single reason why. Pure, so the
+    dashboard, the worker's intent log, and should_auto_enter all agree."""
+    ticker: str
+    direction: str                  # 'bullish' | 'bearish' | 'neutral'
+    lean: str | None                # 'call'/'put' the direction implies (None if neutral)
+    confidence_pct: float
+    min_confidence_pct: float       # the effective gate, incl. any positive-gamma penalty
+    would_enter: bool
+    blocker: str | None             # None when would_enter; else why it's standing down
+
+
+def explain_auto_decision(
+    ticker: str,
+    direction: str,
+    confidence_pct: float,
+    minutes_since_open: float,
+    minutes_to_close: float,
+    open_rows: list,
+    closed_rows: list,
+    autopilot_cfg: dict,
+    starting_balance: float,
+    now: datetime,
+    tz_name: str = "America/New_York",
+    minutes_to_catalyst: float | None = None,
+    gamma_regime: str | None = None,
+) -> AutoIntent:
+    """The autopilot's entry decision, WITH its reasoning - the same guard rails
+    as should_auto_enter, in the same order, but returning why it would stand
+    down instead of a bare None. Surfaces the bot's live intent before it acts."""
+    lean = {"bullish": "call", "bearish": "put"}.get(direction)
+    min_conf = autopilot_cfg.get("min_confidence_pct", 55)
+    gamma_penalty = autopilot_cfg.get("positive_gamma_confidence_penalty", 0)
+    if gamma_regime == "positive":
+        min_conf += gamma_penalty
+
+    def _i(would, blocker):
+        return AutoIntent(ticker, direction, lean, confidence_pct, min_conf, would, blocker)
+
+    if lean is None:
+        return _i(False, "no directional signal (neutral)")
+
+    if confidence_pct < min_conf:
+        extra = " (raised for a rangebound/positive-gamma regime)" if (
+            gamma_regime == "positive" and gamma_penalty) else ""
+        return _i(False, f"confidence {confidence_pct:.0f}% is below the {min_conf:.0f}% gate{extra}")
+
+    if (minutes_to_catalyst is not None
+            and 0 <= minutes_to_catalyst <= autopilot_cfg.get("no_entry_before_catalyst_minutes", 15)):
+        return _i(False, f"standing down near a scheduled catalyst ({minutes_to_catalyst:.0f} min out)")
+
+    tactic = autopilot_cfg.get("tactic", "continuous")
+    if tactic == "opening_range":
+        ds = autopilot_cfg.get("decision_start_minutes", 30)
+        de = autopilot_cfg.get("decision_end_minutes", 90)
+        if minutes_since_open < ds:
+            return _i(False, f"decision window opens in {ds - minutes_since_open:.0f} min")
+        if minutes_since_open > de:
+            return _i(False, "decision window has closed for today")
+        if minutes_to_close < autopilot_cfg.get("no_entry_last_minutes", 60):
+            return _i(False, "too little runway before the close")
+    else:  # continuous
+        first = autopilot_cfg.get("no_entry_first_minutes", 30)
+        if minutes_since_open < first:
+            return _i(False, f"waiting out the first {first:.0f} min of the session")
+        if minutes_to_close < autopilot_cfg.get("no_entry_last_minutes", 60):
+            return _i(False, "too little runway before the close")
+
+    if any(row["ticker"] == ticker for row in open_rows):
+        return _i(False, "already holding a position in this ticker")
+
+    if (sum(1 for row in open_rows if row["opened_by"] == "auto")
+            >= autopilot_cfg.get("max_concurrent_positions", 3)):
+        return _i(False, "max concurrent auto positions reached")
+
+    tz = ZoneInfo(tz_name)
+    today = now.astimezone(tz).date()
+
+    def _is_today(iso_ts):
+        return bool(iso_ts) and datetime.fromisoformat(iso_ts).astimezone(tz).date() == today
+
+    auto_entries_today = sum(
+        1 for row in list(open_rows) + list(closed_rows)
+        if row["opened_by"] == "auto" and _is_today(row["entry_time"])
+    )
+    if auto_entries_today >= autopilot_cfg.get("max_trades_per_day", 4):
+        return _i(False, "daily auto-trade cap reached")
+    if (tactic == "opening_range"
+            and auto_entries_today >= autopilot_cfg.get("max_entries_per_session", 1)):
+        return _i(False, "already used this session's auto entries")
+
+    cooldown = timedelta(minutes=autopilot_cfg.get("cooldown_minutes", 30))
+    for row in closed_rows:
+        if row["ticker"] == ticker and row["exit_time"]:
+            if now - datetime.fromisoformat(row["exit_time"]) < cooldown:
+                return _i(False, f"cooldown after a recent {ticker} close")
+
+    loss_limit = autopilot_cfg.get("daily_loss_limit_pct", 10) / 100.0 * starting_balance
+    todays_auto_pnl = sum(
+        (row["pnl"] or 0.0) for row in closed_rows
+        if row["opened_by"] == "auto" and _is_today(row["exit_time"])
+    )
+    if todays_auto_pnl <= -loss_limit:
+        return _i(False, "daily loss limit hit - stopped for today")
+
+    return _i(True, None)
+
+
 def should_auto_enter(
     ticker: str,
     direction: str,
@@ -215,100 +326,17 @@ def should_auto_enter(
     minutes_to_catalyst: float | None = None,
     gamma_regime: str | None = None,
 ) -> str | None:
-    """Auto-pilot entry decision: returns 'call'/'put' to enter, or None.
-
-    Pure and row-driven (like summarize_pnl) so it's unit-testable. Guard rails,
-    checked in order: non-neutral direction, confidence threshold (raised in a
-    positive-gamma/rangebound regime, where a directional breakout entry is
-    riskier), catalyst proximity (stand down within
-    no_entry_before_catalyst_minutes of a scheduled high-impact event), the
-    tactic's entry window, no open position in this ticker (manual OR auto -
-    never stacks), auto-concurrent cap, auto trades/day cap, per-ticker cooldown
-    after any close, and a daily circuit breaker on realized auto P&L (pct of
-    starting_balance).
-
-    Tactics: 'opening_range' allows entries only inside the decision window
-    (decision_start..decision_end minutes after open) and at most
-    max_entries_per_session auto entries per day - one deliberate decision.
-    'continuous' keeps the original behavior (any time outside the first/last
-    minutes, up to max_trades_per_day).
-    """
-    if direction == "bullish":
-        option_type = "call"
-    elif direction == "bearish":
-        option_type = "put"
-    else:
-        return None
-
-    # positive gamma = dealers fade moves = rangebound, so breakout-style entries
-    # need a higher bar; negative/neutral leave the threshold unchanged
-    min_confidence = autopilot_cfg.get("min_confidence_pct", 55)
-    if gamma_regime == "positive":
-        min_confidence += autopilot_cfg.get("positive_gamma_confidence_penalty", 0)
-    if confidence_pct < min_confidence:
-        return None
-
-    # stand down just before a scheduled high-impact catalyst (CPI/FOMC/earnings)
-    # - getting caught long 0DTE premium into a known market-mover is a blowup
-    if (minutes_to_catalyst is not None
-            and 0 <= minutes_to_catalyst <= autopilot_cfg.get("no_entry_before_catalyst_minutes", 15)):
-        return None
-
-    tactic = autopilot_cfg.get("tactic", "continuous")
-    if tactic == "opening_range":
-        if not (autopilot_cfg.get("decision_start_minutes", 30)
-                <= minutes_since_open
-                <= autopilot_cfg.get("decision_end_minutes", 90)):
-            return None
-        if minutes_to_close < autopilot_cfg.get("no_entry_last_minutes", 60):
-            return None  # half days: window may overlap the no-runway zone
-    else:  # continuous
-        if minutes_since_open < autopilot_cfg.get("no_entry_first_minutes", 30):
-            return None
-        if minutes_to_close < autopilot_cfg.get("no_entry_last_minutes", 60):
-            return None
-
-    # never stack on an existing position in this ticker, manual or auto
-    if any(row["ticker"] == ticker for row in open_rows):
-        return None
-
-    if (sum(1 for row in open_rows if row["opened_by"] == "auto")
-            >= autopilot_cfg.get("max_concurrent_positions", 3)):
-        return None
-
-    tz = ZoneInfo(tz_name)
-    today = now.astimezone(tz).date()
-
-    def _is_today(iso_ts: str | None) -> bool:
-        return bool(iso_ts) and datetime.fromisoformat(iso_ts).astimezone(tz).date() == today
-
-    auto_entries_today = sum(
-        1 for row in list(open_rows) + list(closed_rows)
-        if row["opened_by"] == "auto" and _is_today(row["entry_time"])
+    """Auto-pilot entry decision: returns 'call'/'put' to enter, or None. Thin
+    wrapper over explain_auto_decision (the single source of the guard-rail
+    logic), so the acted-on decision and the surfaced intent can never drift."""
+    intent = explain_auto_decision(
+        ticker=ticker, direction=direction, confidence_pct=confidence_pct,
+        minutes_since_open=minutes_since_open, minutes_to_close=minutes_to_close,
+        open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=autopilot_cfg,
+        starting_balance=starting_balance, now=now, tz_name=tz_name,
+        minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
     )
-    if auto_entries_today >= autopilot_cfg.get("max_trades_per_day", 4):
-        return None
-    if (tactic == "opening_range"
-            and auto_entries_today >= autopilot_cfg.get("max_entries_per_session", 1)):
-        return None
-
-    # cooldown: any trade in this ticker closed within the last N minutes
-    cooldown = timedelta(minutes=autopilot_cfg.get("cooldown_minutes", 30))
-    for row in closed_rows:
-        if row["ticker"] == ticker and row["exit_time"]:
-            if now - datetime.fromisoformat(row["exit_time"]) < cooldown:
-                return None
-
-    # circuit breaker: today's realized AUTO P&L has burned through the daily limit
-    loss_limit = autopilot_cfg.get("daily_loss_limit_pct", 10) / 100.0 * starting_balance
-    todays_auto_pnl = sum(
-        (row["pnl"] or 0.0) for row in closed_rows
-        if row["opened_by"] == "auto" and _is_today(row["exit_time"])
-    )
-    if todays_auto_pnl <= -loss_limit:
-        return None
-
-    return option_type
+    return intent.lean if intent.would_enter else None
 
 
 def evaluate_exit(

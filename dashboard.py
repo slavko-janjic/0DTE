@@ -27,11 +27,12 @@ from config import load_settings
 from data import market_data
 from paper_trading.engine import calculate_contracts, calculate_pnl, close as close_position
 from paper_trading.engine import (
-    buy as buy_position, daily_realized_pnl, month_calendar_cells, price_target_exit,
+    buy as buy_position, daily_realized_pnl, explain_auto_decision, month_calendar_cells, price_target_exit,
     shift_month, summarize_pnl, trade_events,
 )
 from paper_trading.models import Position
 from paper_trading.shadow import strategy_edge, strategy_scorecard
+from signals import day_setup as day_setup_mod
 from storage import db as storage
 from worker import (
     is_market_open, minutes_since_market_open, minutes_to_market_close, next_trading_day,
@@ -301,6 +302,71 @@ def render_worker_status() -> None:
 
 
 render_worker_status()
+
+
+@st.fragment(run_every="30s")
+def render_autopilot_intent() -> None:
+    """Live pre-trade insight: for each ticker the autopilot may trade, a dry-run
+    of its own entry decision - what it would do THIS cycle and, if it's standing
+    down, exactly why. Deterministic, so this is the bot's real intent, not a
+    guess. Only shown while autopilot is armed."""
+    if not storage.get_autopilot_enabled(db_path):
+        return
+    ap = config.get("autopilot", {})
+    tickers = ap.get("tickers") or config["tickers"]
+    tz_name = config["market_hours"].get("timezone", "America/New_York")
+    now = datetime.now(ZoneInfo(tz_name))
+
+    with st.container(key="autopilot_intent_card"):
+        st.markdown("**Autopilot intent — what it's about to do**")
+        st.caption(
+            f":material/info: Plan: one {' / '.join(tickers)} 0DTE trade per name "
+            f"in the {ap.get('decision_start_minutes', 30):.0f}-{ap.get('decision_end_minutes', 90):.0f} "
+            f"min post-open window, at ≥{ap.get('min_confidence_pct', 55):.0f}% confidence, "
+            f"exit +{ap.get('profit_target_pct', 50):.0f}% / {ap.get('stop_loss_pct', -35):.0f}%."
+        )
+        if not is_market_open(config):
+            st.caption(":material/bedtime: Market closed - autopilot stands down until the next session.")
+            return
+
+        since_open = minutes_since_market_open(config)
+        to_close = minutes_to_market_close(config)
+        catalysts_today = day_setup_mod.catalysts_for_date(
+            config.get("market_catalysts", []), now.date(), tz_name)
+        mtc = day_setup_mod.minutes_to_next_catalyst(catalysts_today, now, tz_name)
+        open_rows = storage.get_open_positions(db_path)
+        closed_rows = storage.get_closed_positions(db_path)
+
+        for t in tickers:
+            sig = storage.get_latest_signal(db_path, t)
+            if sig is None:
+                st.caption(f":material/help: **{t}** - no signal yet this session.")
+                continue
+            cal = sig["calibrated_confidence"]
+            conf = cal if cal is not None else sig["confidence"]
+            intent = explain_auto_decision(
+                ticker=t, direction=sig["direction"], confidence_pct=conf or 0.0,
+                minutes_since_open=since_open, minutes_to_close=to_close,
+                open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap,
+                starting_balance=config["account"]["starting_balance"], now=now,
+                tz_name=tz_name, minutes_to_catalyst=mtc, gamma_regime=sig["gamma_regime"],
+            )
+            if intent.would_enter:
+                st.success(
+                    f":material/bolt: **{t}** - ARMED: would buy **{intent.lean}s** now "
+                    f"({intent.confidence_pct:.0f}% ≥ {intent.min_confidence_pct:.0f}% gate). "
+                    f"Mirror it: ATM 0DTE {intent.lean}, +{ap.get('profit_target_pct', 50):.0f}% / "
+                    f"{ap.get('stop_loss_pct', -35):.0f}%."
+                )
+            else:
+                lean = intent.lean or "neutral"
+                st.caption(
+                    f":material/pause_circle: **{t}** - {lean} {intent.confidence_pct:.0f}% - "
+                    f"standing down: {intent.blocker}"
+                )
+
+
+render_autopilot_intent()
 
 
 def _signal_age(snap) -> timedelta:
