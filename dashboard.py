@@ -220,6 +220,10 @@ st.markdown(
     h2 { font-size:1.15rem !important; } h3 { font-size:1.02rem !important; }
     [class*="st-key-signal_panel"],[class*="st-key-accuracy_panel"],[class*="st-key-day_setup_card"],[class*="st-key-strategy_lab_card"],[class*="st-key-cost_card"],[class*="st-key-wallet_card"],[class*="st-key-wallet_mini"],[class*="st-key-calendar_card"],[class*="st-key-order_card"],[class*="st-key-positions_card"],[class*="st-key-history_card"] { box-shadow:0 1px 2px rgba(11,17,35,0.06); }
     [class*="st-key-senti_"] button p { font-family:'IBM Plex Mono', ui-monospace, monospace; font-weight:600; }
+    /* blue accent (config theme removed so the app follows system light/dark; re-applied in CSS) */
+    [data-testid="stSidebarNav"] a[aria-current="page"] span,
+    [data-testid="stSidebarNav"] a[aria-current="page"] p { color:#3a5bd9 !important; font-weight:600; }
+    button[kind="primary"] { background-color:#3a5bd9 !important; border-color:#3a5bd9 !important; }
     </style>
     """,
     unsafe_allow_html=True,
