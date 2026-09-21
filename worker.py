@@ -774,7 +774,7 @@ def main() -> None:
     storage.init_db(db_path)
     storage.ensure_account(db_path, config["account"]["starting_balance"])
     storage.ensure_worker_settings(db_path, config["poll_interval_minutes"] * 60)
-    storage.ensure_autopilot(db_path)  # off by default until toggled from the dashboard
+    storage.ensure_autopilot(db_path, default_enabled=True)  # continuous by default
     storage.ensure_calibration(db_path)  # auto-calibration on by default (dashboard toggle)
 
     if args.once:

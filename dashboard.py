@@ -59,7 +59,7 @@ db_path = config["database"]["path"]
 storage.init_db(db_path)
 storage.ensure_account(db_path, config["account"]["starting_balance"])
 storage.ensure_worker_settings(db_path, config["poll_interval_minutes"] * 60)
-storage.ensure_autopilot(db_path)
+storage.ensure_autopilot(db_path, default_enabled=True)
 storage.ensure_calibration(db_path)
 
 
@@ -1850,10 +1850,83 @@ def section_autopilot_controls() -> None:
 
 
 
+def _autopilot_status_row() -> None:
+    """A visual status header: current mode + today's auto activity, as tiles."""
+    mode, _armed = storage.get_autopilot_state(db_path)
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    today = datetime.now(tz).date()
+
+    def _today(iso):
+        return bool(iso) and datetime.fromisoformat(iso).astimezone(tz).date() == today
+
+    closed = storage.get_closed_positions(db_path)
+    auto_today = sum(
+        1 for r in (list(storage.get_open_positions(db_path)) + list(closed))
+        if r["opened_by"] == "auto" and _today(r["entry_time"]))
+    pnl_today = sum((r["pnl"] or 0.0) for r in closed
+                    if r["opened_by"] == "auto" and _today(r["exit_time"]))
+    label = {"off": "OFF", "continuous": "CONTINUOUS", "day": "DAY SESSION"}.get(mode, mode.upper())
+    c0, c1, c2 = st.columns(3)
+    c0.metric("Mode", label)
+    c1.metric("Auto trades today", f"{auto_today}")
+    c2.metric("Auto P&L today", f"${pnl_today:,.0f}",
+              delta=f"{pnl_today:+,.0f}" if pnl_today else None)
+
+
+def _autopilot_record() -> None:
+    """All-time auto-trade record as stat tiles."""
+    pnls = [r["pnl"] or 0.0 for r in storage.get_closed_positions(db_path)
+            if r["opened_by"] == "auto"]
+    with st.container(border=True):
+        st.markdown("**Record** · all auto trades")
+        if not pnls:
+            st.caption("No auto trades yet.")
+            return
+        wins = sum(1 for p in pnls if p > 0)
+        total = sum(pnls)
+        c0, c1, c2 = st.columns(3)
+        c0.metric("Total P&L", f"${total:,.0f}", delta=f"{total:+,.0f}" if total else None)
+        c1.metric("Win rate", f"{wins / len(pnls) * 100:.0f}%")
+        c2.metric("Trades", f"{len(pnls)}")
+        st.caption(f"Best ${max(pnls):+,.0f} · worst ${min(pnls):+,.0f} · "
+                   f"avg ${total / len(pnls):+,.0f}/trade")
+
+
+def _autopilot_config() -> None:
+    """The autopilot rules, as a clean key/value card."""
+    ap = config.get("autopilot", {})
+    rows = [
+        ("Trades", " · ".join(ap.get("tickers") or config["tickers"])),
+        ("Tactic", ap.get("tactic", "opening_range").replace("_", " ")),
+        ("Decision window", f"{ap.get('decision_start_minutes', 30):.0f}–{ap.get('decision_end_minutes', 90):.0f} min after open"),
+        ("Confidence gate", f"≥ {ap.get('min_confidence_pct', 55):.0f}%"),
+        ("Exits", f"+{ap.get('profit_target_pct', 50):.0f}% / {ap.get('stop_loss_pct', -35):.0f}%"),
+        ("Per session", f"{ap.get('max_entries_per_session', 1)} per ticker"),
+        ("Daily loss limit", f"{ap.get('daily_loss_limit_pct', 10):.0f}% of start"),
+    ]
+    with st.container(border=True):
+        st.markdown("**Configuration**")
+        html = "<div style='display:flex;flex-direction:column;gap:6px;margin-top:6px'>"
+        for k, v in rows:
+            html += (
+                "<div style='display:flex;justify-content:space-between;gap:12px;"
+                "border-bottom:1px solid rgba(128,128,128,.15);padding-bottom:5px'>"
+                f"<span style='opacity:.7'>{k}</span>"
+                f"<span style='font-family:IBM Plex Mono,ui-monospace,monospace;font-weight:600'>{v}</span></div>")
+        html += "</div>"
+        st.markdown(html, unsafe_allow_html=True)
+
+
 def page_autopilot() -> None:
     render_wallet()
+    _autopilot_status_row()
     section_autopilot_controls()
     render_autopilot_intent()
+    _rec_col, _cfg_col = st.columns(2)
+    with _rec_col:
+        _autopilot_record()
+    with _cfg_col:
+        _autopilot_config()
 
 
 def _render_mobile_nav(active_path: str) -> None:
