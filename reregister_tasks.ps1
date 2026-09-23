@@ -58,7 +58,7 @@ foreach ($name in '0DTE-Worker', '0DTE-Dashboard') {
 # --- 2. sweep up any leftover orphans (now killable - we are elevated) -------
 Write-Host "  sweeping leftover python worker/dashboard processes ..."
 Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'streamlit' } |
+    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
     ForEach-Object {
         Write-Host ("    killing pid {0}: {1}" -f $_.ProcessId, $_.CommandLine)
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -124,9 +124,14 @@ Register-ScheduledTask -TaskName '0DTE-Worker' -Xml $workerXml -User $userId -Fo
 Write-Host "  registered 0DTE-Worker" -ForegroundColor Green
 
 # --- 5. dashboard ------------------------------------------------------------
-$dashXml = New-TaskXml -Description '0DTE paper trading Streamlit dashboard' `
+# The web UI: FastAPI (api.py) serves the JSON endpoints AND the frontend in
+# webui/, on the same port the Streamlit dashboard used. Rollback is one line -
+# swap the Arguments below back to:
+#   '-m streamlit run dashboard.py --server.address 0.0.0.0 --server.port 8501'
+# and re-run this script; dashboard.py is still in the repo for exactly that.
+$dashXml = New-TaskXml -Description '0DTE paper trading web UI (FastAPI)' `
     -Command $python `
-    -Arguments '-m streamlit run dashboard.py --server.address 0.0.0.0 --server.port 8501' `
+    -Arguments '-m uvicorn api:app --host 0.0.0.0 --port 8501' `
     -WorkingDir $root -User $userId
 Register-ScheduledTask -TaskName '0DTE-Dashboard' -Xml $dashXml -User $userId -Force | Out-Null
 Write-Host "  registered 0DTE-Dashboard" -ForegroundColor Green
@@ -147,9 +152,9 @@ Get-ScheduledTask -TaskName '0DTE-Worker', '0DTE-Dashboard' |
 
 Write-Host "Python processes now running:" -ForegroundColor Cyan
 Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'streamlit' } |
+    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
     Select-Object ProcessId, CommandLine | Format-Table -AutoSize -Wrap
 
-Write-Host "`nDone. Expect exactly ONE worker.py and ONE streamlit process above." -ForegroundColor Green
+Write-Host "`nDone. Expect exactly ONE worker.py and ONE uvicorn process above." -ForegroundColor Green
 Write-Host "The worker will create the worker_heartbeat table on its first cycle;" -ForegroundColor Green
-Write-Host "the dashboard's 'Worker alive' indicator should go green within a minute." -ForegroundColor Green
+Write-Host "the web UI's worker banner should clear within a minute." -ForegroundColor Green

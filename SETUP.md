@@ -14,13 +14,27 @@ In one terminal, start the background worker (polls data, updates signals and po
 python worker.py
 ```
 
-In another terminal, start the dashboard:
+In another terminal, start the web UI (FastAPI serves both the JSON API and the
+frontend in `webui/`):
+
+```
+python -m uvicorn api:app --host 0.0.0.0 --port 8501
+```
+
+Open `http://localhost:8501` (or `http://192.168.1.x:8501` from your phone on the
+same WiFi) to confirm it works before setting up remote access.
+
+The old Streamlit dashboard is still in the repo as a fallback for one cycle:
 
 ```
 streamlit run dashboard.py --server.address 0.0.0.0
 ```
 
-Streamlit will print a local URL (e.g. `http://192.168.1.x:8501`) - open that from your phone while on the same WiFi to confirm it works before setting up remote access.
+Both read the same SQLite database, so they agree on every number - but run only
+one at a time on port 8501.
+
+To point the API at a copy of the database (e.g. to poke at it without touching
+the live one), set `ZERODTE_DB_PATH`.
 
 ## 3. Phone access from anywhere (Tailscale)
 
@@ -38,5 +52,7 @@ Streamlit will print a local URL (e.g. `http://192.168.1.x:8501`) - open that fr
 - The `volatility_regime` signal comes from VIX, VIX9D, and VVIX (free via yfinance, no key). VIX9D above VIX (backwardation) signals near-term stress and leans bearish; contango and low VVIX lean bullish/calm. This is a market-wide "fear gauge" overlay, not ticker-specific - it reads the same for QQQ and SPY.
 - The `trump_news` signal scans GDELT's free news API (no key) each cycle for recent headlines mentioning Trump alongside tariffs/trade/economy/Fed, then scores the tone with a simple bearish/bullish keyword lexicon. It's market-wide (same reading for QQQ and SPY), and only as good as headline volume that hour - quiet news cycles read as neutral (0.0), not missing data. Look-back window is `trump_news_lookback_hours` in `config/settings.yaml`.
 - **Auto-pilot** (toggle in the Place-a-trade card, off by default): the worker automatically opens paper positions on high-confidence signals and attaches a stop/target, with guard rails - entry window (skips first 30 / last 60 min), never stacks on an existing position in a ticker, caps on concurrent auto positions and auto trades per day, a per-ticker cooldown after any close, and a daily circuit breaker on realized auto losses. All tunables live under `autopilot:` in `config/settings.yaml`; the on/off switch lives in the DB so it takes effect on the worker's next cycle without a restart. Manual trading keeps working regardless; positions are tagged auto/manual.
-- The poll interval is also adjustable live from the dashboard's sidebar, no restart required.
+- The web UI polls the API about every 12 seconds while the tab is visible; it stops polling in a backgrounded tab. The header (sentiment strip, wallet, worker health, market clock) refreshes on every tick, the visible page's cards alongside it.
+- There is no login. Keep the UI on Tailscale or your LAN.
+- `python -m pytest` covers the API helpers too (`tests/test_webapi.py`, `tests/test_api_endpoints.py`) - the endpoint tests need no network.
 - This is a paper-trading / educational tool only. No real orders are ever placed.

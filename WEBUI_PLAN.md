@@ -1,5 +1,13 @@
 # Web UI plan — make the dashboard exactly like the mockup
 
+> **Status (built):** phases 1-5 are implemented on this branch. `api.py` +
+> `webapi/` serve every endpoint below; `webui/index.html` + `styles.css` +
+> `api.js` + `app.js` are the live frontend (the mockup is kept untouched at
+> `webui/mockup.html` as the design reference). `reregister_tasks.ps1` now
+> registers `0DTE-Dashboard` as `python -m uvicorn api:app --host 0.0.0.0
+> --port 8501`; `dashboard.py` stays as the one-cycle rollback. Phase 6
+> (SSE/WebSocket push, shared-secret auth) is still open.
+
 **Goal:** replace the Streamlit dashboard with a pixel-perfect UI matching the
 design mockup, by putting a thin **FastAPI** backend over the *existing* Python
 and using the **mockup HTML/CSS/JS as the real frontend**.

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>0DTE Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233a5bd9'/><text x='16' y='22' font-size='16' font-family='monospace' font-weight='600' fill='white' text-anchor='middle'>0&#916;</text></svg>">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="rail" id="rail" title="Market session progress"><i id="rail-fill"></i></div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="mark">0Δ</span>
+      <div><b>0DTE Console</b><span>paper trading</span></div>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-p="signals" class="on"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-8 4 5"/></svg><span class="lbl">Signals</span><span class="ndot"></span></a>
+      <a data-p="lab"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 8a2 2 0 002 3h10a2 2 0 002-3l-5-8V3"/></svg><span class="lbl">Lab</span></a>
+      <a data-p="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5h4a1.5 1.5 0 010 3h-3a1.5 1.5 0 000 3h4"/></svg><span class="lbl">Cost</span></a>
+      <a data-p="trades"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class="lbl">Trades</span></a>
+      <a data-p="autopilot"><svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="2.5"/><path d="M12 8V4M9 13h.01M15 13h.01"/></svg><span class="lbl">Autopilot</span><span class="badge" id="nav-ap-badge" hidden></span><span class="ndot"></span></a>
+    </nav>
+  </aside>
+
+  <div class="sysdown" id="sysdown" hidden></div>
+  <button class="themebtn" id="theme" aria-label="Cycle theme: system, light, dark"></button>
+
+  <main>
+    <div class="topbar">
+      <div class="senti-strip" id="senti"><span class="loading">Loading signals</span></div>
+      <div class="spacer"></div>
+      <div class="status" id="clock"></div>
+    </div>
+
+    <div class="banner bad" id="worker-banner" hidden></div>
+
+    <!-- SIGNALS -->
+    <section class="page" data-page="signals">
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row" id="wallet-signals"></div>
+      </div>
+
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card">
+          <div class="hd" style="margin-bottom:6px">
+            <div class="eyebrow">Signal · <span class="tkname">—</span></div>
+            <span class="sig-live" id="sig-live"></span>
+          </div>
+          <div id="sig-body">
+            <div class="sig-big"><span class="d sig-dir">—</span><span class="c sig-conf num">—</span></div>
+            <div class="sub sig-raw" style="margin-top:6px"></div>
+            <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap" id="sig-chips"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Pre-market setup</div>
+          <div id="setup-body"><div class="loading">Loading</div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Subscores</div>
+          <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px" id="subscores"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd" style="margin-bottom:10px">
+          <h3><span class="eyebrow">Place a paper trade</span> · <span class="tkname">—</span></h3>
+          <span class="sub">ATM 0DTE · fills at the ask, the price you'd really pay</span>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="pt-type">Type</label>
+            <select id="pt-type"><option value="call">call</option><option value="put">put</option></select></div>
+          <div class="field"><label for="pt-strike">Strike (ATM)</label>
+            <input class="num" id="pt-strike" style="width:100px" readonly></div>
+          <div class="field"><label for="pt-amount">Risk ($)</label>
+            <input class="num" id="pt-amount" type="number" min="0" step="50" style="width:110px"></div>
+          <div class="field"><label for="pt-target">Target %</label>
+            <select class="num" id="pt-target" style="width:96px"></select></div>
+          <div class="field"><label for="pt-stop">Stop %</label>
+            <select class="num" id="pt-stop" style="width:96px"></select></div>
+          <button class="btn" id="pt-buy">Buy <span class="tkname">—</span></button>
+        </div>
+        <div class="chips" id="pt-chips">
+          <button data-amt="100">$100</button><button data-amt="200">$200</button>
+          <button data-pct="25">25%</button><button data-pct="50">50%</button><button data-pct="100">Max</button>
+        </div>
+        <div class="quote-line" id="pt-quote"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><h3><span class="eyebrow">Signal history &amp; price</span> · <span class="tkname">—</span></h3>
+          <div class="pills" id="range-pills">
+            <button data-range="session" class="on">Session</button><button data-range="4h">4h</button>
+            <button data-range="3d">3d</button><button data-range="all">All</button>
+          </div></div>
+        <div class="chart-wrap" id="chart-wrap">
+          <div id="chart"><div class="loading">Loading history</div></div>
+          <div class="chart-tip" id="chart-tip" hidden></div>
+        </div>
+        <div class="legend" id="chart-legend"></div>
+      </div>
+    </section>
+
+    <!-- STRATEGY LAB -->
+    <section class="page" data-page="lab" hidden>
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Strategy lab</span></h3><div class="sub">Virtual strategies, honest fills, zero wallet impact. Verdict tests whether avg P&amp;L/trade ≠ 0 (|t| ≥ 2). With ~10 running, treat one winner as a hypothesis, not a result.</div></div></div>
+        <div style="overflow-x:auto" id="lab-table"><div class="loading">Loading</div></div>
+      </div>
+    </section>
+
+    <!-- COST OF TRADING -->
+    <section class="page" data-page="cost" hidden>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card" style="grid-column:span 2">
+          <div class="hd"><h3><span class="eyebrow">Spread cost through the day</span> · <span class="tkname">—</span></h3><span class="badge b-mut num">median, ATM 0DTE</span></div>
+          <div id="cost-chart"><div class="loading">Loading quotes</div></div>
+          <div class="legend"><span><i style="background:var(--accent)"></i>Round-trip spread (% of premium)</span><span id="cost-cheapest"></span></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Why it matters</div>
+          <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Direction is a coin flip at every horizon we can measure. The spread is the opposite: a <b style="color:var(--ink)">known toll</b> on every round trip, widest at the open and into the close, tightest mid-morning to mid-day.</p>
+          <div class="stat-row" style="margin-top:16px;gap:20px" id="cost-stats"></div>
+        </div>
+      </div>
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="eyebrow">Spread by ticker</div></div>
+        <div style="overflow-x:auto;margin-top:12px" id="cost-table"></div>
+      </div>
+    </section>
+
+    <!-- TRADES -->
+    <section class="page" data-page="trades" hidden>
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row" id="wallet-trades"></div>
+      </div>
+
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Open positions</div><span class="sub" id="pos-sub">valued at the bid · targets auto-close on the next check</span></div></div>
+        <div style="overflow-x:auto;margin-top:12px" id="positions"><div class="loading">Loading</div></div>
+      </div>
+
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Full history</div><span class="sub">yours &amp; autopilot</span></div></div>
+        <div style="overflow-x:auto;margin-top:12px" id="history"><div class="loading">Loading</div></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd" style="margin-bottom:12px">
+          <h3><span class="eyebrow">Daily P&amp;L</span> · <span id="cal-title">—</span></h3>
+          <div class="pills"><button id="cal-prev" aria-label="Previous month">‹</button><button class="on" id="cal-now">Today</button><button id="cal-next" aria-label="Next month">›</button></div>
+        </div>
+        <div class="cal" id="calendar"></div>
+        <div class="legend"><span><i style="background:var(--up)"></i>gain</span><span><i style="background:var(--down)"></i>loss</span><span id="cal-total"></span></div>
+      </div>
+    </section>
+
+    <!-- AUTOPILOT -->
+    <section class="page" data-page="autopilot" hidden>
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row" id="wallet-auto"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd" style="margin-bottom:0"><h3><span class="eyebrow">Mode</span></h3><span class="sub" id="ap-mode-sub"></span></div>
+        <div class="mode-row">
+          <div class="pills" id="ap-mode">
+            <button data-mode="off">Off</button><button data-mode="day">Day session</button><button data-mode="continuous">Continuous</button>
+          </div>
+          <span class="sub" id="ap-mode-help">Day session arms the worker for ONE trading day, then disarms itself. Manual trading always stays available.</span>
+        </div>
+      </div>
+
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card" style="grid-column:span 2">
+          <div class="hd"><h3><span class="eyebrow">Intent</span></h3><span class="badge b-mut num" id="ap-window">—</span></div>
+          <div id="ap-intents"><div class="loading">Loading</div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Configuration</div>
+          <div style="margin-top:12px;display:flex;flex-direction:column;gap:9px;font-size:13px" id="ap-config"></div>
+        </div>
+      </div>
+
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card">
+          <div class="eyebrow">Record</div>
+          <div class="stat-row" style="margin-top:12px;gap:20px" id="ap-record"></div>
+          <p class="sub" style="margin-top:12px" id="ap-record-sub"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
