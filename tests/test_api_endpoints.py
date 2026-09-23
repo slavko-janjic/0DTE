@@ -104,3 +104,11 @@ def test_stream_route_is_registered(client):
     route exists, so a rename can't silently drop it."""
     import api
     assert any(getattr(route, "path", "") == "/api/stream" for route in api.app.routes)
+
+
+def test_startup_pins_the_worker_cadence_to_one_minute(client):
+    """Parity with dashboard.py, which forced 60s on every load: without it a
+    fresh database keeps config's 5-minute default after the cutover."""
+    import api
+    from storage import db as storage
+    assert storage.get_poll_interval_seconds(api.db_path) == 60

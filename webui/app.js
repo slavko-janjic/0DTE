@@ -734,13 +734,51 @@
     } catch (e) { /* audio blocked until the page has been interacted with */ }
   }
 
+  function systemNotification(title, message) {
+    if (!alerts.notify || !window.Notification || Notification.permission !== 'granted') { return; }
+    var options = { body: message, tag: title + message,
+                    icon: '/icons/icon-192.png', badge: '/icons/icon-192.png' };
+    function direct() { try { new Notification(title, options); } catch (e) { /* no-op */ } }
+    // Android only shows notifications through the service worker; desktop
+    // browsers accept either, so the worker is tried first everywhere.
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker.getRegistration().then(function (registration) {
+        if (registration) { registration.showNotification(title, options); } else { direct(); }
+      }).catch(direct);
+    } else {
+      direct();
+    }
+  }
+
   function fireAlert(title, message) {
     toast('<b>' + A.escapeHtml(title) + '</b> — ' + A.escapeHtml(message), 'good');
     beep();
-    if (alerts.notify && window.Notification && Notification.permission === 'granted') {
-      try { new Notification(title, { body: message, tag: title + message }); }
-      catch (e) { /* some browsers only allow this from a service worker */ }
+    systemNotification(title, message);
+  }
+
+  function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  function isInstalled() {
+    return window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  }
+
+  /* Why notifications can't be turned on here, or null if they can. The two
+     phone-specific causes get their own message, since the fix differs. */
+  function notificationBlocker() {
+    if (!window.isSecureContext) {
+      return 'Notifications need HTTPS. Open the app at its https://….ts.net address ' +
+        '(see SETUP.md, "tailscale serve"). The sound alert works without it.';
     }
+    if (isIOS() && !isInstalled()) {
+      return 'On iPhone, first tap Share → Add to Home Screen, then turn notifications on ' +
+        'from the installed app.';
+    }
+    if (!window.Notification) { return 'This browser has no notification support.'; }
+    return null;
   }
 
   function checkAlerts(autopilot) {
@@ -953,7 +991,8 @@
     });
 
     $('alert-notify').addEventListener('click', function () {
-      if (!window.Notification) { toast('This browser has no notification support.', 'bad'); return; }
+      var blocker = notificationBlocker();
+      if (blocker) { toast(A.escapeHtml(blocker), 'bad'); return; }
       if (alerts.notify) {
         alerts.notify = false;
       } else {
@@ -1098,6 +1137,11 @@
     wireTuning();
     wireAlerts();
     loadAlertPrefs();
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function (error) {
+        console.warn('service worker not registered', error);
+      });
+    }
     try {
       state.ticker = localStorage.getItem('0dte-ticker') || null;
       var page = localStorage.getItem('0dte-page');

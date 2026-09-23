@@ -57,6 +57,31 @@ first time. Unset the variable to turn it off again.
 3. Once both are connected, Tailscale assigns your PC a stable private IP (e.g. `100.x.x.x`) shown in the Tailscale app/admin console.
 4. On your phone, browse to `http://<that-tailscale-ip>:8501` - this works over cellular data too, without exposing the dashboard publicly.
 
+## 4. Phone alerts: HTTPS + home-screen app (optional)
+
+The ARMED/OPENED **sound** works from any address. Browser **notifications** need
+HTTPS, and `http://100.x.x.x:8501` isn't. Tailscale can put a real certificate in
+front of the app without exposing it outside your tailnet:
+
+1. In the Tailscale admin console → **DNS**, make sure MagicDNS is on and click
+   **Enable HTTPS** (one-time).
+2. On the PC (Tailscale 1.52 or newer):
+   ```
+   tailscale serve --bg 8501
+   ```
+   It prints an address like `https://your-pc.tail1234.ts.net`. That's the one to
+   use on the phone from now on. `--bg` keeps it running across reboots; undo with
+   `tailscale serve --https=443 off`.
+3. On the phone, open that address and install it:
+   - **iPhone:** Share → **Add to Home Screen**, then open it from the home-screen
+     icon. iOS only allows notifications for an installed web app.
+   - **Android (Chrome):** menu → **Install app** (or Add to Home screen).
+4. In the app, Autopilot → **Notifications: on**, allow the prompt, then **Send test
+   alert**.
+
+If the notification toggle can't turn on, it says why (not HTTPS, or not installed
+on iPhone).
+
 ## Notes
 
 - The worker only does anything useful during US market hours (`config/settings.yaml` -> `market_hours`); outside those hours it sleeps.
