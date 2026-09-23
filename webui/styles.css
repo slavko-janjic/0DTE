@@ -294,7 +294,29 @@ td .sub{color:var(--faint);font-size:11px}
 .notelist{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 
 @media(max-width:760px){
-  /* the clock shares the sentiment strip's row instead of wrapping under it */
-  .senti-strip{flex:1 1 0;min-width:0}
-  .status{flex:none;font-size:11px}
+  /* the strip keeps the full row (chips are the point); the clock wraps under it */
+  .senti-strip{flex:1 1 100%;min-width:0}
+  .status{font-size:11.5px;margin:0 auto}
 }
+
+/* collapsible drawer (accuracy-by-day under the chart) */
+.drawer{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
+.drawer summary{font-size:11.5px;color:var(--muted);cursor:pointer;font-weight:600;
+  text-transform:uppercase;letter-spacing:.05em;list-style:none}
+.drawer summary::-webkit-details-marker{display:none}
+.drawer summary::before{content:'▸ ';color:var(--faint)}
+.drawer[open] summary::before{content:'▾ '}
+.drawer table{margin-top:8px}
+
+/* inline settings panel (wallet) */
+.settings{border-top:1px solid var(--border);margin-top:14px}
+.settings[hidden]{display:none!important}
+
+/* tuning page: context mini-tables and the weight rows */
+.ctx{border:1px solid var(--border);border-radius:9px;padding:12px 13px;background:var(--surface-2)}
+.ctx h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--faint);font-weight:600}
+.ctx .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;
+  color:var(--muted);padding:4px 0}
+.ctx .row b{color:var(--ink);font-family:var(--mono);font-weight:600}
+.pills button.on.no{background:var(--down-soft);color:var(--down)}

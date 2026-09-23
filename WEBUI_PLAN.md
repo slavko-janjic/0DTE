@@ -5,8 +5,11 @@
 > `api.js` + `app.js` are the live frontend (the mockup is kept untouched at
 > `webui/mockup.html` as the design reference). `reregister_tasks.ps1` now
 > registers `0DTE-Dashboard` as `python -m uvicorn api:app --host 0.0.0.0
-> --port 8501`; `dashboard.py` stays as the one-cycle rollback. Phase 6
-> (SSE/WebSocket push, shared-secret auth) is still open.
+> --port 8501`; `dashboard.py` stays as the one-cycle rollback. Phase 6 is done
+> too: SSE push (`/api/stream`, with the poll as a fallback) and an opt-in
+> shared-secret token (`ZERODTE_TOKEN`). A **Tuning** page carries the
+> calibration/weight-tuning features the mockup had no place for, and the
+> autopilot ARMED/OPENED heads-up (sound + browser notification) is back.
 
 **Goal:** replace the Streamlit dashboard with a pixel-perfect UI matching the
 design mockup, by putting a thin **FastAPI** backend over the *existing* Python

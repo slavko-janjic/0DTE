@@ -9,6 +9,7 @@
 
   var A = window.API;
   var POLL_MS = 12000;
+  var SLOW_POLL_MS = 60000;   // the fallback cadence once the SSE stream is live
 
   var state = {
     page: 'signals',
@@ -87,6 +88,7 @@
     else if (state.page === 'cost') { loadCost(); }
     else if (state.page === 'trades') { loadPositions(); loadTradeHistory(); loadCalendar(); }
     else if (state.page === 'autopilot') { loadAutopilot(); }
+    else if (state.page === 'tuning') { loadCalibration(); }
   }
 
   /* ---- header: strip, clock, rail, worker health --------------------- */
@@ -152,6 +154,8 @@
       renderHealth(data.worker, data.autopilot, data.market);
       state.autopilotMode = data.autopilot.mode;
       state.balance = data.wallet.balance;
+      state.startingBalance = data.wallet.starting_balance;
+      checkAlerts(data.autopilot);
     }).catch(function (error) {
       $('clock').innerHTML = '<span class="dot off"></span>API unreachable';
       console.error(error);
@@ -165,7 +169,11 @@
     qa('.tkname').forEach(function (node) { node.textContent = ticker; });
     qa('#senti .senti').forEach(function (b) { b.classList.toggle('sel', b.dataset.tk === ticker); });
     try { localStorage.setItem('0dte-ticker', ticker); } catch (e) { /* ignore */ }
-    if (!quiet) { loadSignal(); loadHistory(); if (state.page === 'cost') { loadCost(); } }
+    if (quiet) { return; }
+    loadSignal();
+    loadHistory();
+    if (state.page === 'cost') { loadCost(); }
+    if (state.page === 'tuning') { loadCalibration(); }
   }
 
   function optionMarkup(options, selected, sign) {
@@ -330,6 +338,20 @@
       '<span><i style="background:var(--accent)"></i>Composite score</span>' +
       '<span>' + A.escapeHtml(points[0].t + ' – ' + last.t + ' ET') + '</span>' +
       '<span>' + A.escapeHtml(accuracy) + '</span>';
+
+    var daily = data.daily || [];
+    $('daily-drawer').hidden = !daily.length;
+    if (daily.length) {
+      $('daily-table').innerHTML =
+        '<table><thead><tr><th>Date</th><th class="num">Graded</th><th class="num">Correct</th>' +
+        '<th class="num">Accuracy</th></tr></thead><tbody>' +
+        daily.map(function (day) {
+          return '<tr><td class="num">' + A.escapeHtml(day.date) + '</td>' +
+            '<td class="num">' + day.total + '</td>' +
+            '<td class="num">' + day.hits + '</td>' +
+            '<td class="num">' + A.pct(day.accuracy_pct) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
 
     // hover readout: nearest point by x
     var wrap = $('chart-wrap'), tip = $('chart-tip');
@@ -669,6 +691,306 @@
       .catch(function (error) { fail($('ap-intents'), error); });
   }
 
+
+  /* ---- ARMED / OPENED alerts ------------------------------------------ */
+
+  /* Edge-triggered from the header poll, so an alert fires on whichever page
+     is open - the whole point is catching it in time to mirror the trade. */
+  var alerts = { sound: false, notify: false, ready: false, armed: [], openIds: [] };
+
+  function loadAlertPrefs() {
+    try {
+      alerts.sound = localStorage.getItem('0dte-alert-sound') === '1';
+      alerts.notify = localStorage.getItem('0dte-alert-notify') === '1';
+    } catch (e) { /* ignore */ }
+    renderAlertButtons();
+  }
+
+  function renderAlertButtons() {
+    $('alert-sound').textContent = 'Sound: ' + (alerts.sound ? 'on' : 'off');
+    $('alert-sound').classList.toggle('ghost', !alerts.sound);
+    $('alert-notify').textContent = 'Notifications: ' + (alerts.notify ? 'on' : 'off');
+    $('alert-notify').classList.toggle('ghost', !alerts.notify);
+  }
+
+  function beep() {
+    if (!alerts.sound) { return; }
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) { return; }
+      var ctx = new Ctx();
+      [0, 0.18].forEach(function (offset) {
+        var osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + offset);
+        gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + offset + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + offset + 0.14);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + offset);
+        osc.stop(ctx.currentTime + offset + 0.16);
+      });
+      setTimeout(function () { ctx.close(); }, 800);
+    } catch (e) { /* audio blocked until the page has been interacted with */ }
+  }
+
+  function fireAlert(title, message) {
+    toast('<b>' + A.escapeHtml(title) + '</b> — ' + A.escapeHtml(message), 'good');
+    beep();
+    if (alerts.notify && window.Notification && Notification.permission === 'granted') {
+      try { new Notification(title, { body: message, tag: title + message }); }
+      catch (e) { /* some browsers only allow this from a service worker */ }
+    }
+  }
+
+  function checkAlerts(autopilot) {
+    var armed = (autopilot.armed || []).map(function (row) { return row.ticker; });
+    var openIds = (autopilot.auto_open || []).map(function (row) { return row.id; });
+    if (alerts.ready) {
+      (autopilot.armed || []).forEach(function (row) {
+        if (alerts.armed.indexOf(row.ticker) < 0) {
+          fireAlert(row.ticker + ' ARMED',
+            'would buy ' + row.lean + 's now (' + A.pct(row.confidence_pct) +
+            ') — mirror ATM 0DTE ' + row.lean + '.');
+        }
+      });
+      (autopilot.auto_open || []).forEach(function (row) {
+        if (alerts.openIds.indexOf(row.id) < 0) {
+          fireAlert(row.ticker + ' OPENED',
+            row.option_type + ' ' + row.strike + ' just opened — copy now.');
+        }
+      });
+    }
+    alerts.armed = armed;
+    alerts.openIds = openIds;
+    alerts.ready = true;
+  }
+
+  /* ---- wallet settings -------------------------------------------------- */
+
+  function wireWalletSettings() {
+    $('wallet-settings-btn').addEventListener('click', function () {
+      var panel = $('wallet-settings');
+      panel.hidden = !panel.hidden;
+      this.setAttribute('aria-expanded', String(!panel.hidden));
+      if (!panel.hidden && !$('bal-input').value) { $('bal-input').value = state.balance || 0; }
+    });
+
+    function setBalance(value) {
+      A.post('/api/wallet/balance', { balance: value }).then(function (wallet) {
+        state.balance = wallet.balance;
+        $('bal-input').value = wallet.balance;
+        toast('Balance set to ' + A.money(wallet.balance, 2), 'good');
+        loadOverview();
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
+    }
+
+    $('bal-set').addEventListener('click', function () {
+      setBalance(Number($('bal-input').value || 0));
+    });
+    $('bal-reset').addEventListener('click', function () {
+      setBalance(state.startingBalance || 10000);
+    });
+    $('hist-clear').addEventListener('click', function () {
+      if (!window.confirm('Delete every closed trade record? Open positions and the balance are untouched.')) { return; }
+      A.post('/api/wallet/clear-history', {}).then(function (payload) {
+        toast('Trade history cleared.', 'good');
+        loadTradeHistory();
+        loadCalendar();
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
+    });
+  }
+
+  /* ---- tuning page ------------------------------------------------------ */
+
+  function accuracyTable(rows, firstHeader, cells) {
+    if (!rows.length) { return '<div class="empty" style="padding:0 17px 16px">Not enough graded calls yet.</div>'; }
+    return '<table><thead><tr><th>' + firstHeader + '</th>' +
+      cells.map(function (cell) { return '<th class="num">' + cell.header + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + rows.map(function (row) {
+        return '<tr><td>' + cells[0].first(row) + '</td>' +
+          cells.map(function (cell) { return '<td class="num">' + cell.value(row) + '</td>'; }).join('') +
+          '</tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  function renderCalibration(payload) {
+    state.calibrationEnabled = payload.enabled;
+    qa('#cal-toggle button').forEach(function (button) {
+      var on = (button.dataset.enabled === '1') === payload.enabled;
+      button.classList.toggle('on', on);
+      button.classList.toggle('no', on && !payload.enabled);
+    });
+    $('cal-status').innerHTML =
+      'Last run: <b>' + A.escapeHtml(payload.last_run || 'never') + '</b> · learning rate ' +
+      A.pct(payload.learning_rate_pct) + '/day · graded ' + payload.graded_count +
+      ' calls at ' + payload.horizon_minutes + ' min' +
+      (A.isNum(payload.overall_accuracy_pct) ? ' (' + A.pct(payload.overall_accuracy_pct) + ' right)' : '') +
+      ' · auto-inverted for ' + A.escapeHtml(payload.ticker) + ': ' +
+      (payload.inversions.length
+        ? payload.inversions.map(function (row) { return A.escapeHtml(row.name); }).join(', ')
+        : 'none');
+
+    $('cal-events').innerHTML = payload.events.length
+      ? '<table><thead><tr><th>When</th><th>Ticker</th><th>Action</th><th>Detail</th></tr></thead><tbody>' +
+        payload.events.map(function (event) {
+          return '<tr><td class="num">' + A.escapeHtml(event.when) + '</td>' +
+            '<td class="tkcell">' + A.escapeHtml(event.ticker) + '</td>' +
+            '<td>' + A.escapeHtml(event.action) + '</td>' +
+            '<td>' + A.escapeHtml(event.detail) + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty" style="padding:0 17px 16px">No calibration adjustments yet.</div>';
+
+    $('cal-bands').innerHTML = accuracyTable(payload.confidence_bands, 'Predicted', [
+      { header: 'Graded', first: function (row) { return A.escapeHtml(row.band); },
+        value: function (row) { return row.count; } },
+      { header: 'Observed', value: function (row) { return A.pct(row.observed_accuracy_pct); } }
+    ]);
+
+    $('cal-categories').innerHTML = accuracyTable(payload.categories, 'Signal', [
+      { header: 'Weight',
+        first: function (row) {
+          return '<span title="' + A.escapeHtml(row.description) + '">' + A.escapeHtml(row.name) +
+            (row.inverted ? ' <span class="badge b-mut">inverted</span>' : '') + '</span>';
+        },
+        value: function (row) { return A.pct(row.weight_pct); } },
+      { header: 'Graded', value: function (row) { return row.graded; } },
+      { header: 'Independent', value: function (row) { return row.independent === null || row.independent === undefined ? '—' : row.independent; } },
+      { header: 'Accuracy', value: function (row) { return A.pct(row.accuracy_pct); } }
+    ]);
+
+    var context = payload.context;
+    $('cal-context').innerHTML = [
+      ['By time of day (ET)', context.time_of_day],
+      ['By volatility regime', context.volatility],
+      ['By signal persistence', context.streak]
+    ].map(function (pair) {
+      var rows = pair[1];
+      return '<div class="ctx"><h4>' + A.escapeHtml(pair[0]) + '</h4>' +
+        (rows.length
+          ? rows.map(function (row) {
+              return '<div class="row"><span>' + A.escapeHtml(row.label) + ' · ' + row.graded +
+                ' graded</span><b>' + A.pct(row.accuracy_pct) + '</b></div>';
+            }).join('')
+          : '<div class="row"><span>Not enough graded calls yet.</span></div>') + '</div>';
+    }).join('');
+
+    var suggestion = payload.suggestion;
+    $('weights-apply').disabled = !suggestion;
+    $('weights-revert').disabled = !(suggestion && suggestion.applied_at);
+    if (!suggestion) {
+      $('cal-weights').innerHTML = '<div class="empty">No category has ' + payload.min_graded +
+        ' independent graded calls yet — weights stay at the config defaults until one does.</div>';
+      $('cal-weights-sub').textContent = '';
+    } else {
+      $('cal-weights').innerHTML =
+        '<table><thead><tr><th>Signal</th><th class="num">Current</th><th class="num">Suggested</th></tr></thead><tbody>' +
+        suggestion.rows.map(function (row) {
+          var delta = row.suggested_pct - row.current_pct;
+          return '<tr><td>' + A.escapeHtml(row.name) + '</td>' +
+            '<td class="num">' + A.pct(row.current_pct) + '</td>' +
+            '<td class="num ' + A.tone(delta) + '">' + A.pct(row.suggested_pct) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+      $('cal-weights-sub').textContent = 'Applies to ' + payload.ticker + ' only — each ticker ' +
+        'keeps its own weights. Currently: ' + suggestion.source +
+        (suggestion.applied_at ? ' (' + suggestion.applied_at.slice(0, 16).replace('T', ' ') + ' UTC)' : '') +
+        '. The worker picks changes up on its next cycle.';
+    }
+
+    var candidates = payload.inversion_candidates || [];
+    $('cal-candidates').hidden = !candidates.length;
+    if (candidates.length) {
+      $('cal-candidates').innerHTML = '<b>Consider inverting:</b> ' +
+        candidates.map(function (row) { return A.escapeHtml(row.name); }).join(', ') +
+        ' — reliably wrong over enough graded calls that the opposite of the call has been ' +
+        'the better bet. Self-calibration does this on its own when it is on.';
+    }
+  }
+
+  function loadCalibration() {
+    if (!state.ticker) { return Promise.resolve(); }
+    return A.get('/api/calibration/' + state.ticker).then(renderCalibration)
+      .catch(function (error) { fail($('cal-events'), error); });
+  }
+
+  function wireTuning() {
+    $('cal-toggle').addEventListener('click', function (event) {
+      var button = event.target.closest('button[data-enabled]');
+      if (!button) { return; }
+      var enabled = button.dataset.enabled === '1';
+      if (enabled === state.calibrationEnabled) { return; }
+      A.post('/api/calibration/enabled', { enabled: enabled }).then(function () {
+        toast('Auto-calibration ' + (enabled ? 'on' : 'off') + '.', 'good');
+        loadCalibration();
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
+    });
+
+    $('cal-revert').addEventListener('click', function () {
+      if (!window.confirm('Clear every auto-applied weight override, inversion and confidence map, for all tickers?')) { return; }
+      A.post('/api/calibration/revert', {}).then(function () {
+        toast('Auto-calibration reverted for all tickers.', 'good');
+        loadCalibration();
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
+    });
+
+    function weights(action) {
+      A.post('/api/weights/' + state.ticker, { action: action }).then(function (payload) {
+        renderCalibration(payload);
+        toast(action === 'apply' ? 'Weights applied to ' + state.ticker + '.'
+          : state.ticker + ' reverted to config defaults.', 'good');
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
+    }
+    $('weights-apply').addEventListener('click', function () { weights('apply'); });
+    $('weights-revert').addEventListener('click', function () { weights('revert'); });
+  }
+
+  function wireAlerts() {
+    $('alert-sound').addEventListener('click', function () {
+      alerts.sound = !alerts.sound;
+      try { localStorage.setItem('0dte-alert-sound', alerts.sound ? '1' : '0'); } catch (e) { /* ignore */ }
+      renderAlertButtons();
+      if (alerts.sound) { beep(); }   // also unlocks audio for later, unprompted alerts
+    });
+
+    $('alert-notify').addEventListener('click', function () {
+      if (!window.Notification) { toast('This browser has no notification support.', 'bad'); return; }
+      if (alerts.notify) {
+        alerts.notify = false;
+      } else {
+        Notification.requestPermission().then(function (permission) {
+          alerts.notify = permission === 'granted';
+          if (!alerts.notify) { toast('Notifications were blocked in the browser.', 'bad'); }
+          try { localStorage.setItem('0dte-alert-notify', alerts.notify ? '1' : '0'); } catch (e) { /* ignore */ }
+          renderAlertButtons();
+        });
+        return;
+      }
+      try { localStorage.setItem('0dte-alert-notify', '0'); } catch (e) { /* ignore */ }
+      renderAlertButtons();
+    });
+
+    $('alert-test').addEventListener('click', function () {
+      fireAlert('Test alert', 'if you heard a sound (and saw a popup, if enabled), you are set.');
+    });
+  }
+
+  /* ---- live updates: SSE, with the poll as a fallback ------------------- */
+
+  function connectStream() {
+    if (!window.EventSource) { return; }
+    var source;
+    try { source = new EventSource('/api/stream'); } catch (e) { return; }
+    source.addEventListener('changed', function () {
+      state.streaming = true;
+      loadOverview().then(loadPage);
+    });
+    source.onopen = function () { state.streaming = true; };
+    source.onerror = function () {
+      // EventSource retries on its own; the slow poll covers the gap meanwhile
+      state.streaming = false;
+    };
+  }
+
   /* ---- wiring ----------------------------------------------------------- */
 
   function wire() {
@@ -772,6 +1094,10 @@
   function boot() {
     initTheme();
     wire();
+    wireWalletSettings();
+    wireTuning();
+    wireAlerts();
+    loadAlertPrefs();
     try {
       state.ticker = localStorage.getItem('0dte-ticker') || null;
       var page = localStorage.getItem('0dte-page');
@@ -779,7 +1105,14 @@
     } catch (e) { /* ignore */ }
     if (state.ticker) { selectTicker(state.ticker, true); }
     showPage(state.page, true);
-    A.poll(function () { loadOverview().then(loadPage); }, POLL_MS);
+    connectStream();
+    // With the stream connected this is only a safety net; without it, it is
+    // the update mechanism.
+    A.poll(function () {
+      if (state.streaming && Date.now() - (state.lastPoll || 0) < SLOW_POLL_MS) { return; }
+      state.lastPoll = Date.now();
+      loadOverview().then(loadPage);
+    }, POLL_MS);
   }
 
   boot();

@@ -158,6 +158,7 @@ def wallet(db_path: str, config: dict) -> dict:
                         tz_name=config["market_hours"].get("timezone", "America/New_York"))
     return {
         "balance": storage.get_balance(db_path),
+        "starting_balance": config["account"]["starting_balance"],
         "realized_today": pnl["realized_today"],
         "realized_total": pnl["realized_total"],
         "unrealized_open": pnl["unrealized_open"],
@@ -214,14 +215,28 @@ def autopilot_today(db_path: str, config: dict) -> dict:
 
 
 def overview(db_path: str, config: dict) -> dict:
-    """One call for everything that is on screen no matter which page is open."""
+    """One call for everything that is on screen no matter which page is open,
+    including the armed/open state the ARMED alert edge-triggers on."""
+    clock = market_clock(config)
+    autopilot = autopilot_today(db_path, config)
+    intents = autopilot_intents(db_path, config, mode=autopilot["mode"], clock=clock)
+    autopilot["armed"] = [
+        {"ticker": intent["ticker"], "lean": intent["lean"],
+         "confidence_pct": intent["confidence_pct"]}
+        for intent in intents if intent["would_enter"]
+    ]
+    autopilot["auto_open"] = [
+        {"id": row["id"], "ticker": row["ticker"], "option_type": row["option_type"],
+         "strike": row["strike"]}
+        for row in storage.get_open_positions(db_path) if row["opened_by"] == "auto"
+    ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tickers": sentiment_strip(db_path, config),
         "wallet": wallet(db_path, config),
         "worker": worker_health(db_path),
-        "autopilot": autopilot_today(db_path, config),
-        "market": market_clock(config),
+        "autopilot": autopilot,
+        "market": clock,
     }
 
 
@@ -634,6 +649,68 @@ def cost_payload(db_path: str, config: dict, ticker: str) -> dict:
 
 # --- autopilot ------------------------------------------------------------
 
+def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
+                      clock: dict | None = None, now: datetime | None = None,
+                      open_rows: list | None = None, closed_rows: list | None = None) -> list[dict]:
+    """The bot's own entry decision per whitelisted ticker, dry-run.
+
+    `explain_auto_decision` is the function the worker itself calls, so this is
+    the real intent rather than a re-implementation of it. Empty while the
+    market is closed or autopilot is off - there is nothing it would do.
+    """
+    ap_cfg = config.get("autopilot", {})
+    tickers = ap_cfg.get("tickers") or config["tickers"]
+    tz = _tz(config)
+    now = now or datetime.now(tz)
+    clock = clock or market_clock(config, now)
+    if mode is None:
+        mode, _armed = storage.get_autopilot_state(db_path)
+    if not clock["open"] or mode == "off":
+        return []
+
+    open_rows = storage.get_open_positions(db_path) if open_rows is None else open_rows
+    closed_rows = storage.get_closed_positions(db_path) if closed_rows is None else closed_rows
+    catalysts = day_setup_mod.catalysts_for_date(
+        config.get("market_catalysts", []), now.date(), tz.key)
+    minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts, now, tz.key)
+    profit_target = ap_cfg.get("profit_target_pct", 50)
+    stop_loss = ap_cfg.get("stop_loss_pct", -35)
+
+    intents = []
+    for ticker in tickers:
+        snap = storage.get_latest_signal(db_path, ticker)
+        if snap is None:
+            intents.append({"ticker": ticker, "would_enter": False, "lean": None,
+                            "confidence_pct": None, "direction": None, "blocker": None,
+                            "message": "no signal yet this session."})
+            continue
+        confidence, _raw = display_confidence(snap)
+        intent = explain_auto_decision(
+            ticker=ticker, direction=snap["direction"], confidence_pct=confidence or 0.0,
+            minutes_since_open=clock["minutes_since_open"],
+            minutes_to_close=clock["minutes_to_close"],
+            open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap_cfg,
+            starting_balance=config["account"]["starting_balance"], now=now,
+            tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
+            gamma_regime=snap["gamma_regime"],
+        )
+        intents.append({
+            "ticker": ticker,
+            "direction": intent.direction,
+            "lean": intent.lean,
+            "confidence_pct": _num(intent.confidence_pct),
+            "min_confidence_pct": _num(intent.min_confidence_pct),
+            "would_enter": intent.would_enter,
+            "blocker": intent.blocker,
+            "message": (f"<b>ARMED</b> — would buy <b>{intent.lean}s</b> now. "
+                        f"Mirror: ATM 0DTE {intent.lean}, "
+                        f"+{profit_target:.0f}% / {stop_loss:.0f}%."
+                        if intent.would_enter else
+                        f"standing down: {intent.blocker}"),
+        })
+    return intents
+
+
 def autopilot_payload(db_path: str, config: dict) -> dict:
     """Mode, per-ticker intent (the bot's own dry-run decision), record, config.
 
@@ -650,44 +727,8 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
     open_rows = storage.get_open_positions(db_path)
     closed_rows = storage.get_closed_positions(db_path)
 
-    intents = []
-    if clock["open"] and today["mode"] != "off":
-        catalysts = day_setup_mod.catalysts_for_date(
-            config.get("market_catalysts", []), now.date(), tz.key)
-        minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts, now, tz.key)
-        for ticker in tickers:
-            snap = storage.get_latest_signal(db_path, ticker)
-            if snap is None:
-                intents.append({"ticker": ticker, "would_enter": False, "lean": None,
-                                "confidence_pct": None, "direction": None,
-                                "message": "no signal yet this session."})
-                continue
-            confidence, _raw = display_confidence(snap)
-            intent = explain_auto_decision(
-                ticker=ticker, direction=snap["direction"], confidence_pct=confidence or 0.0,
-                minutes_since_open=clock["minutes_since_open"],
-                minutes_to_close=clock["minutes_to_close"],
-                open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap_cfg,
-                starting_balance=config["account"]["starting_balance"], now=now,
-                tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
-                gamma_regime=snap["gamma_regime"],
-            )
-            profit_target = ap_cfg.get("profit_target_pct", 50)
-            stop_loss = ap_cfg.get("stop_loss_pct", -35)
-            intents.append({
-                "ticker": ticker,
-                "direction": intent.direction,
-                "lean": intent.lean,
-                "confidence_pct": _num(intent.confidence_pct),
-                "min_confidence_pct": _num(intent.min_confidence_pct),
-                "would_enter": intent.would_enter,
-                "blocker": intent.blocker,
-                "message": (f"<b>ARMED</b> — would buy <b>{intent.lean}s</b> now. "
-                            f"Mirror: ATM 0DTE {intent.lean}, "
-                            f"+{profit_target:.0f}% / {stop_loss:.0f}%."
-                            if intent.would_enter else
-                            f"standing down: {intent.blocker}"),
-            })
+    intents = autopilot_intents(db_path, config, mode=today["mode"], clock=clock, now=now,
+                                open_rows=open_rows, closed_rows=closed_rows)
 
     auto_pnls = [row["pnl"] or 0.0 for row in closed_rows if row["opened_by"] == "auto"]
     record = {"trades": len(auto_pnls)}
@@ -734,5 +775,162 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
             {"label": "Per session", "value": f"{ap_cfg.get('max_entries_per_session', 1)} / ticker"},
             {"label": "Daily loss limit",
              "value": f"{ap_cfg.get('daily_loss_limit_pct', 10):.0f}% of start"},
+        ],
+    }
+
+
+# --- tuning: calibration, per-signal accuracy, weight suggestions ---------
+
+# The accuracy grading is O(n^2) over the full history and the Tuning page polls
+# like every other page, so the result is memoised per (ticker, history
+# fingerprint) exactly as the Streamlit fragment cached it. A new snapshot
+# changes the fingerprint and the analysis recomputes.
+_ANALYSIS_CACHE: dict[str, tuple] = {}
+
+
+def _analysis(db_path: str, config: dict, ticker: str):
+    """(snapshots, evaluated, category_results, confidence_bands) for a ticker."""
+    rows = storage.get_signal_history(db_path, ticker)
+    if not rows:
+        return [], [], {}, []
+    fingerprint = (len(rows), rows[-1]["timestamp"], config["accuracy_horizon_minutes"])
+    cached = _ANALYSIS_CACHE.get(ticker)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    horizon = config["accuracy_horizon_minutes"]
+    snapshots = accuracy.history_snapshots(rows)
+    evaluated = accuracy.evaluate_signal_accuracy(snapshots, horizon)
+    categories = accuracy.evaluate_category_accuracy(snapshots, horizon)
+    bands = accuracy.confidence_calibration(evaluated)
+    result = (snapshots, evaluated, categories, bands)
+    _ANALYSIS_CACHE[ticker] = (fingerprint, result)
+    return result
+
+
+def _context_rows(evaluated: list, context_fn, order: list[str]) -> list[dict]:
+    buckets = accuracy.bucket_evaluated(evaluated, context_fn)
+    return [
+        {"label": label, "graded": buckets[label]["graded"],
+         "accuracy_pct": _num(buckets[label]["accuracy_pct"])}
+        for label in order
+        if label in buckets and buckets[label]["graded"]
+    ]
+
+
+def suggested_weights(db_path: str, config: dict, ticker: str) -> dict | None:
+    """The accuracy-based weight suggestion for one ticker, or None when no
+    category has enough independent observations to justify moving anything."""
+    _snapshots, _evaluated, categories, _bands = _analysis(db_path, config, ticker)
+    if not categories:
+        return None
+    active = storage.effective_weights(db_path, config, ticker)
+    return accuracy.suggest_weights(
+        categories, active, min_graded=config.get("weight_suggestion_min_graded", 10))
+
+
+EVENT_LABELS = {
+    "weights_nudged": "weights nudged", "inversion_added": "inverted",
+    "inversion_removed": "un-inverted", "confidence_map_updated": "confidence remapped",
+    "reverted": "reverted",
+}
+
+
+def _event_detail(kind: str, detail: dict) -> str:
+    if kind in ("inversion_added", "inversion_removed"):
+        category = detail.get("category", "")
+        name = CATEGORY_INFO.get(category, (category, ""))[0]
+        graded = detail.get("accuracy_pct")
+        return name + (f" ({graded:.0f}% acc)" if graded is not None else "")
+    if kind == "confidence_map_updated":
+        return f"{len(detail.get('bands', []))} band(s)"
+    return ""
+
+
+def calibration_payload(db_path: str, config: dict, ticker: str) -> dict:
+    """Everything the Tuning page shows: what the nightly self-calibration has
+    done, how well-calibrated the confidence numbers are, which individual
+    signals are actually calling direction right, and the weight suggestion
+    that follows from it."""
+    cal_cfg = config.get("calibration", {})
+    min_graded = config.get("weight_suggestion_min_graded", 10)
+    horizon = config["accuracy_horizon_minutes"]
+    _snapshots, evaluated, categories, bands = _analysis(db_path, config, ticker)
+    active = storage.effective_weights(db_path, config, ticker)
+    override = storage.get_weight_overrides(db_path, ticker)
+
+    graded_categories = {key: value for key, value in categories.items()
+                         if value["graded_count"] > 0}
+    category_rows = [
+        {
+            "key": key,
+            "name": CATEGORY_INFO.get(key, (key, ""))[0],
+            "description": CATEGORY_INFO.get(key, (key, ""))[1],
+            "weight_pct": active.get(key, 0) * 100,
+            "graded": value["graded_count"],
+            "independent": value.get("independent_count"),
+            "accuracy_pct": _num(value["accuracy_pct"]),
+            "inverted": key in storage.get_inversions(db_path, ticker),
+        }
+        for key, value in sorted(graded_categories.items(),
+                                 key=lambda item: item[1]["accuracy_pct"] or 0, reverse=True)
+    ]
+
+    suggestion = None
+    suggested = accuracy.suggest_weights(categories, active, min_graded=min_graded) \
+        if categories else None
+    if suggested is not None:
+        suggestion = {
+            "rows": [
+                {"key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0],
+                 "current_pct": active.get(key, 0) * 100,
+                 "suggested_pct": suggested.get(key, 0) * 100}
+                for key in active
+            ],
+            "applied_at": override[1] if override is not None else None,
+            "source": "applied suggestion" if override is not None else "config defaults",
+        }
+
+    tz = _tz(config)
+    return {
+        "ticker": ticker,
+        "enabled": storage.get_calibration_enabled(db_path),
+        "last_run": storage.get_last_calibration_date(db_path),
+        "learning_rate_pct": cal_cfg.get("learning_rate", 0.25) * 100,
+        "min_graded": min_graded,
+        "horizon_minutes": horizon,
+        "graded_count": sum(1 for snap in evaluated if snap["evaluated"]),
+        "overall_accuracy_pct": _num(accuracy.overall_accuracy_pct(evaluated)),
+        "inversions": [{"key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0]}
+                       for key in storage.get_inversions(db_path, ticker)],
+        "inversion_candidates": [
+            {"key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0]}
+            for key in accuracy.inversion_candidates(categories, min_graded=min_graded)
+        ],
+        "confidence_bands": [
+            {"band": band["band"], "count": band["count"],
+             "observed_accuracy_pct": _num(band["observed_accuracy_pct"])}
+            for band in bands
+        ],
+        "categories": category_rows,
+        "context": {
+            "time_of_day": _context_rows(
+                evaluated, lambda snap: accuracy.context_time_of_day(snap, tz.key),
+                ["morning", "midday", "afternoon"]),
+            "volatility": _context_rows(
+                evaluated, accuracy.context_volatility_regime, ["calm", "stressed"]),
+            "streak": _context_rows(
+                evaluated, accuracy.context_direction_streak,
+                ["fresh (1-3)", "building (4-15)", "sustained (16+)"]),
+        },
+        "suggestion": suggestion,
+        "events": [
+            {
+                "when": datetime.fromisoformat(event["created_at"]).strftime("%m-%d %H:%M"),
+                "ticker": event["ticker"],
+                "action": EVENT_LABELS.get(event["kind"], event["kind"]),
+                "detail": _event_detail(event["kind"], json.loads(event["detail_json"])),
+            }
+            for event in storage.get_calibration_events(db_path, limit=15)
         ],
     }

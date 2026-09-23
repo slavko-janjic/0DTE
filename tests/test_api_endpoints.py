@@ -66,3 +66,41 @@ def test_frontend_is_served_from_the_same_origin(client):
     assert client.get("/app.js").status_code == 200
     assert client.get("/api.js").status_code == 200
     assert client.get("/styles.css").status_code == 200
+
+
+def test_calibration_endpoint_serves_the_tuning_page(client):
+    body = client.get("/api/calibration/QQQ").json()
+    assert body["ticker"] == "QQQ"
+    assert body["enabled"] is True
+    assert set(body["context"]) == {"time_of_day", "volatility", "streak"}
+    assert client.get("/api/calibration/NOTATICKER").status_code == 404
+
+
+def test_calibration_toggle_and_revert(client):
+    assert client.post("/api/calibration/enabled", json={"enabled": False}).json()["enabled"] is False
+    assert client.get("/api/calibration/QQQ").json()["enabled"] is False
+    client.post("/api/calibration/enabled", json={"enabled": True})
+    assert client.post("/api/calibration/revert", json={}).json() == {"ok": True}
+
+
+def test_weights_action_is_validated(client):
+    assert client.post("/api/weights/QQQ", json={"action": "sideways"}).status_code == 422
+    # no graded history in this empty DB, so applying is refused with a reason
+    response = client.post("/api/weights/QQQ", json={"action": "apply"})
+    assert response.status_code == 400
+    assert "graded history" in response.json()["detail"]
+    assert client.post("/api/weights/QQQ", json={"action": "revert"}).status_code == 200
+
+
+def test_overview_carries_the_alert_state(client):
+    autopilot = client.get("/api/overview").json()["autopilot"]
+    assert autopilot["armed"] == []
+    assert autopilot["auto_open"] == []
+
+
+def test_stream_route_is_registered(client):
+    """The SSE stream itself is exercised against a real server (a never-ending
+    response deadlocks TestClient's portal on teardown); here we only assert the
+    route exists, so a rename can't silently drop it."""
+    import api
+    assert any(getattr(route, "path", "") == "/api/stream" for route in api.app.routes)

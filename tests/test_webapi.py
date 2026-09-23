@@ -45,6 +45,7 @@ def db(tmp_path):
     storage.ensure_account(path, 10000)
     storage.ensure_worker_settings(path, 300)
     storage.ensure_autopilot(path)
+    storage.ensure_calibration(path)      # same bootstrap api.py does on startup
     return path
 
 
@@ -375,3 +376,118 @@ def test_clear_history_keeps_open_positions_and_balance(db, config):
     assert storage.get_closed_positions(db) == []
     assert len(storage.get_open_positions(db)) == 1
     assert storage.get_balance(db) == balance
+
+
+# --- tuning: calibration, per-signal accuracy, weights --------------------
+
+def seed_history(db_path, ticker="QQQ", count=40, spacing=10):
+    """A run of snapshots old enough that the 30-minute horizon can grade them."""
+    for index in range(count, 0, -1):
+        add_signal(db_path, ticker, minutes_ago=index * spacing,
+                   direction="bullish" if index % 2 else "bearish",
+                   score=0.4 if index % 2 else -0.4,
+                   spot=700 + index * 0.5, confidence=40 + (index % 5) * 10)
+
+
+def test_calibration_payload_reports_state_and_grading(db, config):
+    seed_history(db)
+    payloads._ANALYSIS_CACHE.clear()
+    payload = payloads.calibration_payload(db, config, "QQQ")
+
+    assert payload["enabled"] is True           # ensure_calibration default
+    assert payload["last_run"] is None
+    assert payload["learning_rate_pct"] == pytest.approx(25.0)
+    assert payload["graded_count"] > 0
+    assert {row["key"] for row in payload["categories"]} == {
+        "technicals", "order_flow", "volatility_regime"}
+    assert payload["confidence_bands"]          # graded calls land in confidence bands
+    assert set(payload["context"]) == {"time_of_day", "volatility", "streak"}
+
+
+def test_calibration_payload_lists_events_and_inversions(db, config):
+    storage.add_inversion(db, "QQQ", "order_flow")
+    storage.log_calibration_event(db, "QQQ", "inversion_added",
+                                  {"category": "order_flow", "accuracy_pct": 31.0})
+    payload = payloads.calibration_payload(db, config, "QQQ")
+    assert payload["inversions"] == [{"key": "order_flow", "name": "Order flow"}]
+    assert payload["events"][0]["action"] == "inverted"
+    assert "Order flow" in payload["events"][0]["detail"]
+
+
+def test_analysis_is_cached_until_a_new_snapshot_lands(db, config):
+    seed_history(db, count=5)
+    payloads._ANALYSIS_CACHE.clear()
+    first = payloads._analysis(db, config, "QQQ")
+    assert payloads._analysis(db, config, "QQQ") is first     # same object: cache hit
+
+    add_signal(db, "QQQ", minutes_ago=0)
+    assert payloads._analysis(db, config, "QQQ") is not first  # fingerprint moved
+
+
+def test_apply_and_revert_weights_round_trip(db, config, monkeypatch):
+    seed_history(db)
+    payloads._ANALYSIS_CACHE.clear()
+    monkeypatch.setattr(payloads.accuracy, "suggest_weights",
+                        lambda *args, **kwargs: {"technicals": 0.5, "order_flow": 0.3,
+                                                 "volatility_regime": 0.2})
+    assert live.apply_weights(db, config, "QQQ")["ok"] is True
+    assert storage.effective_weights(db, config, "QQQ")["technicals"] == pytest.approx(0.5)
+
+    assert live.revert_weights(db, config, "QQQ")["ok"] is True
+    assert storage.get_weight_overrides(db, "QQQ") is None
+    assert storage.effective_weights(db, config, "QQQ") == config["weights"]
+
+
+def test_apply_weights_without_enough_history_is_rejected(db, config):
+    payloads._ANALYSIS_CACHE.clear()
+    result = live.apply_weights(db, config, "QQQ")
+    assert result["ok"] is False
+    assert "graded history" in result["message"]
+
+
+def test_calibration_toggle_persists(db):
+    live.set_calibration_enabled(db, False)
+    assert storage.get_calibration_enabled(db) is False
+    live.set_calibration_enabled(db, True)
+    assert storage.get_calibration_enabled(db) is True
+
+
+def test_revert_calibration_clears_overrides_inversions_and_bands(db, config):
+    for ticker in config["tickers"]:
+        storage.set_weight_overrides(db, ticker, {"technicals": 1.0})
+        storage.add_inversion(db, ticker, "order_flow")
+        storage.set_confidence_bands(db, ticker, [{"lo": 0, "hi": 50, "accuracy_pct": 40}])
+
+    live.revert_calibration(db, config)
+
+    for ticker in config["tickers"]:
+        assert storage.get_weight_overrides(db, ticker) is None
+        assert storage.get_inversions(db, ticker) == []
+        assert storage.get_confidence_bands(db, ticker) is None
+    assert any(event["kind"] == "reverted" for event in storage.get_calibration_events(db))
+
+
+# --- the ARMED alert's data ------------------------------------------------
+
+def test_overview_exposes_armed_tickers_and_open_auto_positions(db, config, monkeypatch):
+    storage.set_autopilot_state(db, "continuous")
+    engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4, opened_by="auto")
+    monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: False)
+
+    autopilot = payloads.overview(db, config)["autopilot"]
+    assert autopilot["armed"] == []                       # market closed: nothing armed
+    assert autopilot["auto_open"][0]["ticker"] == "QQQ"
+
+
+def test_autopilot_intents_are_the_workers_own_decision(db, config, monkeypatch):
+    add_signal(db, "QQQ", confidence=80.0, direction="bullish")
+    storage.set_autopilot_state(db, "continuous")
+    monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(payloads, "minutes_since_market_open", lambda *args, **kwargs: 45)
+    monkeypatch.setattr(payloads, "minutes_to_market_close", lambda *args, **kwargs: 300)
+
+    intents = payloads.autopilot_intents(db, config)
+    assert [intent["ticker"] for intent in intents] == ["QQQ"]   # the whitelist
+    assert intents[0]["lean"] == "call"
+    # armed or not, the decision always carries its reason
+    assert intents[0]["would_enter"] or intents[0]["blocker"]

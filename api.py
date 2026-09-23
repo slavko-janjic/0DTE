@@ -15,12 +15,15 @@ There is no login: keep this on Tailscale/LAN.
 """
 from __future__ import annotations
 
+import asyncio
+import hmac
+import json
 import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -115,6 +118,13 @@ def get_autopilot() -> dict:
     return payloads.autopilot_payload(db_path, config)
 
 
+@app.get("/api/calibration/{ticker}")
+def get_calibration(ticker: str) -> dict:
+    """The Tuning page: what self-calibration has done, how well-calibrated the
+    confidence numbers are, per-signal accuracy, and the weight suggestion."""
+    return payloads.calibration_payload(db_path, config, _ticker(ticker))
+
+
 @app.get("/api/quote/{ticker}")
 def get_quote(
     ticker: str,
@@ -146,6 +156,14 @@ class ModeRequest(BaseModel):
 
 class BalanceRequest(BaseModel):
     balance: float
+
+
+class EnabledRequest(BaseModel):
+    enabled: bool
+
+
+class WeightsRequest(BaseModel):
+    action: str = Field(pattern="^(apply|revert)$")
 
 
 def _ok_or_400(result: dict) -> dict:
@@ -195,6 +213,105 @@ def post_balance(request: BalanceRequest) -> dict:
 def post_clear_history() -> dict:
     live.clear_history(db_path)
     return payloads.trade_history(db_path, config)
+
+
+@app.post("/api/calibration/enabled")
+def post_calibration_enabled(request: EnabledRequest) -> dict:
+    return _ok_or_400(live.set_calibration_enabled(db_path, request.enabled))
+
+
+@app.post("/api/calibration/revert")
+def post_calibration_revert() -> dict:
+    """Clears every auto-applied weight override, inversion and confidence map
+    across all tickers."""
+    _ok_or_400(live.revert_calibration(db_path, config))
+    return {"ok": True}
+
+
+@app.post("/api/weights/{ticker}")
+def post_weights(ticker: str, request: WeightsRequest) -> dict:
+    name = _ticker(ticker)
+    action = live.apply_weights if request.action == "apply" else live.revert_weights
+    _ok_or_400(action(db_path, config, name))
+    return payloads.calibration_payload(db_path, config, name)
+
+
+# --- live updates ---------------------------------------------------------
+
+STREAM_POLL_SECONDS = 3
+
+
+def _fingerprint() -> str:
+    """A cheap digest of everything the UI renders: the latest signal per
+    ticker, the balance, position counts, autopilot mode and the heartbeat.
+    When it changes, something on screen is out of date."""
+    signals = [
+        (ticker, (storage.get_latest_signal(db_path, ticker) or {"timestamp": None})["timestamp"])
+        for ticker in config["tickers"]
+    ]
+    heartbeat = storage.get_heartbeat(db_path)
+    return json.dumps([
+        signals,
+        storage.get_balance(db_path),
+        len(storage.get_open_positions(db_path)),
+        len(storage.get_closed_positions(db_path)),
+        storage.get_autopilot_state(db_path),
+        heartbeat["updated_at"] if heartbeat else None,
+    ], default=str)
+
+
+@app.get("/api/stream")
+async def stream(request: Request) -> StreamingResponse:
+    """Server-sent events: a nudge whenever the database changes, so the UI can
+    refresh immediately instead of waiting out its poll. The client keeps a slow
+    poll as a fallback, so losing this stream degrades rather than breaks."""
+    async def events():
+        previous = None
+        while not await request.is_disconnected():
+            current = await asyncio.to_thread(_fingerprint)
+            if current != previous:
+                previous = current
+                yield "event: changed\ndata: {}\n\n"
+            else:
+                yield ": keepalive\n\n"   # keeps proxies from closing the stream
+            await asyncio.sleep(STREAM_POLL_SECONDS)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+# --- optional shared-secret auth -----------------------------------------
+# Off unless ZERODTE_TOKEN is set, so a LAN/Tailscale setup keeps working as-is.
+# When it IS set, every request needs the token: as ?token=... once (which sets a
+# cookie), as an X-Auth-Token header, or as that cookie. EventSource can't send
+# headers, which is why the cookie exists.
+AUTH_TOKEN = os.environ.get("ZERODTE_TOKEN") or ""
+COOKIE_NAME = "zerodte_token"
+
+
+def _authorized(request: Request) -> bool:
+    for candidate in (request.cookies.get(COOKIE_NAME),
+                      request.headers.get("X-Auth-Token"),
+                      request.query_params.get("token")):
+        if candidate and hmac.compare_digest(candidate, AUTH_TOKEN):
+            return True
+    return False
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    if not AUTH_TOKEN or _authorized(request):
+        response = await call_next(request)
+        # a fresh ?token=... login is remembered so the link only has to be used once
+        if AUTH_TOKEN and request.query_params.get("token"):
+            response.set_cookie(COOKIE_NAME, AUTH_TOKEN, httponly=True, samesite="lax",
+                                max_age=60 * 60 * 24 * 365)
+        return response
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return JSONResponse({"detail": "Unauthorized - open this URL with ?token=..."},
+                        status_code=401)
 
 
 # --- the frontend ---------------------------------------------------------

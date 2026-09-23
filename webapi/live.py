@@ -20,6 +20,7 @@ from data import market_data
 from paper_trading import engine
 from paper_trading.models import Position
 from storage import db as storage
+from webapi import payloads
 from worker import is_market_open, minutes_to_market_close, next_trading_day
 
 log = logging.getLogger(__name__)
@@ -226,4 +227,46 @@ def clear_history(db_path: str) -> dict:
     """Deletes closed trade records only - open positions and the balance are
     untouched."""
     storage.clear_closed_positions(db_path)
+    return {"ok": True}
+
+
+# --- tuning: self-calibration + per-ticker weights ------------------------
+
+def set_calibration_enabled(db_path: str, enabled: bool) -> dict:
+    """The nightly self-calibration pass runs in the worker; this is just its
+    on/off switch, stored in the DB so it takes effect on the next cycle."""
+    storage.set_calibration_enabled(db_path, bool(enabled))
+    return {"ok": True, "enabled": storage.get_calibration_enabled(db_path)}
+
+
+def revert_calibration(db_path: str, config: dict) -> dict:
+    """Undo every auto-applied adjustment across all tickers: weight overrides,
+    per-ticker inversions and confidence maps. Config defaults take over again
+    on the worker's next cycle. Audited, like everything else calibration does."""
+    for ticker in config["tickers"]:
+        storage.clear_weight_overrides(db_path, ticker)
+        for category in storage.get_inversions(db_path, ticker):
+            storage.remove_inversion(db_path, ticker, category)
+        storage.clear_confidence_bands(db_path, ticker)
+        storage.log_calibration_event(db_path, ticker, "reverted", {})
+    return {"ok": True}
+
+
+def apply_weights(db_path: str, config: dict, ticker: str) -> dict:
+    """Store the accuracy-based weight suggestion as this ticker's override.
+    Per-ticker by design - each name keeps its own weights."""
+    if ticker not in config["tickers"]:
+        return {"ok": False, "message": f"{ticker} isn't a tracked ticker."}
+    suggested = payloads.suggested_weights(db_path, config, ticker)
+    if suggested is None:
+        return {"ok": False, "message": "No category has enough graded history to "
+                                        "justify a weight change yet."}
+    storage.set_weight_overrides(db_path, ticker, suggested)
+    return {"ok": True, "weights": suggested}
+
+
+def revert_weights(db_path: str, config: dict, ticker: str) -> dict:
+    if ticker not in config["tickers"]:
+        return {"ok": False, "message": f"{ticker} isn't a tracked ticker."}
+    storage.clear_weight_overrides(db_path, ticker)
     return {"ok": True}

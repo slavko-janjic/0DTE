@@ -25,6 +25,7 @@
       <a data-p="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5h4a1.5 1.5 0 010 3h-3a1.5 1.5 0 000 3h4"/></svg><span class="lbl">Cost</span></a>
       <a data-p="trades"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class="lbl">Trades</span></a>
       <a data-p="autopilot"><svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="2.5"/><path d="M12 8V4M9 13h.01M15 13h.01"/></svg><span class="lbl">Autopilot</span><span class="badge" id="nav-ap-badge" hidden></span><span class="ndot"></span></a>
+      <a data-p="tuning"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="lbl">Tuning</span></a>
     </nav>
   </aside>
 
@@ -104,6 +105,10 @@
           <div class="chart-tip" id="chart-tip" hidden></div>
         </div>
         <div class="legend" id="chart-legend"></div>
+        <details class="drawer" id="daily-drawer" hidden>
+          <summary>Accuracy by day</summary>
+          <div id="daily-table"></div>
+        </details>
       </div>
     </section>
 
@@ -138,7 +143,19 @@
     <!-- TRADES -->
     <section class="page" data-page="trades" hidden>
       <div class="card wallet" style="margin-top:16px">
+        <div class="hd" style="margin:0"><div class="eyebrow">Wallet</div>
+          <button class="btn ghost small" id="wallet-settings-btn" aria-expanded="false">Settings</button></div>
         <div class="wal-row" id="wallet-trades"></div>
+        <div class="settings" id="wallet-settings" hidden>
+          <div class="form-row" style="margin-top:14px">
+            <div class="field"><label for="bal-input">Set balance ($)</label>
+              <input class="num" id="bal-input" type="number" min="0" step="100" style="width:130px"></div>
+            <button class="btn small" id="bal-set">Set</button>
+            <button class="btn ghost small" id="bal-reset">Reset to starting balance</button>
+            <button class="btn ghost small" id="hist-clear">Clear trade history</button>
+          </div>
+          <div class="sub" style="margin-top:8px">Clearing history deletes closed trade records only — open positions and the balance are untouched.</div>
+        </div>
       </div>
 
       <div class="card pad0" style="margin-top:16px">
@@ -175,6 +192,12 @@
           </div>
           <span class="sub" id="ap-mode-help">Day session arms the worker for ONE trading day, then disarms itself. Manual trading always stays available.</span>
         </div>
+        <div class="mode-row" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+          <button class="btn ghost small" id="alert-sound">Sound: off</button>
+          <button class="btn ghost small" id="alert-notify">Notifications: off</button>
+          <button class="btn ghost small" id="alert-test">Send test alert</button>
+          <span class="sub">Heads-up the moment a ticker ARMS or the bot opens — in time to mirror it by hand.</span>
+        </div>
       </div>
 
       <div class="grid g3" style="margin-top:16px">
@@ -194,6 +217,54 @@
           <div class="stat-row" style="margin-top:12px;gap:20px" id="ap-record"></div>
           <p class="sub" style="margin-top:12px" id="ap-record-sub"></p>
         </div>
+      </div>
+    </section>
+
+    <!-- TUNING -->
+    <section class="page" data-page="tuning" hidden>
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Self-calibration</span></h3>
+          <div class="sub">After the close each day the worker nudges each ticker's weights toward its accuracy-based suggestion, inverts reliably-wrong signals, and remaps raw confidence to observed accuracy. Everything below is audited and revertible.</div></div>
+          <div class="pills" id="cal-toggle"><button data-enabled="1">On</button><button data-enabled="0">Off</button></div>
+        </div>
+        <div class="mode-row">
+          <span class="sub" id="cal-status"></span>
+          <button class="btn ghost small" id="cal-revert">Revert all auto-calibration</button>
+        </div>
+      </div>
+
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Recent adjustments</div><span class="sub">last 15, all tickers</span></div></div>
+        <div style="overflow-x:auto;margin-top:12px" id="cal-events"></div>
+      </div>
+
+      <div class="grid g2" style="margin-top:16px">
+        <div class="card pad0">
+          <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Confidence calibration</div><span class="sub">predicted vs observed</span></div></div>
+          <div style="overflow-x:auto;margin-top:12px" id="cal-bands"></div>
+        </div>
+        <div class="card pad0">
+          <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Per-signal accuracy</div><span class="sub"><span class="tkname">—</span></span></div></div>
+          <div style="overflow-x:auto;margin-top:12px" id="cal-categories"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Accuracy by market context</span></h3>
+          <div class="sub">The same graded calls split by <i>when</i> and <i>what kind of day</i> — more honest than one blended number. Read-only.</div></div></div>
+        <div class="grid g3" id="cal-context"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Weights</span> · <span class="tkname">—</span></h3>
+          <div class="sub" id="cal-weights-sub"></div></div>
+          <div class="mode-row" style="margin:0">
+            <button class="btn small" id="weights-apply">Apply suggestion</button>
+            <button class="btn ghost small" id="weights-revert">Revert to defaults</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto" id="cal-weights"></div>
+        <div class="banner info" id="cal-candidates" hidden></div>
       </div>
     </section>
   </main>
