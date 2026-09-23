@@ -1,0 +1,577 @@
+<title>0DTE Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#eef0f4; --surface:#ffffff; --surface-2:#f6f7f9; --border:#e2e5ec;
+    --ink:#191c24; --muted:#697586; --faint:#98a2b3;
+    --accent:#3a5bd9; --accent-soft:#3a5bd91a;
+    --up:#15a34a; --up-soft:#15a34a1a; --down:#d83a3a; --down-soft:#d83a3a17;
+    --amber:#c9820a; --amber-soft:#c9820a1a;
+    --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+    --r:11px; --shadow:0 1px 2px #0b11230f, 0 1px 1px #0b11230a;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0d1017; --surface:#151a23; --surface-2:#1b212c; --border:#28303d;
+      --ink:#e7ecf3; --muted:#93a0b3; --faint:#657084;
+      --accent:#6d8bff; --accent-soft:#6d8bff26;
+      --up:#3ec87a; --up-soft:#3ec87a1f; --down:#ff6b6b; --down-soft:#ff6b6b1f;
+      --amber:#e0a53a; --amber-soft:#e0a53a1f;
+      --shadow:0 1px 2px #0006, 0 1px 1px #0004;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0d1017; --surface:#151a23; --surface-2:#1b212c; --border:#28303d;
+    --ink:#e7ecf3; --muted:#93a0b3; --faint:#657084;
+    --accent:#6d8bff; --accent-soft:#6d8bff26;
+    --up:#3ec87a; --up-soft:#3ec87a1f; --down:#ff6b6b; --down-soft:#ff6b6b1f;
+    --amber:#e0a53a; --amber-soft:#e0a53a1f;
+    --shadow:0 1px 2px #0006, 0 1px 1px #0004;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+  h1,h2,h3{margin:0;text-wrap:balance;font-weight:600}
+
+  .app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+
+  /* sidebar (desktop) */
+  .side{background:var(--surface);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;gap:2px;padding:16px 12px;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+  .brand .mark{width:30px;height:30px;border-radius:8px;background:var(--accent);
+    display:grid;place-items:center;color:#fff;flex:none;font-family:var(--mono);font-weight:600;font-size:13px}
+  .brand b{font-size:15px;letter-spacing:-.01em}
+  .brand span{display:block;font-size:11px;color:var(--faint);font-weight:500}
+  .nav{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+  .nav a{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:8px;
+    color:var(--muted);text-decoration:none;font-weight:500;cursor:pointer;font-size:13.5px}
+  .nav a svg{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.9}
+  .nav a:hover{background:var(--surface-2);color:var(--ink)}
+  .nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .nav a .badge{margin-left:auto;font-family:var(--mono);font-size:10.5px;background:var(--accent);
+    color:#fff;border-radius:20px;padding:1px 7px;font-weight:600}
+
+  /* theme control: lower-left of the sidebar on desktop, floated via fixed */
+  .themebtn{position:fixed;left:12px;bottom:16px;width:206px;z-index:40;
+    display:flex;align-items:center;gap:9px;font:inherit;font-size:13px;font-weight:500;
+    color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
+    padding:8px 11px;cursor:pointer}
+  .themebtn:hover{color:var(--ink)}
+  .themebtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;flex:none}
+
+  /* main */
+  main{padding:0 24px 40px;min-width:0}
+  .topbar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--ground) 86%,transparent);
+    backdrop-filter:blur(8px);padding:13px 0 12px;margin-bottom:4px;border-bottom:1px solid var(--border);
+    display:flex;flex-wrap:wrap;gap:12px 16px;align-items:center}
+  .spacer{flex:1 1 auto}
+
+  .senti-strip{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .senti{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:13px;font-weight:600;
+    border:1px solid var(--border);border-left-width:3px;border-radius:8px;padding:5px 11px;cursor:pointer;
+    background:var(--surface);box-shadow:var(--shadow)}
+  .senti:hover{border-color:var(--faint)}
+  .senti .t{color:var(--ink);letter-spacing:.01em}
+  .senti.up{border-left-color:var(--up)} .senti.up .v{color:var(--up)}
+  .senti.down{border-left-color:var(--down)} .senti.down .v{color:var(--down)}
+  .senti.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),var(--shadow)}
+
+  .sig-live{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+
+  /* system health: silent when up, red alert in the menu when down */
+  .sysdown{position:fixed;left:12px;bottom:58px;width:206px;z-index:40;display:flex;flex-direction:column;gap:6px}
+  .sysdown .sd{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--down);
+    background:var(--down-soft);border:1px solid var(--down);border-radius:8px;padding:7px 10px}
+  .sysdown .sd .dot{width:8px;height:8px;border-radius:50%;background:var(--down)}
+
+  .wallet .wal-row{display:flex;gap:30px;flex-wrap:wrap;margin-top:12px}
+  .wallet .stat .n{font-size:22px}
+  .src{font-family:var(--mono);font-size:10.5px;font-weight:600;border-radius:5px;padding:1px 7px}
+  .src.auto{background:var(--accent-soft);color:var(--accent)} .src.you{background:var(--surface-2);color:var(--muted)}
+  .closebtn{font:inherit;font-size:11.5px;font-weight:600;color:var(--down);background:var(--down-soft);
+    border:1px solid var(--down);border-radius:6px;padding:3px 11px;cursor:pointer}
+  .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+  .cal .wd{font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--faint);text-align:center;font-weight:600;padding-bottom:2px}
+  .cal .cell{aspect-ratio:1/.72;border:1px solid var(--border);border-radius:8px;padding:5px 7px;
+    display:flex;flex-direction:column;justify-content:space-between;background:var(--surface-2);min-width:0;overflow:hidden}
+  .cal .cell.empty{background:transparent;border-color:transparent}
+  .cal .cell .dn{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .cal .cell .pl{font-family:var(--mono);font-size:12px;font-weight:600;align-self:flex-end}
+  .cal .cell.pos{background:var(--up-soft);border-color:transparent}
+  .cal .cell.pos .pl,.cal .cell.pos .dn{color:var(--up)}
+  .cal .cell.neg{background:var(--down-soft);border-color:transparent}
+  .cal .cell.neg .pl,.cal .cell.neg .dn{color:var(--down)}
+  .cal .cell.big{box-shadow:inset 0 0 0 1.5px var(--up)}
+  .nav a .ndot{display:none}
+  .status{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:500}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .dot.ok{background:var(--up)} .dot.warn{background:var(--amber)} .dot.off{background:var(--down)}
+
+  .note{font-size:12px;color:var(--muted);background:var(--amber-soft);border:1px solid var(--amber);
+    border-left-width:3px;border-radius:8px;padding:7px 11px;margin:12px 0 0}
+  .note b{color:var(--amber)}
+  .note .demo{white-space:nowrap}
+  .note button{font:inherit;font-size:11px;font-weight:600;color:var(--amber);background:transparent;
+    border:1px solid var(--amber);border-radius:6px;padding:1px 8px;cursor:pointer;margin-left:5px}
+
+  .page{padding-top:16px}
+  .page[hidden]{display:none!important}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+    padding:16px 17px;box-shadow:var(--shadow)}
+  .card.pad0{padding:0;overflow:hidden}
+  .card h3{font-size:13px;display:flex;align-items:center;gap:8px;color:var(--ink)}
+  .card .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .card .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px;flex-wrap:wrap}
+  .eyebrow{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);font-weight:600}
+
+  .pills{display:flex;gap:5px;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:3px}
+  .pills button{font:inherit;font-size:12.5px;font-weight:600;border:0;background:transparent;color:var(--muted);
+    padding:6px 13px;border-radius:6px;cursor:pointer;font-family:var(--mono)}
+  .pills button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+
+  .badge{font-family:var(--mono);font-size:11px;font-weight:600;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .b-up{background:var(--up-soft);color:var(--up)} .b-down{background:var(--down-soft);color:var(--down)}
+  .b-mut{background:var(--surface-2);color:var(--muted)} .b-acc{background:var(--accent-soft);color:var(--accent)}
+  .up{color:var(--up)} .down{color:var(--down)}
+
+  .intent{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:9px;border:1px solid var(--border);background:var(--surface-2)}
+  .intent+.intent{margin-top:8px}
+  .intent.armed{border-color:var(--accent);background:var(--accent-soft)}
+  .intent .tk{font-family:var(--mono);font-weight:600;font-size:14px;width:42px}
+  .intent .msg{color:var(--muted);font-size:12.5px;min-width:0}
+  .intent .msg b{color:var(--ink);font-weight:600}
+  .intent .rt{margin-left:auto;text-align:right;flex:none}
+  .meter{width:100%;height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-top:5px}
+  .meter i{display:block;height:100%;border-radius:4px;background:var(--accent)}
+  .meter i.lo{background:var(--faint)}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:right;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);
+    font-weight:600;padding:10px 12px;border-bottom:1px solid var(--border)}
+  th:first-child,td:first-child{text-align:left}
+  td{padding:10px 12px;border-bottom:1px solid var(--border)}
+  tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:var(--surface-2)}
+  td.num,th.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .tkcell{font-family:var(--mono);font-weight:600}
+
+  .stat-row{display:flex;gap:26px;flex-wrap:wrap}
+  .stat .n{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:-.02em}
+  .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-top:2px}
+
+  .sig-big{display:flex;align-items:baseline;gap:12px}
+  .sig-big .d{font-size:22px;font-weight:700;letter-spacing:-.01em}
+  .sig-big .c{font-family:var(--mono);font-size:34px;font-weight:600;letter-spacing:-.02em}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);
+    background:var(--surface-2);border:1px solid var(--border);border-radius:7px;padding:4px 9px;font-weight:500}
+  .ss{display:grid;grid-template-columns:130px 1fr;align-items:center;gap:10px;font-size:12.5px;color:var(--muted)}
+
+  svg.chart{width:100%;height:auto;display:block}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:8px}
+  .legend i{width:16px;height:3px;border-radius:2px;display:inline-block;vertical-align:middle;margin-right:6px}
+
+  .form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+  .field select,.field input{font:inherit;font-family:var(--mono);background:var(--surface-2);color:var(--ink);
+    border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:96px}
+  .btn{font:inherit;font-weight:600;border:0;border-radius:8px;padding:9px 16px;cursor:pointer;background:var(--accent);color:#fff}
+  .cfg{display:flex;justify-content:space-between;align-items:center;color:var(--muted);padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .cfg:last-child{border-bottom:0;padding-bottom:0}.cfg b{color:var(--ink);font-weight:600}
+
+  /* ---- mobile ---- */
+  @media(max-width:760px){
+    .app{grid-template-columns:1fr}
+    main{padding:0 16px calc(76px + env(safe-area-inset-bottom,0px))}
+
+    /* nav -> bottom tab bar */
+    .side{position:fixed;left:0;right:0;bottom:0;top:auto;height:auto;flex-direction:row;
+      padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));gap:0;
+      border-right:0;border-top:1px solid var(--border);z-index:30}
+    .brand{display:none}
+    .nav{flex-direction:row;flex:1;justify-content:space-around;gap:0;margin:0}
+    .nav a{flex-direction:column;gap:3px;padding:6px 8px;font-size:10px;flex:1;justify-content:center;text-align:center}
+    .nav a span.lbl{display:block;font-size:9.5px}
+    .nav a{position:relative}
+    .nav a .badge{position:absolute;margin:0;top:2px;right:16px;padding:0 5px}
+
+    /* theme -> top-right, icon only */
+    .themebtn{position:fixed;left:auto;right:12px;bottom:auto;
+      top:calc(env(safe-area-inset-top,0px) + 9px);width:auto;padding:7px;border-radius:8px}
+    .themebtn span{display:none}
+    /* mobile shows the down-state as a red dot on the Signals / Autopilot tab instead */
+    .sysdown{display:none}
+    .nav a.alert .ndot{display:block;position:absolute;top:4px;left:calc(50% + 6px);
+      width:7px;height:7px;border-radius:50%;background:var(--down)}
+
+    /* header: just the sentiment strip (worker/autopilot now sit above the signal card) */
+    .topbar{gap:8px 10px;padding-right:46px}
+    .senti-strip{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;
+      -webkit-overflow-scrolling:touch;scrollbar-width:none}
+    .senti-strip::-webkit-scrollbar{display:none}
+    .senti{flex:none}
+  }
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+  .nav a,.themebtn,.pills button,.senti{transition:background .12s,color .12s,border-color .12s}
+</style>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="mark">0Δ</span>
+      <div><b>0DTE Console</b><span>paper trading</span></div>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-p="signals" class="on"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-8 4 5"/></svg><span class="lbl">Signals</span><span class="ndot"></span></a>
+      <a data-p="lab"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 8a2 2 0 002 3h10a2 2 0 002-3l-5-8V3"/></svg><span class="lbl">Lab</span></a>
+      <a data-p="cost"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5h4a1.5 1.5 0 010 3h-3a1.5 1.5 0 000 3h4"/></svg><span class="lbl">Cost</span></a>
+      <a data-p="trades"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class="lbl">Trades</span></a>
+      <a data-p="autopilot"><svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="2.5"/><path d="M12 8V4M9 13h.01M15 13h.01"/></svg><span class="lbl">Autopilot</span><span class="badge">1</span><span class="ndot"></span></a>
+    </nav>
+  </aside>
+
+  <div class="sysdown" id="sysdown" hidden></div>
+  <button class="themebtn" id="theme" aria-label="Cycle theme: system, light, dark"></button>
+
+  <main>
+    <div class="topbar">
+      <div class="senti-strip" id="senti">
+        <button class="senti up sel" data-tk="QQQ"><span class="t">QQQ</span><span class="v num">72%</span></button>
+        <button class="senti down" data-tk="SPY"><span class="t">SPY</span><span class="v num">61%</span></button>
+        <button class="senti down" data-tk="IWM"><span class="t">IWM</span><span class="v num">57%</span></button>
+        <button class="senti up" data-tk="TSLA"><span class="t">TSLA</span><span class="v num">57%</span></button>
+        <button class="senti up" data-tk="NVDA"><span class="t">NVDA</span><span class="v num">52%</span></button>
+      </div>
+    </div>
+
+    <p class="note"><b>Mockup.</b> Proposed condensed layout — example figures, not live. Green = call lean, red = put lean. Tap a ticker chip to open its signal.
+      <span class="demo">Preview a down state: <button id="dw" type="button">worker</button><button id="da" type="button">autopilot</button></span></p>
+
+    <!-- SIGNALS (default) -->
+    <section class="page" data-page="signals">
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row">
+          <div class="stat"><div class="n num">$10,412</div><div class="l">Balance</div></div>
+          <div class="stat"><div class="n num up">+$58</div><div class="l">Today</div></div>
+          <div class="stat"><div class="n num up">+$412</div><div class="l">Total P&L</div></div>
+          <div class="stat"><div class="n num">$1,420</div><div class="l">Open exposure</div></div>
+        </div>
+      </div>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card">
+          <div class="hd" style="margin-bottom:6px">
+            <div class="eyebrow">Signal · <span class="tkname">QQQ</span></div>
+            <span class="sig-live"><span class="num sig-price">$721.45</span> · 12:16 ET</span>
+          </div>
+          <div class="sig-big"><span class="d up sig-dir">BULLISH</span><span class="c sig-conf">72%</span></div>
+          <div class="sub sig-raw" style="margin-top:6px">calibrated · raw 48%</div>
+          <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+            <span class="chip sig-gamma">Short gamma · trending (−1.00)</span>
+            <span class="chip sig-streak">bullish 151 min</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Pre-market setup</div>
+          <div class="stat-row" style="margin-top:12px;gap:22px">
+            <div class="stat"><div class="n">+0.34%</div><div class="l">Gap</div></div>
+            <div class="stat"><div class="n num">721.5</div><div class="l">Prior close</div></div>
+          </div>
+          <div class="sub" style="margin-top:12px">O/N range 718.9 – 723.6 · no catalyst today</div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Subscores</div>
+          <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+            <div class="ss"><span>technicals</span><div class="meter"><i style="width:66%"></i></div></div>
+            <div class="ss"><span>order_flow</span><div class="meter"><i style="width:54%"></i></div></div>
+            <div class="ss"><span>volatility_regime</span><div class="meter"><i class="lo" style="width:50%"></i></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd" style="margin-bottom:10px">
+          <h3><span class="eyebrow">Place a paper trade</span> · <span class="tkname">QQQ</span></h3>
+          <span class="sub">pre-filled from the signal — edit and buy</span>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Type</label><select id="pt-type"><option value="call">call</option><option value="put">put</option></select></div>
+          <div class="field"><label>Strike (ATM)</label><input class="num" id="pt-strike" value="721" style="width:100px"></div>
+          <div class="field"><label>Contracts</label><input class="num" value="3" style="width:84px"></div>
+          <div class="field"><label>Target %</label><input class="num" value="+50" style="width:84px"></div>
+          <div class="field"><label>Stop %</label><input class="num" value="−35" style="width:84px"></div>
+          <button class="btn">Buy <span class="tkname">QQQ</span></button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><h3><span class="eyebrow">Signal history &amp; price</span> · <span class="tkname">QQQ</span></h3>
+          <div class="pills"><button class="on">Session</button><button>4h</button><button>3d</button><button>All</button></div></div>
+        <svg class="chart" viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label="Price and composite score over the session">
+          <line x1="0" y1="150" x2="720" y2="150" stroke="var(--border)"/>
+          <polyline fill="none" stroke="var(--faint)" stroke-width="1.5" opacity=".8"
+            points="0,120 60,116 120,124 180,108 240,112 300,96 360,104 420,88 480,92 540,78 600,84 660,70 720,74"/>
+          <polygon fill="var(--accent-soft)" stroke="none"
+            points="0,150 0,138 120,142 240,120 360,116 480,96 600,100 720,86 720,150"/>
+          <polyline fill="none" stroke="var(--accent)" stroke-width="2"
+            points="0,138 120,142 240,120 360,116 480,96 600,100 720,86"/>
+          <circle cx="720" cy="86" r="3.5" fill="var(--accent)"/>
+        </svg>
+        <div class="legend"><span><i style="background:var(--faint)"></i>Price</span><span><i style="background:var(--accent)"></i>Composite score</span><span>Overall accuracy (30 min): 51%</span></div>
+      </div>
+    </section>
+
+    <!-- STRATEGY LAB -->
+    <section class="page" data-page="lab" hidden>
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Strategy lab</span></h3><div class="sub">Virtual strategies, honest fills, zero wallet impact. Verdict tests whether avg P&amp;L/trade ≠ 0 (|t| ≥ 2). With ~10 running, treat one winner as a hypothesis, not a result.</div></div></div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Win</th><th class="num">Total P&L</th><th class="num">Profit factor</th><th class="num">t</th><th class="num">Need</th><th>Verdict</th></tr></thead>
+          <tbody>
+            <tr><td class="tkcell">spy_technicals</td><td class="num">23</td><td class="num">74%</td><td class="num up">+$553</td><td class="num">2.69</td><td class="num">+2.17</td><td class="num">19</td><td><span class="badge b-up">EDGE (+)</span></td></tr>
+            <tr><td class="tkcell">confluence</td><td class="num">35</td><td class="num">49%</td><td class="num up">+$405</td><td class="num">1.33</td><td class="num">+0.67</td><td class="num">302</td><td><span class="badge b-mut">no edge</span></td></tr>
+            <tr><td class="tkcell">nvda_technicals</td><td class="num">21</td><td class="num">57%</td><td class="num up">+$148</td><td class="num">1.29</td><td class="num">+0.46</td><td class="num">382</td><td><span class="badge b-mut">no edge</span></td></tr>
+            <tr><td class="tkcell">contrarian</td><td class="num">37</td><td class="num">35%</td><td class="num down">−$388</td><td class="num">0.79</td><td class="num">−0.56</td><td class="num">454</td><td><span class="badge b-mut">no edge</span></td></tr>
+            <tr><td class="tkcell">baseline</td><td class="num">48</td><td class="num">48%</td><td class="num down">−$603</td><td class="num">0.77</td><td class="num">−0.70</td><td class="num">375</td><td><span class="badge b-mut">no edge</span></td></tr>
+            <tr><td class="tkcell">runner</td><td class="num">48</td><td class="num">52%</td><td class="num down">−$1,055</td><td class="num">0.58</td><td class="num">−1.34</td><td class="num">103</td><td><span class="badge b-mut">no edge</span></td></tr>
+            <tr><td class="tkcell">gamma_gate_only</td><td class="num">28</td><td class="num">29%</td><td class="num down">−$1,302</td><td class="num">0.25</td><td class="num">−2.29</td><td class="num">21</td><td><span class="badge b-down">EDGE (−)</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- COST OF TRADING -->
+    <section class="page" data-page="cost" hidden>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card" style="grid-column:span 2">
+          <div class="hd"><h3><span class="eyebrow">Spread cost through the day</span> · QQQ</h3><span class="badge b-mut num">median, ATM 0DTE</span></div>
+          <svg class="chart" viewBox="0 0 720 240" role="img" aria-label="Median round-trip spread cost by time of day, a U-shaped curve">
+            <g stroke="var(--border)" stroke-width="1">
+              <line x1="40" y1="30" x2="40" y2="200"/><line x1="40" y1="200" x2="710" y2="200"/>
+              <line x1="40" y1="150" x2="710" y2="150" opacity=".5"/><line x1="40" y1="100" x2="710" y2="100" opacity=".5"/><line x1="40" y1="50" x2="710" y2="50" opacity=".5"/>
+            </g>
+            <g font-family="var(--mono)" font-size="10" fill="var(--faint)">
+              <text x="34" y="203" text-anchor="end">0%</text><text x="34" y="153" text-anchor="end">3%</text>
+              <text x="34" y="103" text-anchor="end">6%</text><text x="34" y="53" text-anchor="end">9%</text>
+              <text x="40" y="216" text-anchor="middle">9:30</text><text x="260" y="216" text-anchor="middle">11:00</text>
+              <text x="470" y="216" text-anchor="middle">13:30</text><text x="705" y="216" text-anchor="middle">16:00</text>
+            </g>
+            <polygon fill="var(--accent-soft)" points="40,58 130,120 260,160 390,168 520,150 620,120 710,66 710,200 40,200"/>
+            <polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="40,58 130,120 260,160 390,168 520,150 620,120 710,66"/>
+            <circle cx="390" cy="168" r="4" fill="var(--accent)"/>
+            <text x="390" y="188" text-anchor="middle" font-family="var(--mono)" font-size="10.5" fill="var(--up)" font-weight="600">cheapest ~1:00pm</text>
+          </svg>
+          <div class="legend"><span><i style="background:var(--accent)"></i>Round-trip spread (% of premium)</span></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Why it matters</div>
+          <p style="color:var(--muted);font-size:13px;margin:10px 0 0">Direction is a coin flip at every horizon we can measure. The spread is the opposite: a <b style="color:var(--ink)">known toll</b> on every round trip, widest at the open and into the close, tightest mid-morning to mid-day.</p>
+          <div class="stat-row" style="margin-top:16px;gap:20px">
+            <div class="stat"><div class="n">8.4%</div><div class="l">At the open</div></div>
+            <div class="stat"><div class="n up">2.9%</div><div class="l">Mid-day</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRADES (open + closed ledger) -->
+    <section class="page" data-page="trades" hidden>
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row">
+          <div class="stat"><div class="n num">$10,412</div><div class="l">Balance</div></div>
+          <div class="stat"><div class="n num up">+$58</div><div class="l">Today</div></div>
+          <div class="stat"><div class="n num up">+$412</div><div class="l">Total P&L</div></div>
+          <div class="stat"><div class="n num">$1,420</div><div class="l">Open exposure</div></div>
+        </div>
+      </div>
+
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="eyebrow">Open positions</div></div>
+        <div style="overflow-x:auto;margin-top:12px">
+        <table>
+          <thead><tr><th>Ticker</th><th>Type</th><th class="num">Strike</th><th class="num">Entry</th><th class="num">Now</th><th class="num">P&L</th><th>Source</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="tkcell">IWM</td><td>put</td><td class="num">228</td><td class="num">1.42</td><td class="num">1.71</td><td class="num up">+$29</td><td><span class="src auto">auto</span></td><td style="text-align:right"><button class="closebtn">Close</button></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <div class="card pad0" style="margin-top:16px">
+        <div style="padding:16px 17px 0"><div class="hd" style="margin:0"><div class="eyebrow">Full history</div><span class="sub">yours &amp; autopilot</span></div></div>
+        <div style="overflow-x:auto;margin-top:12px">
+        <table>
+          <thead><tr><th>Date</th><th>Ticker</th><th>Type</th><th class="num">Score</th><th>Exit</th><th class="num">P&L</th><th>Source</th></tr></thead>
+          <tbody>
+            <tr><td class="num">09-18</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.26</td><td>profit target</td><td class="num up">+$30</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">09-17</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.22</td><td>profit target</td><td class="num up">+$30</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">09-17</td><td class="tkcell">SPY</td><td>put</td><td class="num">−0.31</td><td>you closed</td><td class="num up">+$318</td><td><span class="src you">you</span></td></tr>
+            <tr><td class="num">09-17</td><td class="tkcell">QQQ</td><td>put</td><td class="num">−0.28</td><td>you closed</td><td class="num up">+$326</td><td><span class="src you">you</span></td></tr>
+            <tr><td class="num">09-15</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.34</td><td>profit target</td><td class="num up">+$24</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">09-14</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.04</td><td>profit target</td><td class="num up">+$27</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">09-10</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.21</td><td>time-decay stop</td><td class="num down">−$17</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">09-09</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.33</td><td>profit target</td><td class="num up">+$33</td><td><span class="src auto">auto</span></td></tr>
+            <tr><td class="num">08-18</td><td class="tkcell">IWM</td><td>put</td><td class="num">−0.21</td><td>profit target</td><td class="num up">+$31</td><td><span class="src auto">auto</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd" style="margin-bottom:12px">
+          <h3><span class="eyebrow">Daily P&L</span> · September 2026</h3>
+          <div class="pills"><button aria-label="Previous month">‹</button><button class="on">Sep</button><button aria-label="Next month">›</button></div>
+        </div>
+        <div class="cal">
+          <div class="wd">Su</div><div class="wd">Mo</div><div class="wd">Tu</div><div class="wd">We</div><div class="wd">Th</div><div class="wd">Fr</div><div class="wd">Sa</div>
+          <div class="cell empty"></div><div class="cell empty"></div>
+          <div class="cell pos"><span class="dn">1</span><span class="pl">+18</span></div>
+          <div class="cell pos"><span class="dn">2</span><span class="pl">+15</span></div>
+          <div class="cell neg"><span class="dn">3</span><span class="pl">−9</span></div>
+          <div class="cell pos"><span class="dn">4</span><span class="pl">+22</span></div>
+          <div class="cell"><span class="dn">5</span></div>
+          <div class="cell"><span class="dn">6</span></div>
+          <div class="cell neg"><span class="dn">7</span><span class="pl">−14</span></div>
+          <div class="cell pos"><span class="dn">8</span><span class="pl">+12</span></div>
+          <div class="cell pos"><span class="dn">9</span><span class="pl">+33</span></div>
+          <div class="cell neg"><span class="dn">10</span><span class="pl">−17</span></div>
+          <div class="cell pos"><span class="dn">11</span><span class="pl">+26</span></div>
+          <div class="cell"><span class="dn">12</span></div>
+          <div class="cell"><span class="dn">13</span></div>
+          <div class="cell pos"><span class="dn">14</span><span class="pl">+27</span></div>
+          <div class="cell pos"><span class="dn">15</span><span class="pl">+24</span></div>
+          <div class="cell neg"><span class="dn">16</span><span class="pl">−12</span></div>
+          <div class="cell pos big"><span class="dn">17</span><span class="pl">+674</span></div>
+          <div class="cell pos"><span class="dn">18</span><span class="pl">+58</span></div>
+          <div class="cell"><span class="dn">19</span></div>
+          <div class="cell"><span class="dn">20</span></div>
+          <div class="cell"><span class="dn">21</span></div>
+          <div class="cell"><span class="dn">22</span></div>
+          <div class="cell"><span class="dn">23</span></div>
+          <div class="cell"><span class="dn">24</span></div>
+          <div class="cell"><span class="dn">25</span></div>
+          <div class="cell"><span class="dn">26</span></div>
+          <div class="cell"><span class="dn">27</span></div>
+          <div class="cell"><span class="dn">28</span></div>
+          <div class="cell"><span class="dn">29</span></div>
+          <div class="cell"><span class="dn">30</span></div>
+          <div class="cell empty"></div><div class="cell empty"></div><div class="cell empty"></div>
+        </div>
+        <div class="legend"><span><i style="background:var(--up)"></i>gain</span><span><i style="background:var(--down)"></i>loss</span><span>Sep so far: <b class="up">+$857</b></span></div>
+      </div>
+    </section>
+
+    <!-- AUTOPILOT -->
+    <section class="page" data-page="autopilot" hidden>
+      <div class="card wallet" style="margin-top:16px">
+        <div class="wal-row">
+          <div class="stat"><div class="n num">$10,412</div><div class="l">Balance</div></div>
+          <div class="stat"><div class="n num up">+$58</div><div class="l">Today</div></div>
+          <div class="stat"><div class="n num up">+$158</div><div class="l">Auto P&L</div></div>
+          <div class="stat"><div class="n num">$1,420</div><div class="l">Open exposure</div></div>
+        </div>
+      </div>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card" style="grid-column:span 2">
+          <div class="hd"><h3><span class="eyebrow">Intent</span></h3><span class="badge b-acc num">window open · 10:14</span></div>
+          <div class="intent armed"><span class="tk">SPY</span><div class="msg"><b>ARMED</b> — would buy <b>puts</b> now. Mirror: ATM 0DTE put, +50% / −35%.</div><div class="rt"><span class="badge b-acc">61% ≥ 55%</span></div></div>
+          <div class="intent"><span class="tk">QQQ</span><div class="msg">standing down: confidence below the 55% gate.</div><div class="rt"><span class="badge b-mut">48%</span></div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow">Configuration</div>
+          <div style="margin-top:12px;display:flex;flex-direction:column;gap:9px;font-size:13px">
+            <div class="cfg"><span>Trades</span><b class="num">QQQ · SPY</b></div>
+            <div class="cfg"><span>Tactic</span><b>opening range</b></div>
+            <div class="cfg"><span>Window</span><b class="num">30–90 min</b></div>
+            <div class="cfg"><span>Confidence gate</span><b class="num">≥ 55%</b></div>
+            <div class="cfg"><span>Exits</span><b class="num">+50% / −35%</b></div>
+            <div class="cfg"><span>Per session</span><b class="num">1 / ticker</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card"><div class="eyebrow">Record</div><div class="stat-row" style="margin-top:12px;gap:20px">
+          <div class="stat"><div class="n up">+$158</div><div class="l">Total</div></div>
+          <div class="stat"><div class="n">86%</div><div class="l">Win rate</div></div>
+          <div class="stat"><div class="n">7</div><div class="l">Trades</div></div></div>
+          <p class="sub" style="margin-top:12px">All IWM puts to date — a concentrated short tilt. Win rate is exit-mechanics + regime, not proven edge.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+  (function(){
+    var root=document.documentElement;
+    var nav=document.getElementById('nav'), pages=document.querySelectorAll('.page');
+    function showPage(p){
+      nav.querySelectorAll('a').forEach(function(x){x.classList.toggle('on',x.dataset.p===p)});
+      pages.forEach(function(s){s.hidden = s.dataset.page!==p});
+    }
+    nav.addEventListener('click',function(e){
+      var a=e.target.closest('a[data-p]'); if(!a) return; e.preventDefault();
+      showPage(a.dataset.p); window.scrollTo({top:0,behavior:'instant'});
+    });
+
+    var DATA={
+      QQQ:{dir:'BULLISH',cls:'up',conf:'72%',raw:'raw 48%',price:'$721.45',gamma:'Short gamma · trending (−1.00)',streak:'bullish 151 min'},
+      SPY:{dir:'BEARISH',cls:'down',conf:'61%',raw:'raw 20%',price:'$642.10',gamma:'Short gamma · trending (−0.60)',streak:'bearish 42 min'},
+      IWM:{dir:'BEARISH',cls:'down',conf:'57%',raw:'raw 24%',price:'$228.30',gamma:'Long gamma · rangebound (+0.30)',streak:'bearish 88 min'},
+      TSLA:{dir:'BULLISH',cls:'up',conf:'57%',raw:'raw 30%',price:'$415.60',gamma:'Short gamma · trending (−0.80)',streak:'bullish 20 min'},
+      NVDA:{dir:'BULLISH',cls:'up',conf:'52%',raw:'raw 60%',price:'$178.20',gamma:'Neutral gamma (0.05)',streak:'bullish 12 min'}
+    };
+    var senti=document.getElementById('senti');
+    function selectTicker(tk){
+      var d=DATA[tk]; if(!d) return;
+      document.querySelectorAll('.tkname').forEach(function(n){n.textContent=tk});
+      senti.querySelectorAll('.senti').forEach(function(b){b.classList.toggle('sel',b.dataset.tk===tk)});
+      var dir=document.querySelector('.sig-dir'); dir.textContent=d.dir; dir.className='d sig-dir '+d.cls;
+      document.querySelector('.sig-conf').textContent=d.conf;
+      document.querySelector('.sig-raw').textContent='calibrated · '+d.raw;
+      document.querySelector('.sig-price').textContent=d.price;
+      document.querySelector('.sig-gamma').textContent=d.gamma;
+      document.querySelector('.sig-streak').textContent=d.streak;
+      var pt=document.getElementById('pt-type'); if(pt) pt.value=(d.cls==='up'?'call':'put');
+      var ps=document.getElementById('pt-strike'); if(ps) ps.value=d.price.replace('$','').split('.')[0];
+    }
+
+    // system health: silent when up, red alert in the menu when down
+    var sys={worker:true,autopilot:true};
+    function renderSys(){
+      var el=document.getElementById('sysdown'), rows=[];
+      if(!sys.worker) rows.push('<div class="sd"><span class="dot"></span>worker down</div>');
+      if(!sys.autopilot) rows.push('<div class="sd"><span class="dot"></span>autopilot off</div>');
+      el.innerHTML=rows.join(''); el.hidden = rows.length===0;
+      // mobile: a red dot on the relevant nav tab (Signals for worker, Autopilot for autopilot)
+      nav.querySelector('a[data-p="signals"]').classList.toggle('alert', !sys.worker);
+      nav.querySelector('a[data-p="autopilot"]').classList.toggle('alert', !sys.autopilot);
+    }
+    document.getElementById('dw').addEventListener('click',function(){sys.worker=!sys.worker; renderSys();});
+    document.getElementById('da').addEventListener('click',function(){sys.autopilot=!sys.autopilot; renderSys();});
+    renderSys();
+    senti.addEventListener('click',function(e){
+      var b=e.target.closest('button[data-tk]'); if(!b) return;
+      selectTicker(b.dataset.tk); showPage('signals'); window.scrollTo({top:0,behavior:'instant'});
+    });
+
+    var SUN='<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+    var MOON='<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
+    var SYS='<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+    var THEMES=[{k:'system',l:'System',i:SYS},{k:'light',l:'Light',i:SUN},{k:'dark',l:'Dark',i:MOON}];
+    var idx=0;
+    try{var s=localStorage.getItem('0dte-theme'); if(s){var j=THEMES.findIndex(function(t){return t.k===s}); if(j>=0) idx=j;}}catch(e){}
+    var btn=document.getElementById('theme');
+    function apply(){var t=THEMES[idx]; if(t.k==='system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme',t.k);
+      btn.innerHTML=t.i+'<span>'+t.l+'</span>';}
+    btn.addEventListener('click',function(){idx=(idx+1)%THEMES.length; try{localStorage.setItem('0dte-theme',THEMES[idx].k)}catch(e){} apply();});
+    apply();
+  })();
+</script>
