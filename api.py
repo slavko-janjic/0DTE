@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -29,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from config import load_settings
 from storage import db as storage
-from webapi import live, payloads
+from webapi import live, payloads, push
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,39 @@ WORKER_POLL_SECONDS = 60
 if storage.get_poll_interval_seconds(db_path) != WORKER_POLL_SECONDS:
     storage.set_poll_interval_seconds(db_path, WORKER_POLL_SECONDS)
 
-app = FastAPI(title="0DTE Console", docs_url="/api/docs", openapi_url="/api/openapi.json")
+# --- Web Push: ARMED / OPENED alerts that reach a phone with the app closed --
+# Optional: without pywebpush installed, push reports itself unavailable and the
+# in-page alerts carry on. The key is generated once, beside the database.
+push.init(db_path)
+PUSH_SUBJECT = os.environ.get("ZERODTE_PUSH_SUBJECT") or push.DEFAULT_SUBJECT
+PUSH_POLL_SECONDS = 15
+vapid = push.load_or_create_key(db_path) if push.AVAILABLE else None
+
+
+async def _watch_for_alerts() -> None:
+    """Runs for the life of the app: the same edge-trigger the page does, but
+    server-side, so it keeps working while every phone is locked."""
+    watcher = push.Watcher(db_path, config, vapid, PUSH_SUBJECT)
+    while True:
+        try:
+            await asyncio.to_thread(watcher.tick)
+        except Exception:  # noqa: BLE001 - one bad tick must not end the watcher
+            log.warning("push watcher tick failed", exc_info=True)
+        await asyncio.sleep(PUSH_POLL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(_watch_for_alerts()) if vapid is not None else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+
+
+app = FastAPI(title="0DTE Console", docs_url="/api/docs", openapi_url="/api/openapi.json",
+              lifespan=lifespan)
 
 
 def _ticker(ticker: str) -> str:
@@ -241,6 +274,59 @@ def post_weights(ticker: str, request: WeightsRequest) -> dict:
     action = live.apply_weights if request.action == "apply" else live.revert_weights
     _ok_or_400(action(db_path, config, name))
     return payloads.calibration_payload(db_path, config, name)
+
+
+class SubscribeRequest(BaseModel):
+    subscription: dict
+
+
+class UnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
+def _require_push() -> None:
+    if vapid is None:
+        raise HTTPException(status_code=503,
+                            detail="Web Push isn't available on the server - pip install pywebpush.")
+
+
+@app.get("/api/push/key")
+def get_push_key() -> dict:
+    """The public key a browser subscribes with (and whether push is on at all)."""
+    if vapid is None:
+        return {"available": False}
+    return {"available": True, "public_key": push.public_key_b64(vapid),
+            "devices": len(push.subscriptions(db_path))}
+
+
+@app.post("/api/push/subscribe")
+def post_push_subscribe(request: SubscribeRequest, http_request: Request) -> dict:
+    _require_push()
+    if not push.valid_subscription(request.subscription):
+        raise HTTPException(status_code=400, detail="That isn't a usable push subscription.")
+    push.save_subscription(db_path, request.subscription, http_request.headers.get("user-agent"))
+    return {"ok": True, "devices": len(push.subscriptions(db_path))}
+
+
+@app.post("/api/push/unsubscribe")
+def post_push_unsubscribe(request: UnsubscribeRequest) -> dict:
+    push.remove_subscription(db_path, request.endpoint)
+    return {"ok": True, "devices": len(push.subscriptions(db_path))}
+
+
+@app.post("/api/push/test")
+def post_push_test() -> dict:
+    """Sends through the real push service, so a notification arriving proves
+    the whole chain - key, subscription, service worker - not just the page."""
+    _require_push()
+    if not push.subscriptions(db_path):
+        raise HTTPException(status_code=400, detail="No device has notifications turned on yet.")
+    result = push.send(db_path, vapid, PUSH_SUBJECT, {
+        "title": "Test alert",
+        "body": "Push works — this came through the push service, app open or not.",
+        "tag": "test", "url": "/#autopilot",
+    })
+    return {"ok": result["sent"] > 0, **result}
 
 
 # --- live updates ---------------------------------------------------------

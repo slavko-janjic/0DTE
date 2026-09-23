@@ -112,3 +112,21 @@ def test_startup_pins_the_worker_cadence_to_one_minute(client):
     import api
     from storage import db as storage
     assert storage.get_poll_interval_seconds(api.db_path) == 60
+
+
+def test_push_key_and_subscription_lifecycle(client):
+    pytest.importorskip("pywebpush")
+    info = client.get("/api/push/key").json()
+    assert info["available"] is True and info["public_key"]
+
+    assert client.post("/api/push/test", json={}).status_code == 400   # no devices yet
+    bad = {"subscription": {"endpoint": "http://insecure", "keys": {}}}
+    assert client.post("/api/push/subscribe", json=bad).status_code == 400
+
+    good = {"subscription": {"endpoint": "https://push.example.test/device-1",
+                             "keys": {"p256dh": "key", "auth": "secret"}}}
+    assert client.post("/api/push/subscribe", json=good).json()["devices"] == 1
+    assert client.get("/api/push/key").json()["devices"] == 1
+    response = client.post("/api/push/unsubscribe",
+                           json={"endpoint": "https://push.example.test/device-1"})
+    assert response.json()["devices"] == 0

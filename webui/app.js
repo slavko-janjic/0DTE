@@ -696,7 +696,7 @@
 
   /* Edge-triggered from the header poll, so an alert fires on whichever page
      is open - the whole point is catching it in time to mirror the trade. */
-  var alerts = { sound: false, notify: false, ready: false, armed: [], openIds: [] };
+  var alerts = { sound: false, notify: false, push: false, ready: false, armed: [], openIds: [] };
 
   function loadAlertPrefs() {
     try {
@@ -709,7 +709,8 @@
   function renderAlertButtons() {
     $('alert-sound').textContent = 'Sound: ' + (alerts.sound ? 'on' : 'off');
     $('alert-sound').classList.toggle('ghost', !alerts.sound);
-    $('alert-notify').textContent = 'Notifications: ' + (alerts.notify ? 'on' : 'off');
+    $('alert-notify').textContent = 'Notifications: ' +
+      (alerts.notify ? (alerts.push ? 'on · push' : 'on · while open') : 'off');
     $('alert-notify').classList.toggle('ghost', !alerts.notify);
   }
 
@@ -736,6 +737,7 @@
 
   function systemNotification(title, message) {
     if (!alerts.notify || !window.Notification || Notification.permission !== 'granted') { return; }
+    if (alerts.push && title !== 'Test alert') { return; }   // the server's push shows this one
     var options = { body: message, tag: title + message,
                     icon: '/icons/icon-192.png', badge: '/icons/icon-192.png' };
     function direct() { try { new Notification(title, options); } catch (e) { /* no-op */ } }
@@ -754,6 +756,77 @@
     toast('<b>' + A.escapeHtml(title) + '</b> — ' + A.escapeHtml(message), 'good');
     beep();
     systemNotification(title, message);
+  }
+
+  function base64UrlToBytes(value) {
+    var padded = value + '==='.slice((value.length + 3) % 4);
+    var raw = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i += 1) { bytes[i] = raw.charCodeAt(i); }
+    return bytes;
+  }
+
+  function sameKey(buffer, bytes) {
+    if (!buffer) { return false; }
+    var existing = new Uint8Array(buffer);
+    if (existing.length !== bytes.length) { return false; }
+    for (var i = 0; i < bytes.length; i += 1) { if (existing[i] !== bytes[i]) { return false; } }
+    return true;
+  }
+
+  /* Subscribe this device to the server's Web Push, so ARMED / OPENED arrive
+     with the app closed. Resolves true when push is live, false when it isn't
+     available here (then notifications still work while the app is open). A
+     subscription made under an old server key is replaced, not reused. */
+  var PUSH_TIMEOUT_MS = 15000;
+
+  function enablePush() {
+    if (!navigator.serviceWorker) { return Promise.resolve(false); }
+    // Registering with the push service can stall indefinitely when it's
+    // unreachable; give up after a while and fall back to in-app alerts.
+    var timeout = new Promise(function (resolve) {
+      setTimeout(function () { resolve(false); }, PUSH_TIMEOUT_MS);
+    });
+    return Promise.race([subscribePush(), timeout]);
+  }
+
+  function subscribePush() {
+    return A.get('/api/push/key').then(function (info) {
+      if (!info.available) { return false; }
+      var key = base64UrlToBytes(info.public_key);
+      return navigator.serviceWorker.ready.then(function (registration) {
+        if (!registration.pushManager) { return false; }
+        return registration.pushManager.getSubscription().then(function (existing) {
+          if (existing && sameKey(existing.options && existing.options.applicationServerKey, key)) {
+            return existing;
+          }
+          var cleared = existing ? existing.unsubscribe() : Promise.resolve();
+          return cleared.then(function () {
+            return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+          });
+        }).then(function (subscription) {
+          return A.post('/api/push/subscribe', { subscription: subscription.toJSON() })
+            .then(function () { return true; });
+        });
+      });
+    }).catch(function (error) {
+      console.warn('push subscription failed', error);
+      return false;
+    });
+  }
+
+  function disablePush() {
+    if (!navigator.serviceWorker) { return Promise.resolve(); }
+    return navigator.serviceWorker.ready.then(function (registration) {
+      if (!registration.pushManager) { return null; }
+      return registration.pushManager.getSubscription();
+    }).then(function (subscription) {
+      if (!subscription) { return null; }
+      var endpoint = subscription.endpoint;
+      return subscription.unsubscribe().then(function () {
+        return A.post('/api/push/unsubscribe', { endpoint: endpoint });
+      });
+    }).catch(function (error) { console.warn('push unsubscribe failed', error); });
   }
 
   function isIOS() {
@@ -995,12 +1068,21 @@
       if (blocker) { toast(A.escapeHtml(blocker), 'bad'); return; }
       if (alerts.notify) {
         alerts.notify = false;
+        alerts.push = false;
+        disablePush();
       } else {
         Notification.requestPermission().then(function (permission) {
           alerts.notify = permission === 'granted';
           if (!alerts.notify) { toast('Notifications were blocked in the browser.', 'bad'); }
           try { localStorage.setItem('0dte-alert-notify', alerts.notify ? '1' : '0'); } catch (e) { /* ignore */ }
           renderAlertButtons();
+          if (!alerts.notify) { return; }
+          enablePush().then(function (live) {
+            alerts.push = live;
+            renderAlertButtons();
+            toast(live ? 'Notifications on — pushed to this device even with the app closed.'
+              : 'Notifications on while the app is open (push isn\'t available here).', 'good');
+          });
         });
         return;
       }
@@ -1009,7 +1091,18 @@
     });
 
     $('alert-test').addEventListener('click', function () {
-      fireAlert('Test alert', 'if you heard a sound (and saw a popup, if enabled), you are set.');
+      if (!alerts.push) {
+        fireAlert('Test alert', 'if you heard a sound (and saw a popup, if enabled), you are set.');
+        return;
+      }
+      // local toast + sound, and the notification itself via the push service,
+      // which proves the whole server -> phone chain
+      toast('<b>Test alert</b> — sent through the push service…', 'good');
+      beep();
+      A.post('/api/push/test', {}).then(function (result) {
+        toast('Pushed to ' + result.sent + ' device' + (result.sent === 1 ? '' : 's') +
+          (result.failed ? ' · ' + result.failed + ' failed' : ''), result.sent ? 'good' : 'bad');
+      }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
     });
   }
 
@@ -1141,12 +1234,26 @@
       navigator.serviceWorker.register('/sw.js').catch(function (error) {
         console.warn('service worker not registered', error);
       });
+      // a tapped notification asks an already-open window to switch page
+      navigator.serviceWorker.addEventListener('message', function (event) {
+        if (event.data && event.data.page && q('.page[data-page="' + event.data.page + '"]')) {
+          showPage(event.data.page);
+        }
+      });
+      if (alerts.notify && window.Notification && Notification.permission === 'granted') {
+        enablePush().then(function (live) { alerts.push = live; renderAlertButtons(); });
+      }
     }
     try {
       state.ticker = localStorage.getItem('0dte-ticker') || null;
       var page = localStorage.getItem('0dte-page');
       if (page && q('.page[data-page="' + page + '"]')) { state.page = page; }
     } catch (e) { /* ignore */ }
+    var linked = window.location.hash.replace('#', '');
+    if (linked && q('.page[data-page="' + linked + '"]')) {
+      state.page = linked;
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
     if (state.ticker) { selectTicker(state.ticker, true); }
     showPage(state.page, true);
     connectStream();

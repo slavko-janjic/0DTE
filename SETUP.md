@@ -76,11 +76,20 @@ front of the app without exposing it outside your tailnet:
    - **iPhone:** Share → **Add to Home Screen**, then open it from the home-screen
      icon. iOS only allows notifications for an installed web app.
    - **Android (Chrome):** menu → **Install app** (or Add to Home screen).
-4. In the app, Autopilot → **Notifications: on**, allow the prompt, then **Send test
-   alert**.
+4. In the app, Autopilot → **Notifications**, allow the prompt, then **Send test
+   alert**. The button tells you which kind you got:
+   - **on · push**: alerts come through Apple's/Google's push service, so they reach
+     the phone **with the app closed and the screen locked**. The server spots
+     ARMED/OPENED itself (checking every 15 s) and sends to every device that
+     turned notifications on. The test alert takes the same route, so if it
+     arrives, the whole chain works.
+   - **on · while open**: push couldn't be set up on this device; alerts still pop
+     up, but only while the app is running.
 
-If the notification toggle can't turn on, it says why (not HTTPS, or not installed
-on iPhone).
+If the toggle can't turn on at all, it says why (not HTTPS, or not installed on
+iPhone). Push needs the `pywebpush` package (in `requirements.txt`). The server
+generates its push key on first start at `storage/vapid_private.pem` (gitignored).
+If that file is deleted, each phone just has to turn notifications on again.
 
 ## Notes
 

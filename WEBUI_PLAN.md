@@ -9,7 +9,9 @@
 > too: SSE push (`/api/stream`, with the poll as a fallback) and an opt-in
 > shared-secret token (`ZERODTE_TOKEN`). A **Tuning** page carries the
 > calibration/weight-tuning features the mockup had no place for, and the
-> autopilot ARMED/OPENED heads-up (sound + browser notification) is back.
+> autopilot ARMED/OPENED heads-up is back - in-page (sound + notification) and
+> as Web Push (`webapi/push.py`), so it reaches a locked phone with the app
+> closed once the app is installed from an HTTPS origin (`tailscale serve`).
 
 **Goal:** replace the Streamlit dashboard with a pixel-perfect UI matching the
 design mockup, by putting a thin **FastAPI** backend over the *existing* Python
