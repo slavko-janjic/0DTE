@@ -224,6 +224,9 @@ st.markdown(
     [data-testid="stSidebarNav"] a[aria-current="page"] span,
     [data-testid="stSidebarNav"] a[aria-current="page"] p { color:#3a5bd9 !important; font-weight:600; }
     button[kind="primary"] { background-color:#3a5bd9 !important; border-color:#3a5bd9 !important; }
+    [data-testid="stBaseButton-segmented_controlActive"] {
+        background-color:rgba(58,91,217,0.18) !important; color:#3a5bd9 !important; border-color:#3a5bd9 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1778,29 +1781,33 @@ def section_autopilot_controls() -> None:
     now_ap = datetime.now(market_tz_ap)
     today_ap = now_ap.date()
 
-    # sync widget <- DB when the DB changed outside this widget (worker's
-    # day-session auto-disarm, another browser tab) so a stale widget value
-    # never re-arms a session the worker just ended
-    db_label = _AP_MODE_LABELS[ap_mode]
-    if st.session_state.get("autopilot_mode_synced") != db_label:
-        st.session_state["autopilot_mode_control"] = db_label
-        st.session_state["autopilot_mode_synced"] = db_label
+    # Keep the control synced to the DB, including changes made outside this widget
+    # (the worker's day-session auto-disarm, another browser tab). Setting the
+    # widget's session_state key before it renders is the supported way to drive it.
+    current_label = _AP_MODE_LABELS[ap_mode]
+    if st.session_state.get("autopilot_mode_db") != current_label:
+        st.session_state["autopilot_mode_control"] = current_label
+        st.session_state["autopilot_mode_db"] = current_label
 
     selected_label = st.segmented_control(
         "Auto-pilot",
         list(_AP_MODE_LABELS.values()),
         key="autopilot_mode_control",
-        help="Day session: arms the worker for one trading day - it waits for the "
-             "opening range, makes ONE decision (the strongest qualifying signal "
-             "across all tickers), manages the exit, force-closes the auto position "
-             "before the bell, and disarms itself afterwards. Continuous: the worker "
-             "may enter any time guard rails pass. Manual trading below keeps "
-             "working either way.",
+        help="Off: no auto trades. Day session: arms the worker for ONE trading day "
+             "- it waits for the opening range, makes one decision, manages the exit, "
+             "and disarms itself afterwards. Continuous: the worker may enter any day, "
+             "any time guard rails pass. Manual trading always stays available.",
     )
-    # clicking the selected segment deselects it -> read that as Off
-    selected_mode = _AP_LABEL_MODES.get(selected_label, "off")
-    if selected_label != st.session_state["autopilot_mode_synced"]:
-        st.session_state["autopilot_mode_synced"] = _AP_MODE_LABELS[selected_mode]
+
+    # A segmented_control lets you click the *selected* segment to clear it (returns
+    # None) - that was the confusing 'double state'. Re-assert the current mode so
+    # there is always exactly one selected; a real switch is handled below.
+    if selected_label is None:
+        st.session_state["autopilot_mode_control"] = current_label
+        st.rerun()
+
+    selected_mode = _AP_LABEL_MODES[selected_label]
+    if selected_mode != ap_mode:
         if selected_mode == "day":
             # arm for today if the session can still trade, else the next trading day
             if (is_market_open(config) or
@@ -1813,7 +1820,8 @@ def section_autopilot_controls() -> None:
             storage.set_autopilot_state(db_path, "day", armed.isoformat())
         else:
             storage.set_autopilot_state(db_path, selected_mode)
-        ap_mode, ap_armed_date = storage.get_autopilot_state(db_path)
+        st.session_state["autopilot_mode_db"] = selected_label
+        st.rerun()
 
     ap_cfg = config.get("autopilot", {})
     if ap_mode == "day" and ap_armed_date:
