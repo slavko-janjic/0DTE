@@ -204,7 +204,7 @@ svg.chart{width:100%;height:auto;display:block}
 
   /* theme -> top-right, icon only */
   .themebtn{position:fixed;left:auto;right:12px;bottom:auto;
-    top:calc(env(safe-area-inset-top,0px) + 9px);width:auto;padding:7px;border-radius:8px}
+    top:calc(var(--safe-top) + 9px);width:auto;padding:7px;border-radius:8px}
   .themebtn span{display:none}
   /* mobile shows the down-state as a red dot on the Signals / Autopilot tab instead */
   .sysdown{display:none}
@@ -320,3 +320,11 @@ td .sub{color:var(--faint);font-size:11px}
   color:var(--muted);padding:4px 0}
 .ctx .row b{color:var(--ink);font-family:var(--mono);font-weight:600}
 .pills button.on.no{background:var(--down-soft);color:var(--down)}
+
+/* Installed on a phone, the app draws edge to edge under the status bar
+   (viewport-fit=cover + black-translucent), so everything pinned to the top
+   starts below it. env() is 0 everywhere else, so desktop is unchanged. One
+   variable, so every top-pinned element moves together. */
+:root{--safe-top:env(safe-area-inset-top,0px)}
+.topbar{padding-top:calc(13px + var(--safe-top))}
+.rail{top:var(--safe-top)}
