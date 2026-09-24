@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,14 +40,20 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint TEXT PRIMARY KEY,          -- the push service URL; unique per device+browser
     subscription_json TEXT NOT NULL,    -- the full PushSubscription (endpoint + keys)
     user_agent TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    origin TEXT                         -- the app's https origin the device subscribed from
 )
 """
 
-# The VAPID "sub" claim identifies who is sending, for the push service's
-# operators. It must be a mailto: or https: URL; the project's repository is
-# public and personal-data-free. Override with ZERODTE_PUSH_SUBJECT.
-DEFAULT_SUBJECT = "https://github.com/slavko-janjic/0DTE"
+# The VAPID "sub" claim names the sender for the push service's operators. The
+# signing library (py_vapid) only accepts `mailto:` or a BARE `https://host` -
+# any path fails its check, which is what broke the first real send. So the
+# sender is the app's own origin (e.g. https://your-pc.tailXXXX.ts.net), taken
+# from the subscribing request: no personal data, and the push service already
+# knows that origin from the subscription itself. ZERODTE_PUSH_SUBJECT
+# overrides it; FALLBACK_SUBJECT covers a subscription with no origin on record.
+FALLBACK_SUBJECT = "https://github.com"
+_BARE_HTTPS_ORIGIN = re.compile(r"^https://[\w-]+(\.[\w-]+)+$", re.IGNORECASE)
 
 # An ARMED heads-up is stale within minutes: if the phone is offline longer
 # than this, the push service drops it rather than delivering it late.
@@ -56,6 +63,20 @@ TTL_SECONDS = 600
 def init(db_path: str) -> None:
     with storage.connect(db_path) as conn:
         conn.execute(SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(push_subscriptions)")}
+        if "origin" not in columns:   # tables created before the origin column existed
+            conn.execute("ALTER TABLE push_subscriptions ADD COLUMN origin TEXT")
+
+
+def normalize_origin(origin: str | None) -> str | None:
+    """The origin if it can serve as the VAPID subject (bare https host), else
+    None - plain-http and localhost origins can't subscribe to push anyway."""
+    origin = (origin or "").strip().rstrip("/")
+    return origin if _BARE_HTTPS_ORIGIN.match(origin) else None
+
+
+def subject_for(origin: str | None, override: str | None = None) -> str:
+    return override or normalize_origin(origin) or FALLBACK_SUBJECT
 
 
 # --- VAPID keys -----------------------------------------------------------
@@ -93,15 +114,19 @@ def valid_subscription(subscription: dict) -> bool:
     return endpoint.startswith("https://") and bool(keys.get("p256dh")) and bool(keys.get("auth"))
 
 
-def save_subscription(db_path: str, subscription: dict, user_agent: str | None = None) -> None:
+def save_subscription(db_path: str, subscription: dict, user_agent: str | None = None,
+                      origin: str | None = None) -> None:
+    """Upsert by endpoint. The app re-posts its subscription on every open, so
+    this also refreshes the origin of rows saved before it was recorded."""
     with storage.connect(db_path) as conn:
         conn.execute(
-            """INSERT INTO push_subscriptions (endpoint, subscription_json, user_agent, created_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO push_subscriptions (endpoint, subscription_json, user_agent, created_at, origin)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(endpoint) DO UPDATE SET subscription_json = excluded.subscription_json,
-                   user_agent = excluded.user_agent""",
+                   user_agent = excluded.user_agent,
+                   origin = COALESCE(excluded.origin, push_subscriptions.origin)""",
             (subscription["endpoint"], json.dumps(subscription), user_agent,
-             datetime.now(timezone.utc).isoformat()),
+             datetime.now(timezone.utc).isoformat(), normalize_origin(origin)),
         )
 
 
@@ -111,34 +136,44 @@ def remove_subscription(db_path: str, endpoint: str) -> None:
 
 
 def subscriptions(db_path: str) -> list[dict]:
+    return [subscription for subscription, _origin in _subscription_rows(db_path)]
+
+
+def _subscription_rows(db_path: str) -> list[tuple[dict, str | None]]:
     with storage.connect(db_path) as conn:
-        rows = conn.execute("SELECT subscription_json FROM push_subscriptions").fetchall()
-    return [json.loads(row["subscription_json"]) for row in rows]
+        rows = conn.execute("SELECT subscription_json, origin FROM push_subscriptions").fetchall()
+    return [(json.loads(row["subscription_json"]), row["origin"]) for row in rows]
 
 
-def send(db_path: str, vapid: "Vapid02", subject: str, message: dict) -> dict:
+def send(db_path: str, vapid: "Vapid02", subject_override: str | None, message: dict) -> dict:
     """Push one message to every subscribed device. A 404/410 from the push
     service means that subscription is gone for good (app uninstalled,
-    permission revoked), so it is pruned instead of retried forever."""
-    result = {"sent": 0, "removed": 0, "failed": 0}
-    for subscription in subscriptions(db_path):
+    permission revoked), so it is pruned instead of retried forever. Other
+    failures are returned in `errors`, since the scheduled task keeps no log."""
+    result = {"sent": 0, "removed": 0, "failed": 0, "errors": []}
+    for subscription, origin in _subscription_rows(db_path):
+        endpoint = subscription["endpoint"]
         try:
             webpush(subscription, json.dumps(message), vapid_private_key=vapid,
-                    vapid_claims={"sub": subject},   # fresh dict: webpush mutates it
+                    # a fresh dict per send: webpush mutates the claims it's given
+                    vapid_claims={"sub": subject_for(origin, subject_override)},
                     ttl=TTL_SECONDS, headers={"Urgency": "high"}, timeout=10)
             result["sent"] += 1
         except WebPushException as error:
             status = getattr(error.response, "status_code", None)
             if status in (404, 410):
-                remove_subscription(db_path, subscription["endpoint"])
+                remove_subscription(db_path, endpoint)
                 result["removed"] += 1
-            else:
-                result["failed"] += 1
-                log.warning("push to %s failed (%s): %s",
-                            subscription["endpoint"][:60], status, error)
-        except Exception:  # noqa: BLE001 - a network blip must not kill the watcher
+                continue
+            body = getattr(error.response, "text", "") or ""
+            detail = f"{status}: {body.strip()[:200]}" if status else str(error)
             result["failed"] += 1
-            log.warning("push to %s failed", subscription["endpoint"][:60], exc_info=True)
+            result["errors"].append(f"{endpoint[:40]}… {detail}")
+            log.warning("push to %s failed: %s", endpoint[:60], detail)
+        except Exception as error:  # noqa: BLE001 - a network blip must not kill the watcher
+            result["failed"] += 1
+            result["errors"].append(f"{endpoint[:40]}… {type(error).__name__}: {error}")
+            log.warning("push to %s failed", endpoint[:60], exc_info=True)
     return result
 
 
@@ -190,11 +225,12 @@ class Watcher:
     """Called on a timer by api.py. The first tick only takes a baseline, so a
     restart mid-session doesn't re-announce everything already armed/open."""
 
-    def __init__(self, db_path: str, config: dict, vapid: "Vapid02", subject: str):
+    def __init__(self, db_path: str, config: dict, vapid: "Vapid02",
+                 subject_override: str | None = None):
         self.db_path = db_path
         self.config = config
         self.vapid = vapid
-        self.subject = subject
+        self.subject_override = subject_override
         self.previous: dict | None = None
 
     def tick(self) -> list[dict]:
@@ -203,5 +239,5 @@ class Watcher:
         self.previous = current
         if events and subscriptions(self.db_path):
             for event in events:
-                send(self.db_path, self.vapid, self.subject, event)
+                send(self.db_path, self.vapid, self.subject_override, event)
         return events

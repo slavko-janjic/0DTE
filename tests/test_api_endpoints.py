@@ -125,7 +125,12 @@ def test_push_key_and_subscription_lifecycle(client):
 
     good = {"subscription": {"endpoint": "https://push.example.test/device-1",
                              "keys": {"p256dh": "key", "auth": "secret"}}}
-    assert client.post("/api/push/subscribe", json=good).json()["devices"] == 1
+    response = client.post("/api/push/subscribe", json=good,
+                           headers={"Origin": "https://phobos.tail7974af.ts.net"})
+    assert response.json()["devices"] == 1
+    from webapi import push
+    import api
+    assert push._subscription_rows(api.db_path)[0][1] == "https://phobos.tail7974af.ts.net"
     assert client.get("/api/push/key").json()["devices"] == 1
     response = client.post("/api/push/unsubscribe",
                            json={"endpoint": "https://push.example.test/device-1"})

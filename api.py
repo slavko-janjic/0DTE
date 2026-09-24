@@ -61,7 +61,8 @@ if storage.get_poll_interval_seconds(db_path) != WORKER_POLL_SECONDS:
 # Optional: without pywebpush installed, push reports itself unavailable and the
 # in-page alerts carry on. The key is generated once, beside the database.
 push.init(db_path)
-PUSH_SUBJECT = os.environ.get("ZERODTE_PUSH_SUBJECT") or push.DEFAULT_SUBJECT
+# None = sign as the app's own https origin, learned when each device subscribes
+PUSH_SUBJECT = os.environ.get("ZERODTE_PUSH_SUBJECT") or None
 PUSH_POLL_SECONDS = 15
 vapid = push.load_or_create_key(db_path) if push.AVAILABLE else None
 
@@ -304,7 +305,8 @@ def post_push_subscribe(request: SubscribeRequest, http_request: Request) -> dic
     _require_push()
     if not push.valid_subscription(request.subscription):
         raise HTTPException(status_code=400, detail="That isn't a usable push subscription.")
-    push.save_subscription(db_path, request.subscription, http_request.headers.get("user-agent"))
+    push.save_subscription(db_path, request.subscription, http_request.headers.get("user-agent"),
+                           origin=http_request.headers.get("origin"))
     return {"ok": True, "devices": len(push.subscriptions(db_path))}
 
 

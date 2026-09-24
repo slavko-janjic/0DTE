@@ -86,14 +86,16 @@ def test_send_prunes_gone_subscriptions_and_counts_failures(db, monkeypatch):
 
     def fake_webpush(subscription, data, **kwargs):
         status = outcomes[subscription["endpoint"]]
-        assert kwargs["vapid_claims"] == {"sub": "https://example.test"}
+        assert kwargs["vapid_claims"] == {"sub": "https://example.test"}   # the override wins
         assert kwargs["ttl"] == push.TTL_SECONDS
         if status:
             raise push.WebPushException("nope", response=FakeResponse(status))
 
     monkeypatch.setattr(push, "webpush", fake_webpush)
     result = push.send(db, push.load_or_create_key(db), "https://example.test", {"title": "t"})
-    assert result == {"sent": 1, "removed": 1, "failed": 1}
+    assert (result["sent"], result["removed"], result["failed"]) == (1, 1, 1)
+    # the failure's reason comes back to the caller (the scheduled task keeps no log)
+    assert len(result["errors"]) == 1 and "500" in result["errors"][0]
     remaining = {sub["endpoint"] for sub in push.subscriptions(db)}
     assert remaining == {"https://push.example.test/0", "https://push.example.test/2"}
 
@@ -125,7 +127,7 @@ def test_watcher_baselines_first_then_pushes_new_opens(db, monkeypatch):
     monkeypatch.setattr(push, "send", lambda db_path, vapid, subject, message: sent.append(message))
     monkeypatch.setattr(push.payloads, "autopilot_intents", lambda db_path, config: [])
     push.save_subscription(db, SUBSCRIPTION)
-    watcher = push.Watcher(db, CONFIG, vapid=None, subject="https://example.test")
+    watcher = push.Watcher(db, CONFIG, vapid=None, subject_override="https://example.test")
 
     engine.buy(db, "IWM", "put", 228.0, "2026-09-23", 1.4, 1, -0.3, opened_by="auto")
     assert watcher.tick() == []            # restart mid-session: nothing re-announced
@@ -140,7 +142,7 @@ def test_watcher_skips_sending_when_no_device_is_subscribed(db, monkeypatch):
     sent = []
     monkeypatch.setattr(push, "send", lambda *args: sent.append(args))
     monkeypatch.setattr(push.payloads, "autopilot_intents", lambda db_path, config: [])
-    watcher = push.Watcher(db, CONFIG, vapid=None, subject="https://example.test")
+    watcher = push.Watcher(db, CONFIG, vapid=None, subject_override="https://example.test")
     watcher.tick()
     engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.4, 1, 0.3, opened_by="auto")
     assert watcher.tick()                  # the event is detected...
@@ -173,14 +175,18 @@ def test_push_arrives_signed_and_decryptable(db):
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
     auth = os.urandom(16)
     b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()  # noqa: E731
+    # recorded the way the real subscribe endpoint records it: with the app's origin
     push.save_subscription(db, {"endpoint": f"http://127.0.0.1:{server.server_port}/push",
-                                "keys": {"p256dh": b64(device_public), "auth": b64(auth)}})
+                                "keys": {"p256dh": b64(device_public), "auth": b64(auth)}},
+                           origin="https://phobos.tail7974af.ts.net")
 
     message = {"title": "SPY ARMED", "body": "would buy puts now", "tag": "armed-SPY"}
-    result = push.send(db, push.load_or_create_key(db), "https://example.test", message)
+    # no override: the sender is derived exactly as in production, through the
+    # real signing library - the path a mocked webpush once hid a bug in
+    result = push.send(db, push.load_or_create_key(db), None, message)
     server.server_close()
 
-    assert result == {"sent": 1, "removed": 0, "failed": 0}
+    assert (result["sent"], result["failed"]) == (1, 0), result["errors"]
     headers = {key.lower(): value for key, value in received["headers"].items()}
     assert headers["authorization"].startswith("vapid t=")      # signed with our key
     assert headers["urgency"] == "high"
@@ -188,3 +194,52 @@ def test_push_arrives_signed_and_decryptable(db):
     plaintext = http_ece.decrypt(received["body"], private_key=device_key,
                                  auth_secret=auth, version="aes128gcm")
     assert json.loads(plaintext) == message
+
+
+
+# --- the VAPID sender ("sub") --------------------------------------------
+
+def test_every_subject_we_can_send_passes_the_signing_librarys_check():
+    """py_vapid rejects an https sub with a path - the repo URL once used as the
+    default failed every real send while the mocked tests stayed green."""
+    from py_vapid import _check_sub
+    candidates = [push.FALLBACK_SUBJECT,
+                  push.subject_for("https://phobos.tail7974af.ts.net"),
+                  push.subject_for("https://phobos.tail7974af.ts.net/"),
+                  push.subject_for(None),
+                  push.subject_for("http://127.0.0.1:8501")]
+    for subject in candidates:
+        assert _check_sub(subject), subject
+
+
+def test_normalize_origin_only_keeps_bare_https_hosts():
+    assert push.normalize_origin("https://phobos.tail7974af.ts.net/") == \
+        "https://phobos.tail7974af.ts.net"
+    assert push.normalize_origin("https://github.com/slavko-janjic/0DTE") is None
+    assert push.normalize_origin("http://100.94.22.63:8501") is None
+    assert push.normalize_origin(None) is None
+
+
+def test_subject_prefers_override_then_origin_then_fallback():
+    assert push.subject_for("https://a.example.net", "mailto:me@example.net") == \
+        "mailto:me@example.net"
+    assert push.subject_for("https://a.example.net") == "https://a.example.net"
+    assert push.subject_for(None) == push.FALLBACK_SUBJECT
+
+
+def test_resubscribing_fills_in_a_missing_origin_but_never_erases_one(db):
+    push.save_subscription(db, SUBSCRIPTION)                                  # old row
+    push.save_subscription(db, SUBSCRIPTION, origin="https://phobos.tail7974af.ts.net")
+    push.save_subscription(db, SUBSCRIPTION, origin=None)                     # no Origin header
+    assert push._subscription_rows(db)[0][1] == "https://phobos.tail7974af.ts.net"
+
+
+def test_init_migrates_a_table_from_before_the_origin_column(tmp_path):
+    path = str(tmp_path / "old.db")
+    storage.init_db(path)
+    with storage.connect(path) as conn:
+        conn.execute("CREATE TABLE push_subscriptions (endpoint TEXT PRIMARY KEY, "
+                     "subscription_json TEXT NOT NULL, user_agent TEXT, created_at TEXT NOT NULL)")
+    push.init(path)
+    push.save_subscription(path, SUBSCRIPTION, origin="https://phobos.tail7974af.ts.net")
+    assert push._subscription_rows(path)[0][1] == "https://phobos.tail7974af.ts.net"
