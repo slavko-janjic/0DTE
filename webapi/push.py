@@ -1,5 +1,5 @@
-"""Web Push for the autopilot heads-up: ARMED / OPENED reach the phone even
-when the app is closed.
+"""Web Push for the autopilot heads-up: ARMED / OPENED - and the worker going
+down or coming back - reach the phone even when the app is closed.
 
 The in-page alert only runs while the page's JavaScript does, and a locked or
 backgrounded phone suspends it within seconds. So the server watches for the
@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from cryptography.hazmat.primitives import serialization
 
 from storage import db as storage
 from webapi import payloads
+from worker import _in_premarket_window, is_market_open
 
 try:
     from py_vapid import Vapid02
@@ -58,6 +60,12 @@ _BARE_HTTPS_ORIGIN = re.compile(r"^https://[\w-]+(\.[\w-]+)+$", re.IGNORECASE)
 # An ARMED heads-up is stale within minutes: if the phone is offline longer
 # than this, the push service drops it rather than delivering it late.
 TTL_SECONDS = 600
+
+# After the watcher starts, how long a stale heartbeat reads as "starting"
+# rather than "down" - at least the UI's own 5-minute staleness rule, so a
+# worker restarting alongside the API is never reported dead.
+WORKER_GRACE_SECONDS = 300
+_clock = time.monotonic
 
 
 def init(db_path: str) -> None:
@@ -179,16 +187,35 @@ def send(db_path: str, vapid: "Vapid02", subject_override: str | None, message: 
 
 # --- what to alert on -----------------------------------------------------
 
+def in_watch_hours(config: dict, now: datetime | None = None) -> bool:
+    """When a dead worker is worth waking a phone for: trading days from the
+    pre-market setup window to the close. Nights and weekends stay quiet - a PC
+    asleep or rebooting then shouldn't buzz anyone."""
+    return is_market_open(config, now) or _in_premarket_window(config, now)
+
+
+def worker_state(db_path: str, config: dict, now: datetime | None = None) -> tuple[str, float | None]:
+    """('up' | 'down' | 'idle', heartbeat age in seconds). 'down' means the
+    heartbeat is stale by the same rule as the UI's worker banner, during watch
+    hours; outside them it's 'idle' whatever the heartbeat says."""
+    health = payloads.worker_health(db_path)
+    age = health.get("age_seconds")
+    if not in_watch_hours(config, now):
+        return "idle", age
+    return ("up" if health["status"] == "up" else "down"), age
+
+
 def alert_state(db_path: str, config: dict) -> dict:
-    """The two things the heads-up edge-triggers on: which tickers the bot would
-    buy right now, and which auto positions are open."""
+    """What the heads-up edge-triggers on: which tickers the bot would buy right
+    now, which auto positions are open, and whether the worker is alive."""
     armed = {intent["ticker"]: intent
              for intent in payloads.autopilot_intents(db_path, config)
              if intent["would_enter"]}
     opened = {row["id"]: {"ticker": row["ticker"], "option_type": row["option_type"],
                           "strike": row["strike"]}
               for row in storage.get_open_positions(db_path) if row["opened_by"] == "auto"}
-    return {"armed": armed, "open": opened}
+    worker, age = worker_state(db_path, config)
+    return {"armed": armed, "open": opened, "worker": worker, "worker_age_seconds": age}
 
 
 def new_events(previous: dict, current: dict, config: dict) -> list[dict]:
@@ -218,12 +245,36 @@ def new_events(previous: dict, current: dict, config: dict) -> list[dict]:
                 "tag": f"opened-{position_id}",
                 "url": "/#trades",
             })
+
+    # worker liveness: alert on going down, and on coming back from down only -
+    # not on down -> idle (the session ending isn't a recovery)
+    was, now = previous.get("worker"), current.get("worker")
+    age = current.get("worker_age_seconds")
+    if now == "down" and was is not None and was != "down":
+        stale = f"no heartbeat for {age / 60:.0f} min" if age is not None else "it has never run"
+        events.append({
+            "title": "Worker DOWN",
+            "body": f"{stale} - no signals, no autopilot, no exits. Restart the 0DTE-Worker task.",
+            "tag": "worker",
+            "url": "/#signals",
+        })
+    elif was == "down" and now == "up":
+        events.append({
+            "title": "Worker back",
+            "body": "Heartbeat resumed - polling and the autopilot are running again.",
+            "tag": "worker",
+            "url": "/#signals",
+        })
     return events
 
 
 class Watcher:
     """Called on a timer by api.py. The first tick only takes a baseline, so a
-    restart mid-session doesn't re-announce everything already armed/open."""
+    restart mid-session doesn't re-announce everything already armed/open.
+
+    For the first WORKER_GRACE_SECONDS a stale heartbeat reads as 'starting',
+    not 'down': when both tasks restart together the worker hasn't beaten yet.
+    A worker still dead after that alerts - including right after a reboot."""
 
     def __init__(self, db_path: str, config: dict, vapid: "Vapid02",
                  subject_override: str | None = None):
@@ -232,9 +283,12 @@ class Watcher:
         self.vapid = vapid
         self.subject_override = subject_override
         self.previous: dict | None = None
+        self.started = _clock()
 
     def tick(self) -> list[dict]:
         current = alert_state(self.db_path, self.config)
+        if current.get("worker") == "down" and _clock() - self.started < WORKER_GRACE_SECONDS:
+            current["worker"] = "starting"
         events = [] if self.previous is None else new_events(self.previous, current, self.config)
         self.previous = current
         if events and subscriptions(self.db_path):

@@ -9,7 +9,9 @@ import base64
 import json
 import os
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -24,7 +26,9 @@ from webapi import push  # noqa: E402
 
 SUBSCRIPTION = {"endpoint": "https://push.example.test/abc",
                 "keys": {"p256dh": "BPubKeyPlaceholder", "auth": "authsecret"}}
-CONFIG = {"autopilot": {"profit_target_pct": 50, "stop_loss_pct": -35}}
+CONFIG = {"autopilot": {"profit_target_pct": 50, "stop_loss_pct": -35},
+          "market_hours": {"open": "09:30", "close": "16:00", "timezone": "America/New_York"},
+          "market_holidays": [], "market_half_days": []}
 
 
 @pytest.fixture()
@@ -126,6 +130,7 @@ def test_watcher_baselines_first_then_pushes_new_opens(db, monkeypatch):
     sent = []
     monkeypatch.setattr(push, "send", lambda db_path, vapid, subject, message: sent.append(message))
     monkeypatch.setattr(push.payloads, "autopilot_intents", lambda db_path, config: [])
+    monkeypatch.setattr(push, "worker_state", lambda db_path, config, now=None: ("up", 5.0))
     push.save_subscription(db, SUBSCRIPTION)
     watcher = push.Watcher(db, CONFIG, vapid=None, subject_override="https://example.test")
 
@@ -142,6 +147,7 @@ def test_watcher_skips_sending_when_no_device_is_subscribed(db, monkeypatch):
     sent = []
     monkeypatch.setattr(push, "send", lambda *args: sent.append(args))
     monkeypatch.setattr(push.payloads, "autopilot_intents", lambda db_path, config: [])
+    monkeypatch.setattr(push, "worker_state", lambda db_path, config, now=None: ("up", 5.0))
     watcher = push.Watcher(db, CONFIG, vapid=None, subject_override="https://example.test")
     watcher.tick()
     engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.4, 1, 0.3, opened_by="auto")
@@ -243,3 +249,70 @@ def test_init_migrates_a_table_from_before_the_origin_column(tmp_path):
     push.init(path)
     push.save_subscription(path, SUBSCRIPTION, origin="https://phobos.tail7974af.ts.net")
     assert push._subscription_rows(path)[0][1] == "https://phobos.tail7974af.ts.net"
+
+
+# --- worker liveness alerts ----------------------------------------------------------
+
+def _w(state, age=None):
+    return {"armed": {}, "open": {}, "worker": state, "worker_age_seconds": age}
+
+
+def test_worker_down_and_back_alert_once_each():
+    down = push.new_events(_w("up"), _w("down", 900), CONFIG)
+    assert [e["title"] for e in down] == ["Worker DOWN"]
+    assert "no heartbeat for 15 min" in down[0]["body"] and down[0]["tag"] == "worker"
+    assert push.new_events(_w("down", 900), _w("down", 960), CONFIG) == []     # no repeats
+    back = push.new_events(_w("down", 960), _w("up", 5), CONFIG)
+    assert [e["title"] for e in back] == ["Worker back"]
+
+
+def test_the_session_ending_is_not_a_recovery():
+    assert push.new_events(_w("down", 900), _w("idle", 960), CONFIG) == []
+    # ...but a worker found dead when watch hours begin does alert
+    assert [e["title"] for e in push.new_events(_w("idle"), _w("down", 7200), CONFIG)] == \
+        ["Worker DOWN"]
+
+
+def test_a_worker_that_never_ran_is_reported_as_such():
+    [event] = push.new_events(_w("up"), _w("down", None), CONFIG)
+    assert "never run" in event["body"]
+
+
+def test_worker_state_only_goes_down_during_watch_hours(db, monkeypatch):
+    stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    storage.record_heartbeat(db, pid=1, note="x")
+    with storage.connect(db) as conn:
+        conn.execute("UPDATE worker_heartbeat SET updated_at = ?", (stale,))
+    monkeypatch.setattr(push, "in_watch_hours", lambda config, now=None: True)
+    state, age = push.worker_state(db, CONFIG)
+    assert state == "down" and age > 7000
+    monkeypatch.setattr(push, "in_watch_hours", lambda config, now=None: False)
+    assert push.worker_state(db, CONFIG)[0] == "idle"          # nights stay quiet
+    storage.record_heartbeat(db, pid=1, note="alive")
+    monkeypatch.setattr(push, "in_watch_hours", lambda config, now=None: True)
+    assert push.worker_state(db, CONFIG)[0] == "up"
+
+
+def test_watch_hours_cover_premarket_through_the_close():
+    et = ZoneInfo("America/New_York")
+    assert push.in_watch_hours(CONFIG, datetime(2026, 9, 28, 8, 30, tzinfo=et))      # Mon pre-market
+    assert push.in_watch_hours(CONFIG, datetime(2026, 9, 28, 15, 0, tzinfo=et))      # Mon session
+    assert not push.in_watch_hours(CONFIG, datetime(2026, 9, 28, 20, 0, tzinfo=et))  # Mon evening
+    assert not push.in_watch_hours(CONFIG, datetime(2026, 9, 27, 11, 0, tzinfo=et))  # Sunday
+
+
+def test_watcher_holds_its_fire_while_the_worker_may_still_be_starting(db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(push, "send", lambda db_path, vapid, subject, message: sent.append(message))
+    monkeypatch.setattr(push, "alert_state", lambda db_path, config: _w("down", 900))
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(push, "_clock", lambda: clock["now"])
+    push.save_subscription(db, SUBSCRIPTION)
+    watcher = push.Watcher(db, CONFIG, vapid=None, subject_override="https://example.test")
+    assert watcher.tick() == []                        # baseline
+    clock["now"] += push.WORKER_GRACE_SECONDS - 1
+    assert watcher.tick() == []                        # still inside the grace period
+    clock["now"] += 2
+    events = watcher.tick()                            # dead after the grace -> alert
+    assert [e["title"] for e in events] == ["Worker DOWN"] and sent == events
+    assert watcher.tick() == []                        # and only once
