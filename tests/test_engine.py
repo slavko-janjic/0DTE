@@ -562,10 +562,10 @@ def test_expired_calendar_stands_the_autopilot_down_first():
     intent = explain_auto_decision(
         ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
-        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", calendar_blocker=blocker)
+        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker)
     assert intent.would_enter is False
     assert intent.blocker == blocker
     assert should_auto_enter(
         ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
-        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", calendar_blocker=blocker) is None
+        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker) is None
