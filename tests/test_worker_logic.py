@@ -458,7 +458,7 @@ def test_shadow_entry_exit_and_dedup(tmp_path, monkeypatch):
                         lambda df, spot: {"lastPrice": 2.0, "strike": 500.0,
                                           "bid": 1.9, "ask": 2.1})
     from datetime import date as _date
-    exp = _date.today().isoformat()  # today's expiration so nothing counts as expired
+    exp = "2099-01-02"  # far-future expiry: never "expired", whatever the time of day
     chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration=exp)
 
     worker.process_shadow_strategies("QQQ", SHADOW_CONFIG, db_path, chain, _shadow_signal(), None)
@@ -543,7 +543,7 @@ def _ss_signal(technicals, composite_dir="bearish", composite_score=-0.9):
 def _ss_chain():
     from datetime import date as _date
     return SimpleNamespace(calls="C", puts="P", spot=500.0,
-                           expiration=_date.today().isoformat())
+                           expiration="2099-01-02")
 
 
 def test_single_signal_strategy_trades_the_subscore_not_the_composite(tmp_path, monkeypatch):
@@ -788,7 +788,7 @@ def test_shadow_mirrors_trade_the_old_and_new_gate_side_by_side(tmp_path, monkey
         {"name": "autopilot_lb", "entry": {**entry, "confidence_basis": "gate"}, "exit": exit_cfg},
     ]}
     from datetime import date as _date
-    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration=_date.today().isoformat())
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration="2099-01-02")
     worker.process_shadow_strategies("QQQ", config, db_path, chain,
                                      _gated_signal(56.1, 43.4), None)
     rows = storage.get_open_shadow_positions(db_path, "QQQ")
