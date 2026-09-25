@@ -388,20 +388,6 @@ exit_rules:
   late_session_minutes: 90
   late_session_stop_pct: -20
 
-sentiment_sources:
-  apewisdom: true
-  stocktwits: true
-  reddit_context: true  # raw post titles via Reddit's public unauthenticated search, no key needed
-                         # (currently blocked by Reddit's bot-protection more often than not - kept
-                         # as best-effort, degrades gracefully to no context if blocked)
-  grok_x: false   # pluggable, off by default - revisit if free sources prove insufficient
-
-reddit:
-  subreddits:
-    - options
-    - wallstreetbets
-    - stocks
-
 database:
   # The live database is OUTSIDE the OneDrive-synced project folder on purpose:
   # it's written every minute, and OneDrive locking it (or its -wal/-shm files)
