@@ -918,7 +918,23 @@ def main() -> None:
         print(f"another 0DTE worker is already running - exiting. ({exc})")
         sys.exit(0)
     print(f"worker started (pid {os.getpid()}) - holding single-instance lock")
-    run_loop(config, db_path)
+    try:
+        run_loop(config, db_path)
+    except Exception:
+        # The stdout->worker.log redirect does not reach disk under the S4U
+        # no-console scheduled task, so a crash there leaves no trace. Capture the
+        # traceback with a fresh, flushed file handle (works regardless of stdout
+        # state), then re-raise so Task Scheduler RestartOnFailure still fires.
+        import traceback
+        try:
+            crash = Path(__file__).resolve().parent / "worker_crash.log"
+            with open(crash, "a", encoding="utf-8") as fh:
+                fh.write("\n===== CRASH " + datetime.now().isoformat()
+                         + " pid " + str(os.getpid()) + " =====\n")
+                traceback.print_exc(file=fh)
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

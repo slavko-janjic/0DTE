@@ -8,3 +8,4 @@ storage/backups/
 .claude/launch.json
 worker.log
 worker.log.old
+worker_crash.log
