@@ -826,9 +826,18 @@ def clear_weight_overrides(db_path: str | Path, ticker: str) -> None:
 
 def effective_weights(db_path: str | Path, config: dict, ticker: str) -> dict:
     """The weights actually in use for a ticker: a dashboard-applied per-ticker DB
-    override if one is active, otherwise the config/settings.yaml defaults."""
+    override if one is active, otherwise the config/settings.yaml defaults.
+
+    The config's categories are authoritative: an override is read only for
+    the categories config still defines. Overrides saved before a signal was
+    removed kept its key forever (and calibration kept nudging it), while a
+    newly added signal missing from an old override would have weighed 0 -
+    so dropped keys are ignored and missing ones fall back to the config."""
     override = get_weight_overrides(db_path, ticker)
-    return override[0] if override is not None else config["weights"]
+    if override is None:
+        return config["weights"]
+    stored = override[0]
+    return {cat: stored.get(cat, default) for cat, default in config["weights"].items()}
 
 
 # --- signal snapshots ----------------------------------------------------
@@ -914,9 +923,22 @@ def open_position(
     entry_price: float,
     entry_composite_score: float,
     opened_by: str = "manual",
-) -> int:
+    debit_balance: bool = False,
+) -> int | None:
+    """Inserts an open position. With debit_balance, its cost comes off the
+    account in the SAME transaction, guarded so the balance can't go negative -
+    returns None (inserting nothing) when it can't cover the cost. A relative
+    UPDATE, not read-then-write, so a concurrent close can't be lost."""
     cost_basis = entry_price * contracts * 100
     with connect(db_path) as conn:
+        if debit_balance:
+            debited = conn.execute(
+                "UPDATE account SET balance = balance - ?, updated_at = ? "
+                "WHERE id = 1 AND balance >= ?",
+                (cost_basis, _now(), cost_basis),
+            )
+            if debited.rowcount != 1:
+                return None
         cur = conn.execute(
             """INSERT INTO positions
                (ticker, option_type, strike, expiration, contracts, entry_price,
@@ -983,12 +1005,14 @@ def set_position_exit_targets(
 
 
 def close_position(
-    db_path: str | Path, position_id: int, exit_price: float, exit_reason: str
+    db_path: str | Path, position_id: int, exit_price: float, exit_reason: str,
+    credit_balance: bool = False,
 ) -> float | None:
-    """Closes an OPEN position, realizes P&L, and returns the P&L (caller updates
-    balance). Returns None if the position was already closed - the guarded UPDATE
-    makes this safe against two closers racing (worker + dashboard), so the balance
-    is only ever credited once."""
+    """Closes an OPEN position, realizes P&L, and returns the P&L. With
+    credit_balance, the proceeds (cost_basis + pnl) go back to the account in the
+    same transaction. Returns None if the position was already closed - the
+    guarded UPDATE makes this safe against two closers racing (worker +
+    dashboard), so the balance is only ever credited once."""
     with connect(db_path) as conn:
         pos = conn.execute(
             "SELECT * FROM positions WHERE id = ? AND status = 'open'", (position_id,)
@@ -1004,4 +1028,26 @@ def close_position(
                WHERE id = ? AND status = 'open'""",
             (exit_price, _now(), exit_reason, pnl, position_id),
         )
-        return pnl if cur.rowcount == 1 else None
+        if cur.rowcount != 1:
+            return None
+        if credit_balance:
+            conn.execute(
+                "UPDATE account SET balance = balance + ?, updated_at = ? WHERE id = 1",
+                (pos["cost_basis"] + pnl, _now()),
+            )
+        return pnl
+
+
+def get_final_spot(db_path: str | Path, ticker: str, start_iso: str, end_iso: str) -> float | None:
+    """The last spot price recorded for a ticker within [start, end] (UTC ISO
+    bounds) - e.g. the final print of an expiration day's session, which an
+    expired option settles against. None if nothing was recorded."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT spot_price FROM signal_snapshots
+               WHERE ticker = ? AND timestamp >= ? AND timestamp <= ?
+                 AND spot_price IS NOT NULL
+               ORDER BY timestamp DESC LIMIT 1""",
+            (ticker, start_iso, end_iso),
+        ).fetchone()
+        return row["spot_price"] if row is not None else None

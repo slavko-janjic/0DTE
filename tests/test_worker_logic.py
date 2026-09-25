@@ -189,7 +189,7 @@ def test_time_cutoff_force_closes_auto_but_only_suggests_for_manual(tmp_path, mo
 
     _patch_market_clock(monkeypatch, to_close=20.0)  # inside the 30-min cutoff
     monkeypatch.setattr(worker.market_data, "find_contract_price",
-                        lambda chain, option_type, strike: 2.0)
+                        lambda chain, option_type, strike, expiration=None: 2.0)
     check_open_positions("QQQ", AUTO_CONFIG, db_path, _fake_chain(), 0.0)
 
     open_rows = {row["id"]: row for row in storage.get_open_positions(db_path)}
@@ -382,7 +382,7 @@ def test_catalyst_force_closes_auto_but_suggests_for_manual(tmp_path, monkeypatc
 
     _patch_market_clock(monkeypatch, to_close=240.0)  # far from the bell -> no time_cutoff
     monkeypatch.setattr(worker.market_data, "find_contract_price",
-                        lambda chain, option_type, strike: 2.0)
+                        lambda chain, option_type, strike, expiration=None: 2.0)
     monkeypatch.setattr(worker, "_catalyst_imminent", lambda config, now=None: True)
 
     worker.check_open_positions("QQQ", AUTO_CONFIG, db_path, _fake_chain(), 0.0)
@@ -420,7 +420,7 @@ def test_trailing_stop_force_closes_auto_but_suggests_for_manual(tmp_path, monke
     _patch_market_clock(monkeypatch, to_close=240.0)  # far from bell; no time_cutoff/late stop
     # faded back to 2.3 -> gave back 23% from the 3.0 peak (>= 20%)
     monkeypatch.setattr(worker.market_data, "find_contract_price",
-                        lambda chain, option_type, strike: 2.3)
+                        lambda chain, option_type, strike, expiration=None: 2.3)
     worker.check_open_positions("QQQ", TRAIL_CONFIG, db_path, _fake_chain(), 0.0)
 
     open_rows = {row["id"]: row for row in storage.get_open_positions(db_path)}
@@ -471,13 +471,13 @@ def test_shadow_entry_exit_and_dedup(tmp_path, monkeypatch):
     # second cycle same day: dedup (open position) blocks another entry.
     # price ~flat so no exit fires either.
     monkeypatch.setattr(worker.market_data, "find_contract_price",
-                        lambda chain_, option_type, strike: 2.0)
+                        lambda chain_, option_type, strike, expiration=None: 2.0)
     worker.process_shadow_strategies("QQQ", SHADOW_CONFIG, db_path, chain, _shadow_signal(), None)
     assert len(storage.get_open_shadow_positions(db_path, "QQQ")) == 1
 
     # premium collapses: stop_loss exit at the bid-side price
     monkeypatch.setattr(worker.market_data, "find_contract_price",
-                        lambda chain_, option_type, strike: 1.2)  # -43% from 2.1
+                        lambda chain_, option_type, strike, expiration=None: 1.2)  # -43% from 2.1
     worker.process_shadow_strategies("QQQ", SHADOW_CONFIG, db_path, chain, _shadow_signal(), None)
     assert storage.get_open_shadow_positions(db_path, "QQQ") == []
     closed = storage.get_closed_shadow_positions(db_path)
@@ -645,3 +645,97 @@ def test_maybe_auto_enter_best_respects_ticker_whitelist(tmp_path, monkeypatch):
     assert len(open_rows) == 1
     assert open_rows[0]["ticker"] == "QQQ"
     assert open_rows[0]["opened_by"] == "auto"
+
+
+# --- review fixes: manual stop near the bell, expiry, isolation, sessions ----
+
+def test_manual_stop_still_executes_inside_the_time_cutoff(tmp_path, monkeypatch):
+    db_path = _auto_db(tmp_path)
+    from paper_trading.engine import buy
+    manual_id = buy(db_path, "QQQ", "call", 500.0, "2026-07-07", 2.0, 1, 0.5)
+    storage.set_position_exit_targets(db_path, manual_id, None, -35)
+    _patch_market_clock(monkeypatch, to_close=20.0)     # last 30 min
+    monkeypatch.setattr(worker.market_data, "find_contract_price",
+                        lambda chain, option_type, strike, expiration=None: 0.60)  # -70%
+    check_open_positions("QQQ", AUTO_CONFIG, db_path, _fake_chain(), 0.0)
+    assert storage.get_open_positions(db_path) == []
+    assert storage.get_closed_positions(db_path)[0]["exit_reason"] == "stop_loss"
+
+
+def _stamp_spot(db_path, ticker, ts_iso, spot):
+    storage.insert_signal_snapshot(db_path, ticker, "bullish", 50.0, 0.5, "r", {},
+                                   spot_price=spot)
+    with storage.connect(db_path) as conn:
+        conn.execute("UPDATE signal_snapshots SET timestamp = ? WHERE id = "
+                     "(SELECT MAX(id) FROM signal_snapshots)", (ts_iso,))
+
+
+def test_settle_expired_positions_books_intrinsic_value(tmp_path):
+    db_path = _auto_db(tmp_path)
+    from paper_trading.engine import buy
+    itm = buy(db_path, "QQQ", "call", 500.0, "2026-07-07", 2.0, 1, 0.5)   # cost 200
+    otm = buy(db_path, "QQQ", "put", 500.0, "2026-07-07", 2.0, 1, -0.5)
+    live_id = buy(db_path, "QQQ", "call", 500.0, "2026-07-08", 2.0, 1, 0.5)
+    _stamp_spot(db_path, "QQQ", "2026-07-07T19:59:00+00:00", 503.0)   # 15:59 ET final print
+
+    worker.settle_expired_positions(AUTO_CONFIG, db_path, now=_et(2026, 7, 7, 16, 5))
+
+    closed = {row["id"]: row for row in storage.get_closed_positions(db_path)}
+    assert closed[itm]["exit_reason"] == "expired"
+    assert closed[itm]["exit_price"] == 3.0 and closed[itm]["pnl"] == pytest.approx(100.0)
+    assert closed[otm]["exit_price"] == 0.0 and closed[otm]["pnl"] == pytest.approx(-200.0)
+    assert [row["id"] for row in storage.get_open_positions(db_path)] == [live_id]
+    # 10000 - 3*200 + 300 (ITM proceeds) + 0 (OTM)
+    assert storage.get_balance(db_path) == pytest.approx(9700.0)
+
+
+def test_nothing_settles_before_the_expiration_bell(tmp_path):
+    db_path = _auto_db(tmp_path)
+    from paper_trading.engine import buy
+    buy(db_path, "QQQ", "call", 500.0, "2026-07-07", 2.0, 1, 0.5)
+    worker.settle_expired_positions(AUTO_CONFIG, db_path, now=_et(2026, 7, 7, 15, 59))
+    assert len(storage.get_open_positions(db_path)) == 1
+
+
+def test_one_failing_ticker_does_not_stop_the_cycle(tmp_path, monkeypatch):
+    db_path = _auto_db(tmp_path)
+    monkeypatch.setattr(worker.market_data, "get_vix_term_structure", lambda: None)
+
+    def poll(ticker, config, db_path):
+        if ticker == "QQQ":
+            raise AttributeError("'NoneType' object has no attribute 'empty'")
+        return _fake_signal(70.0), _fake_chain()
+    monkeypatch.setattr(worker, "poll_ticker", poll)
+    seen = []
+    monkeypatch.setattr(worker, "maybe_auto_enter_best",
+                        lambda candidates, config, db_path: seen.extend(c[0] for c in candidates))
+    worker.run_once({**AUTO_CONFIG, "tickers": ["QQQ", "SPY"]}, db_path)
+    assert seen == ["SPY"]
+
+
+@pytest.mark.parametrize("now, expected", [
+    (_et(2026, 9, 25, 16, 5), date(2026, 9, 25)),     # Friday after the bell
+    (_et(2026, 9, 25, 15, 0), date(2026, 9, 24)),     # Friday, still trading
+    (_et(2026, 9, 26, 12, 0), date(2026, 9, 25)),     # Saturday
+    (_et(2026, 9, 27, 12, 0), date(2026, 9, 25)),     # Sunday
+    (_et(2026, 9, 28, 8, 0), date(2026, 9, 25)),      # Monday pre-market
+    (_et(2026, 9, 8, 8, 0), date(2026, 9, 4)),        # Tue after Labor Day, pre-market
+    (_et(2026, 11, 27, 13, 30), date(2026, 11, 27)),  # half day, after its 13:00 close
+])
+def test_last_completed_session(now, expected):
+    assert worker.last_completed_session(CONFIG, now) == expected
+
+
+def test_calibration_does_not_rerun_over_the_weekend(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "cal.db")
+    storage.init_db(db_path)
+    storage.ensure_calibration(db_path, default_enabled=True)
+    _seed_wrong_history(db_path)
+    monkeypatch.setattr(worker, "last_completed_session",
+                        lambda config, now=None: date(2026, 9, 25))
+    worker.run_daily_calibration(CAL_CONFIG, db_path)          # Friday evening
+    assert storage.get_last_calibration_date(db_path) == "2026-09-25"
+    events = len(storage.get_calibration_events(db_path))
+    worker.run_daily_calibration(CAL_CONFIG, db_path)          # Saturday, Sunday...
+    worker.run_daily_calibration(CAL_CONFIG, db_path)
+    assert len(storage.get_calibration_events(db_path)) == events

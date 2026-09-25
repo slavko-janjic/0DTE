@@ -23,7 +23,8 @@ from config import load_settings
 from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
-    close as close_position, evaluate_exit, explain_auto_decision, should_auto_enter,
+    close as close_position, evaluate_exit, explain_auto_decision, settlement_price,
+    should_auto_enter,
 )
 from paper_trading.models import Position
 from paper_trading.shadow import shadow_exit_score, shadow_position_from_row, should_shadow_enter
@@ -59,6 +60,38 @@ def next_trading_day(config: dict, from_date: date) -> date:
     while candidate.weekday() >= 5 or candidate.isoformat() in holidays:
         candidate += timedelta(days=1)
     return candidate
+
+
+def _is_trading_day(config: dict, day: date) -> bool:
+    return day.weekday() < 5 and day.isoformat() not in config.get("market_holidays", [])
+
+
+def session_bounds(config: dict, day: date) -> tuple[datetime, datetime]:
+    """(open, close) of the given day's regular session as aware datetimes in
+    the market timezone - 13:00 close on early-close days."""
+    market_hours = config["market_hours"]
+    tz = ZoneInfo(market_hours.get("timezone", "America/New_York"))
+    open_h, open_m = (int(p) for p in market_hours.get("open", "09:30").split(":"))
+    close_hm = (_HALF_DAY_CLOSE if day.isoformat() in config.get("market_half_days", [])
+                else market_hours.get("close", "16:00"))
+    close_h, close_m = (int(p) for p in close_hm.split(":"))
+    return (datetime(day.year, day.month, day.day, open_h, open_m, tzinfo=tz),
+            datetime(day.year, day.month, day.day, close_h, close_m, tzinfo=tz))
+
+
+def last_completed_session(config: dict, now: datetime | None = None) -> date:
+    """The most recent trading day whose session has already closed - today
+    after the bell, otherwise the trading day before. Weekends and holidays
+    never produce a new one, which is what makes it a clean once-per-session key."""
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    now = now if now is not None else datetime.now(tz)
+    day = now.astimezone(tz).date()
+    if _is_trading_day(config, day) and now >= session_bounds(config, day)[1]:
+        return day
+    day -= timedelta(days=1)
+    while not _is_trading_day(config, day):
+        day -= timedelta(days=1)
+    return day
 
 
 def minutes_since_market_open(config: dict, now: datetime | None = None) -> float:
@@ -378,7 +411,8 @@ def check_open_positions(ticker: str, config: dict, db_path: str,
         if row["ticker"] != ticker:
             continue
         position = Position.from_row(row)
-        current_price = market_data.find_contract_price(chain, position.option_type, position.strike)
+        current_price = market_data.find_contract_price(
+            chain, position.option_type, position.strike, position.expiration)
         if current_price is None:
             continue
         storage.update_position_price(db_path, position.id, current_price)
@@ -408,6 +442,42 @@ def check_open_positions(ticker: str, config: dict, db_path: str,
             print(f"[{ticker}] SUGGESTED EXIT for position {position.id}: {reason}")
 
 
+def is_expired(config: dict, expiration: str, now: datetime | None = None) -> bool:
+    """True once the expiration day's session has closed (market tz)."""
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    now = now if now is not None else datetime.now(tz)
+    return now >= session_bounds(config, date.fromisoformat(expiration))[1]
+
+
+def expiry_settlement_price(config: dict, db_path: str, ticker: str, option_type: str,
+                            strike: float, expiration: str) -> float:
+    """What an expired contract settles at: intrinsic value against the last
+    spot the worker recorded in that day's session (a few minutes' grace past
+    the bell for the final poll). 0.0 when no spot was recorded that day."""
+    session_open, session_close = session_bounds(config, date.fromisoformat(expiration))
+    utc = ZoneInfo("UTC")
+    spot = storage.get_final_spot(
+        db_path, ticker, session_open.astimezone(utc).isoformat(),
+        (session_close + timedelta(minutes=5)).astimezone(utc).isoformat())
+    return settlement_price(option_type, strike, spot)
+
+
+def settle_expired_positions(config: dict, db_path: str, now: datetime | None = None) -> None:
+    """Closes every real position whose expiration session has ended, at its
+    settlement value. Without this an unmanaged position (a manual one past its
+    suggested time cutoff, or anything open while the worker was down) stayed
+    open forever - and got re-priced against the NEXT expiry's same strike."""
+    for row in storage.get_open_positions(db_path):
+        if not is_expired(config, row["expiration"], now):
+            continue
+        price = expiry_settlement_price(config, db_path, row["ticker"], row["option_type"],
+                                        row["strike"], row["expiration"])
+        pnl = close_position(db_path, row["id"], price, "expired")
+        if pnl is not None:
+            print(f"[{row['ticker']}] EXPIRED position {row['id']}: settled "
+                  f"@ ${price:.2f} (P&L ${pnl:+,.2f})")
+
+
 def _catalyst_imminent(config: dict, now: datetime | None = None) -> bool:
     """True when a scheduled high-impact catalyst is within
     autopilot.close_before_catalyst_minutes from now (market tz). Drives the
@@ -431,8 +501,9 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
     manages exits on their open virtual positions (same evaluate_exit machinery
     and honest bid-side fills as the real book), then considers one entry per
     strategy (ask-side fill, full audit of the reasoning at entry). Positions
-    whose expiration has passed close at 0.00 - an unmanaged 0DTE expires
-    worthless, and the shadow book stays honest about that."""
+    whose expiration has passed settle at intrinsic value (0.00 when OTM or
+    when no final spot was recorded) - an unmanaged 0DTE isn't sold at a
+    quote, and the shadow book stays honest about that."""
     strategies = config.get("shadow_strategies", [])
     if not strategies:
         return
@@ -455,11 +526,15 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
 
         # --- exits on this strategy's open positions in this ticker ---------
         for row in open_by_strategy.get(name, []):
-            if row["expiration"] < today.isoformat():
-                storage.close_shadow_position(db_path, row["id"], 0.0, "expired")
-                print(f"[{ticker}] SHADOW {name}: position {row['id']} expired worthless")
+            if is_expired(config, row["expiration"]):
+                price = expiry_settlement_price(config, db_path, ticker, row["option_type"],
+                                                row["strike"], row["expiration"])
+                storage.close_shadow_position(db_path, row["id"], price, "expired")
+                print(f"[{ticker}] SHADOW {name}: position {row['id']} expired "
+                      f"@ ${price:.2f}")
                 continue
-            current_price = market_data.find_contract_price(chain, row["option_type"], row["strike"])
+            current_price = market_data.find_contract_price(
+                chain, row["option_type"], row["strike"], row["expiration"])
             if current_price is None:
                 continue
             storage.update_shadow_price(db_path, row["id"], current_price)
@@ -549,9 +624,22 @@ def run_once(config: dict, db_path: str) -> None:
     except Exception as exc:
         print(f"vix snapshot failed: {exc}")
 
+    try:
+        settle_expired_positions(config, db_path)
+    except Exception as exc:
+        print(f"expiry settlement failed: {exc}")
+
     candidates = []
     for ticker in config["tickers"]:
-        result = poll_ticker(ticker, config, db_path)
+        # one ticker's bad data (a None frame, a missing column) must not take
+        # down the whole cycle - it used to crash the worker outright
+        try:
+            result = poll_ticker(ticker, config, db_path)
+        except Exception:
+            import traceback
+            print(f"[{ticker}] poll failed, skipping this cycle:")
+            traceback.print_exc(file=sys.stdout)
+            continue
         if result is not None:
             signal, chain = result
             candidates.append((ticker, signal, chain))
@@ -614,15 +702,20 @@ def run_premarket_setup(config: dict, db_path: str) -> None:
 
 
 def run_daily_calibration(config: dict, db_path: str) -> None:
-    """Once per day after market close: per ticker, nudge weights toward the
-    accuracy-based suggestion, add/remove signal inversions, and refresh the
-    confidence map. Decisions come from accuracy.plan_calibration (pure); this
-    function does the I/O and audit logging. Idempotent via last_run_date."""
+    """Once per trading SESSION, after its close: per ticker, nudge weights
+    toward the accuracy-based suggestion, add/remove signal inversions, and
+    refresh the confidence map. Decisions come from accuracy.plan_calibration
+    (pure); this function does the I/O and audit logging.
+
+    Idempotent via last_run_date, which records the session calibrated - not
+    the calendar day. Keyed by calendar day it re-ran every weekend day and
+    holiday on unchanged data, compounding the same weight nudge 3x a weekend."""
     if not storage.get_calibration_enabled(db_path):
         return
     tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
     today = datetime.now(tz).date()
-    if storage.get_last_calibration_date(db_path) == today.isoformat():
+    session = last_completed_session(config)
+    if storage.get_last_calibration_date(db_path) == session.isoformat():
         return
 
     cal = config.get("calibration", {})
@@ -678,7 +771,7 @@ def run_daily_calibration(config: dict, db_path: str) -> None:
         except Exception as exc:
             print(f"[{ticker}] calibration failed: {exc}")
 
-    storage.set_last_calibration_date(db_path, today.isoformat())
+    storage.set_last_calibration_date(db_path, session.isoformat())
 
 
 def maybe_disarm_day_session(config: dict, db_path: str) -> None:
@@ -715,7 +808,12 @@ def run_loop(config: dict, db_path: str) -> None:
                 maybe_disarm_day_session(config, db_path)
             except Exception as exc:
                 print(f"day-session disarm check failed: {exc}")
-            # daily self-calibration - idempotent via last_run_date
+            # settle anything left open past its expiration's closing bell
+            try:
+                settle_expired_positions(config, db_path)
+            except Exception as exc:
+                print(f"expiry settlement failed: {exc}")
+            # self-calibration - once per completed session, via last_run_date
             try:
                 run_daily_calibration(config, db_path)
             except Exception as exc:

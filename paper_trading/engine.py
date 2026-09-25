@@ -20,6 +20,7 @@ AUTO_CLOSE_REASONS = frozenset({"profit_target", "stop_loss"})
 
 # Global risk exits: force-close AUTO positions (so a day-session is managed
 # end to end) but only SUGGEST for manual positions, which the user manages.
+# ("expired" is neither: it isn't a decision, the contract simply settled.)
 AUTO_FORCE_REASONS = frozenset({"time_cutoff", "catalyst", "trailing_stop", "time_decay_stop"})
 
 
@@ -348,18 +349,22 @@ def evaluate_exit(
 ) -> str | None:
     """Returns an exit reason if any exit condition fires, else None.
 
-    Checked in priority order: time cutoff (hard safety net) first, then this
-    position's own profit target / stop loss, then the trailing stop (lock in a
-    faded winner), then the late-session theta stop (cut a lingering loser), then
-    signal reversal. Profit/stop are per-trade; the rest are global rules from
-    exit_rules.
-    """
-    if minutes_to_close <= exit_rules.get("time_cutoff_minutes_before_close", 30):
-        return "time_cutoff"
+    Checked in priority order: this position's own profit target / stop loss
+    first, then the time cutoff (hard safety net), then the trailing stop (lock
+    in a faded winner), then the late-session theta stop (cut a lingering
+    loser), then signal reversal. Profit/stop are per-trade; the rest are global
+    rules from exit_rules.
 
+    Profit/stop MUST win over the time cutoff: the worker always executes them,
+    but only suggests a time cutoff for manual positions - so checking the
+    cutoff first silently disarmed a manual stop for the last 30 minutes.
+    """
     price_exit = price_target_exit(position, current_price)
     if price_exit is not None:
         return price_exit
+
+    if minutes_to_close <= exit_rules.get("time_cutoff_minutes_before_close", 30):
+        return "time_cutoff"
 
     trailing = trailing_stop_exit(position, current_price, exit_rules)
     if trailing is not None:
@@ -395,34 +400,32 @@ def buy(
     entry_composite_score: float,
     opened_by: str = "manual",
 ) -> int | None:
-    balance = storage.get_balance(db_path)
-    cost = entry_price * contracts * 100
-    if contracts <= 0 or cost > balance:
+    """Opens a position and debits its cost. None if contracts <= 0 or the
+    balance can't cover it. The debit and the insert are one transaction (see
+    storage.open_position), so a concurrent close can't lose the update."""
+    if contracts <= 0:
         return None
-    position_id = storage.open_position(
+    return storage.open_position(
         db_path, ticker, option_type, strike, expiration, contracts,
-        entry_price, entry_composite_score, opened_by=opened_by,
+        entry_price, entry_composite_score, opened_by=opened_by, debit_balance=True,
     )
-    storage.set_balance(db_path, balance - cost)
-    return position_id
 
 
 def close(db_path: str, position_id: int, exit_price: float, exit_reason: str) -> float | None:
     """Closes a position and credits proceeds (cost_basis + pnl) back to the
     balance, since cost_basis was already deducted at buy time. Returns None (and
     touches nothing) if the position was already closed - so two racing closers
-    (worker + dashboard) can't double-credit the balance."""
-    with storage.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT cost_basis FROM positions WHERE id = ? AND status = 'open'", (position_id,)
-        ).fetchone()
-    if row is None:
-        return None
-    cost_basis = row["cost_basis"]
+    (worker + dashboard) can't double-credit the balance. The close and the
+    credit are one transaction, so they can't be separated or lost either."""
+    return storage.close_position(db_path, position_id, exit_price, exit_reason,
+                                  credit_balance=True)
 
-    pnl = storage.close_position(db_path, position_id, exit_price, exit_reason)
-    if pnl is None:  # lost the race - another closer got it first
-        return None
-    balance = storage.get_balance(db_path)
-    storage.set_balance(db_path, balance + cost_basis + pnl)
-    return pnl
+
+def settlement_price(option_type: str, strike: float, spot: float | None) -> float:
+    """What an expired option is worth: its intrinsic value at the final spot
+    (an ITM contract is exercised, an OTM one is worthless). 0.0 when the final
+    spot is unknown - the conservative assumption."""
+    if spot is None:
+        return 0.0
+    intrinsic = spot - strike if option_type == "call" else strike - spot
+    return round(max(0.0, intrinsic), 2)

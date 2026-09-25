@@ -147,3 +147,15 @@ def test_overnight_range_none_during_the_regular_session(monkeypatch):
     monkeypatch.setattr(md.yf, "Ticker", lambda s: type("T", (), {
         "history": staticmethod(lambda **k: frame)})())
     assert md.get_overnight_range("SPY") is None
+
+
+def test_held_contract_is_never_priced_off_another_expiration():
+    # the chain is always the NEAREST expiry: yesterday's position must not be
+    # valued (or closed) at today's contract that happens to share its strike
+    import pandas as pd
+    from types import SimpleNamespace
+    from data.market_data import find_contract_price
+    frame = pd.DataFrame([{"strike": 500.0, "bid": 1.90, "ask": 2.10, "lastPrice": 2.0}])
+    chain = SimpleNamespace(expiration="2026-09-25", calls=frame, puts=frame)
+    assert find_contract_price(chain, "call", 500.0, "2026-09-25") == 1.90
+    assert find_contract_price(chain, "call", 500.0, "2026-09-24") is None

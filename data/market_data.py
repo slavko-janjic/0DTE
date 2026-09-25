@@ -313,17 +313,25 @@ def contract_quote(contract) -> tuple[float | None, float | None, float | None, 
     )
 
 
-def find_contract_row(chain: "OptionChainSnapshot | None", option_type: str, strike: float):
-    """The held contract's chain row by exact strike match, or None."""
+def find_contract_row(chain: "OptionChainSnapshot | None", option_type: str, strike: float,
+                      expiration: str | None = None):
+    """The held contract's chain row by exact strike match, or None.
+
+    Pass the held contract's expiration: the chain is always the NEAREST
+    expiry, so once a position's own date has passed the same strike belongs
+    to a different contract - pricing (and closing) against it is wrong."""
     if chain is None:
+        return None
+    if expiration is not None and chain.expiration != expiration:
         return None
     df = chain.calls if option_type == "call" else chain.puts
     match = df[df["strike"] == strike]
     return None if match.empty else match.iloc[0]
 
 
-def find_contract_price(chain: "OptionChainSnapshot | None", option_type: str, strike: float) -> float | None:
+def find_contract_price(chain: "OptionChainSnapshot | None", option_type: str, strike: float,
+                        expiration: str | None = None) -> float | None:
     """Prices a held contract for exit/valuation - bid-side (see honest fills
     above), as opposed to find_atm_contract which picks a new contract to buy."""
-    row = find_contract_row(chain, option_type, strike)
+    row = find_contract_row(chain, option_type, strike, expiration)
     return contract_exit_price(row) if row is not None else None
