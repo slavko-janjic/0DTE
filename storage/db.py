@@ -6,7 +6,7 @@ position already carries entry/exit price and realized P&L.
 """
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -281,18 +281,41 @@ def _backfill_direction_streaks(conn: sqlite3.Connection) -> None:
     )
 
 
+# How long a connection waits on another process's write lock before failing
+# with "database is locked". In WAL mode only writer-vs-writer ever waits (the
+# worker, a trade or close from the UI, a push subscription).
+BUSY_TIMEOUT_SECONDS = 15
+
+
 def init_db(path: str | Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)) as conn:
+        _enable_wal(conn)
         conn.executescript(_SCHEMA)
         _migrate(conn)
         conn.commit()
 
 
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Put the database in write-ahead-log mode. The worker writes every
+    minute while the API reads on every page load, a 3 s live-update poll and
+    a 15 s push watcher; in the default rollback-journal mode each write locks
+    readers out (and a long one fails them with "database is locked"). In WAL,
+    readers see the last committed state while a write is in progress.
+
+    The mode is stored in the database file, so this only has to succeed once;
+    every process calls init_db at startup, so a failed attempt (another
+    process mid-write) is simply retried by the next start."""
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+
+
 @contextmanager
 def connect(path: str | Path):
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -334,7 +357,11 @@ def get_heartbeat(db_path: str | Path) -> dict | None:
 def backup_db(db_path: str | Path, backup_dir: str | Path, keep: int = 14) -> Path | None:
     """Writes a dated snapshot of the database into backup_dir (skipping if
     today's already exists) and prunes to the newest `keep` files. Uses SQLite's
-    online backup API, so it's safe while the worker holds the DB open.
+    online backup API, so it's safe while the worker holds the DB open - and it
+    reads through the write-ahead log, so the snapshot includes everything
+    committed. The copy is switched back to rollback-journal mode, so each
+    backup stays one self-contained file (a WAL-mode copy would grow -wal/-shm
+    files beside it whenever opened, and couldn't be opened read-only).
     Returns the backup path, or None if today's backup already existed."""
     backup_dir = Path(backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -342,8 +369,10 @@ def backup_db(db_path: str | Path, backup_dir: str | Path, keep: int = 14) -> Pa
     if target.exists():
         return None
 
-    with sqlite3.connect(db_path) as source, sqlite3.connect(target) as dest:
+    with closing(sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_SECONDS)) as source, \
+            closing(sqlite3.connect(target)) as dest:
         source.backup(dest)
+        dest.execute("PRAGMA journal_mode=DELETE")
 
     backups = sorted(backup_dir.glob("0dte_*.db"))
     for stale in backups[:-keep]:
