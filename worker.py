@@ -892,35 +892,96 @@ def run_loop(config: dict, db_path: str) -> None:
         time.sleep(poll_seconds)
 
 
-def _setup_file_logging() -> None:
-    """In scheduled / non-interactive runs, tee stdout+stderr to worker.log
-    with simple size rotation - this replaces the old run_worker.bat wrapper.
-    Running the task as python.exe directly (no cmd.exe parent) means Task
-    Scheduler tracks and terminates the worker process itself, so stopping the
-    task can no longer leave an orphaned python child holding the lock.
-    Interactive runs keep printing to the console."""
-    stdout = sys.stdout
-    if stdout is not None and stdout.isatty():
-        return
-    log = Path(__file__).resolve().parent / "worker.log"
-    try:
-        if log.exists() and log.stat().st_size > 5 * 1024 * 1024:
-            os.replace(log, log.parent / (log.name + ".old"))
-    except OSError:
-        pass
-    handle = open(log, "a", buffering=1, encoding="utf-8")
-    sys.stdout = handle
-    sys.stderr = handle
+LOG_PATH = Path(__file__).resolve().parent / "worker.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+class LogTee:
+    """Stands in for sys.stdout/sys.stderr in the long-running worker: every
+    line goes to worker.log with a market-time timestamp, and to the console
+    too when there is one.
+
+    It replaces a redirect that only kicked in when stdout was NOT a terminal.
+    Task Scheduler gives python.exe a hidden console (a conhost child), so
+    isatty() was True, the redirect never happened, and worker.log stayed silent
+    from 2026-09-15 - every print went to a console nobody could see.
+
+    Rotates to worker.log.old past max_bytes while running (not just at start).
+    A failed write (OneDrive briefly holding the file, a full disk) is dropped,
+    never raised - logging must not be what takes the worker down."""
+
+    def __init__(self, path: Path, console=None, tz_name: str = "America/New_York",
+                 max_bytes: int = LOG_MAX_BYTES):
+        self.path = Path(path)
+        self.console = console
+        self.tz = ZoneInfo(tz_name)
+        self.max_bytes = max_bytes
+        self.encoding = "utf-8"
+        self._pending = ""
+        self._handle = None
+
+    def _open(self):
+        """The log handle, rotated first if the file has outgrown max_bytes - so
+        worker.log always holds the newest lines."""
+        if self._handle is None:
+            self._handle = open(self.path, "a", encoding="utf-8")
+        if self._handle.tell() > self.max_bytes:
+            self._handle.close()
+            self._handle = None
+            os.replace(self.path, self.path.with_name(self.path.name + ".old"))
+            self._handle = open(self.path, "a", encoding="utf-8")
+        return self._handle
+
+    def write(self, text: str) -> int:
+        if self.console is not None:
+            try:
+                self.console.write(text)
+            except Exception:  # noqa: BLE001 - a broken console must not stop logging
+                pass
+        self._pending += text
+        *lines, self._pending = self._pending.split("\n")
+        if lines:
+            stamp = datetime.now(self.tz).strftime("%Y-%m-%d %H:%M:%S ET")
+            try:
+                handle = self._open()
+                handle.write("".join(f"{stamp} | {line}\n" for line in lines))
+                handle.flush()
+            except OSError:
+                self._handle = None     # retry with a fresh handle next time
+        return len(text)
+
+    def flush(self) -> None:
+        if self.console is not None:
+            try:
+                self.console.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _setup_file_logging(config: dict) -> None:
+    """The long-running worker always logs to worker.log (timestamped), echoing
+    to the console when one exists. See LogTee for why it no longer checks
+    isatty(). Also replaces the old run_worker.bat redirect, so the task can run
+    python.exe directly and Task Scheduler can stop it cleanly."""
+    tz_name = config["market_hours"].get("timezone", "America/New_York")
+    # ONE tee for both streams: two handles on the same file would block each
+    # other's rotation on Windows (a file open elsewhere can't be renamed)
+    tee = LogTee(LOG_PATH, sys.stdout, tz_name)
+    sys.stdout = tee
+    sys.stderr = tee
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run a single poll cycle and exit")
     args = parser.parse_args()
-    if not args.once:
-        _setup_file_logging()
 
     config = load_settings()
+    if not args.once:
+        _setup_file_logging(config)
     db_path = database_path(config)
     try:
         check_database_location(db_path)

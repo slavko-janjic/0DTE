@@ -828,3 +828,70 @@ def test_autopilot_stands_down_once_the_catalyst_calendar_has_expired(tmp_path, 
     covered = {**AUTO_CONFIG, "market_catalysts_through": "2099-12-31"}
     maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], covered, db_path)
     assert len(storage.get_open_positions(db_path)) == 1
+
+
+# --- worker.log --------------------------------------------------------------------
+
+class _Console:
+    """A console that says it's a terminal - which the scheduled task's hidden
+    conhost does, and which made the old redirect skip the log file entirely."""
+    def __init__(self):
+        self.text = ""
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return True
+
+
+def test_log_tee_writes_timestamped_lines_even_with_a_terminal_attached(tmp_path):
+    import re
+    log = tmp_path / "worker.log"
+    console = _Console()
+    tee = worker.LogTee(log, console)
+    print("market closed, sleeping", file=tee)
+    tee.write("half a ")                       # partial line: held until its newline
+    assert log.read_text(encoding="utf-8").count("\n") == 1
+    tee.write("line\n")
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ET \| market closed, sleeping", lines[0])
+    assert lines[1].endswith("| half a line")
+    assert console.text == "market closed, sleeping\nhalf a line\n"   # still echoed
+
+
+def test_log_tee_rotates_while_running(tmp_path):
+    log = tmp_path / "worker.log"
+    tee = worker.LogTee(log, None, max_bytes=200)
+    for i in range(20):
+        print(f"cycle {i} " + "x" * 20, file=tee)
+    rotated = log.with_name("worker.log.old")
+    assert rotated.exists() and log.exists()
+    assert log.stat().st_size <= 200 + 100      # current file restarted after rotating
+    assert "cycle 19" in log.read_text(encoding="utf-8")
+
+
+def test_log_tee_never_raises_when_the_file_cant_be_written(tmp_path):
+    # a directory where the file should be: every open fails with an OSError
+    blocked = tmp_path / "worker.log"
+    blocked.mkdir()
+    console = _Console()
+    tee = worker.LogTee(blocked, console)
+    print("still running", file=tee)            # must not raise
+    assert console.text == "still running\n"
+
+
+def test_setup_file_logging_logs_even_when_stdout_is_a_terminal(tmp_path, monkeypatch):
+    log = tmp_path / "worker.log"
+    monkeypatch.setattr(worker, "LOG_PATH", log)
+    monkeypatch.setattr(worker.sys, "stdout", _Console())
+    monkeypatch.setattr(worker.sys, "stderr", _Console())
+    worker._setup_file_logging(CONFIG)
+    assert worker.sys.stdout is worker.sys.stderr          # one shared tee
+    print("polling every 60s")
+    print("boom", file=worker.sys.stderr)
+    text = log.read_text(encoding="utf-8")
+    assert "| polling every 60s" in text and "| boom" in text
