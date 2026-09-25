@@ -230,10 +230,14 @@ def explain_auto_decision(
     tz_name: str = "America/New_York",
     minutes_to_catalyst: float | None = None,
     gamma_regime: str | None = None,
+    calendar_blocker: str | None = None,
 ) -> AutoIntent:
     """The autopilot's entry decision, WITH its reasoning - the same guard rails
     as should_auto_enter, in the same order, but returning why it would stand
-    down instead of a bare None. Surfaces the bot's live intent before it acts."""
+    down instead of a bare None. Surfaces the bot's live intent before it acts.
+
+    calendar_blocker (from day_setup.calendar_blocker) is checked first: with an
+    expired catalyst/holiday calendar no signal is safe to act on."""
     lean = {"bullish": "call", "bearish": "put"}.get(direction)
     min_conf = autopilot_cfg.get("min_confidence_pct", 55)
     gamma_penalty = autopilot_cfg.get("positive_gamma_confidence_penalty", 0)
@@ -242,6 +246,9 @@ def explain_auto_decision(
 
     def _i(would, blocker):
         return AutoIntent(ticker, direction, lean, confidence_pct, min_conf, would, blocker)
+
+    if calendar_blocker:
+        return _i(False, calendar_blocker)
 
     if lean is None:
         return _i(False, "no directional signal (neutral)")
@@ -326,6 +333,7 @@ def should_auto_enter(
     tz_name: str = "America/New_York",
     minutes_to_catalyst: float | None = None,
     gamma_regime: str | None = None,
+    calendar_blocker: str | None = None,
 ) -> str | None:
     """Auto-pilot entry decision: returns 'call'/'put' to enter, or None. Thin
     wrapper over explain_auto_decision (the single source of the guard-rail
@@ -336,6 +344,7 @@ def should_auto_enter(
         open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=autopilot_cfg,
         starting_balance=starting_balance, now=now, tz_name=tz_name,
         minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
+        calendar_blocker=calendar_blocker,
     )
     return intent.lean if intent.would_enter else None
 

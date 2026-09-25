@@ -147,11 +147,26 @@
       A.escapeHtml(market.open ? market.now_et + ' ET · ' + market.label : 'Market closed');
   }
 
+  /* hand-maintained catalyst / holiday calendars running out (warn) or
+     already out, which stands the autopilot down (bad) */
+  function renderCalendar(entries) {
+    var banner = $('calendar-banner');
+    entries = entries || [];
+    banner.hidden = !entries.length;
+    if (!entries.length) { return; }
+    var expired = entries.some(function (entry) { return entry.status === 'expired'; });
+    banner.className = 'banner ' + (expired ? 'bad' : 'warn');
+    banner.innerHTML = '<b>Calendar</b> ' + entries.map(function (entry) {
+      return '<span>' + A.escapeHtml(entry.message) + '</span>';
+    }).join(' ');
+  }
+
   function loadOverview() {
     return A.get('/api/overview').then(function (data) {
       renderStrip(data.tickers);
       renderWallets(data.wallet, data.autopilot);
       renderHealth(data.worker, data.autopilot, data.market);
+      renderCalendar(data.calendar);
       state.autopilotMode = data.autopilot.mode;
       state.balance = data.wallet.balance;
       state.startingBalance = data.wallet.starting_balance;
