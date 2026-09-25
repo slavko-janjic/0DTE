@@ -23,7 +23,7 @@ from analytics import accuracy
 from analytics import charting
 from analytics import events as event_analysis
 from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
-from config import load_settings, poll_interval_seconds
+from config import check_database_location, database_path, load_settings, poll_interval_seconds
 from data import market_data
 from paper_trading.engine import calculate_contracts, calculate_pnl, close as close_position
 from paper_trading.engine import (
@@ -55,7 +55,8 @@ DIRECTION_ICON = {"bullish": "trending_up", "bearish": "trending_down", "neutral
 EXIT_PCT_OPTIONS = [None, 5, 10, 20, 30, 40, 50]
 
 config = load_settings()
-db_path = config["database"]["path"]
+db_path = database_path(config)
+check_database_location(db_path)
 storage.init_db(db_path)
 storage.ensure_account(db_path, config["account"]["starting_balance"])
 storage.ensure_worker_settings(db_path, poll_interval_seconds(config))
