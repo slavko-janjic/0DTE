@@ -106,12 +106,21 @@ def test_stream_route_is_registered(client):
     assert any(getattr(route, "path", "") == "/api/stream" for route in api.app.routes)
 
 
-def test_startup_pins_the_worker_cadence_to_one_minute(client):
-    """Parity with dashboard.py, which forced 60s on every load: without it a
-    fresh database keeps config's 5-minute default after the cutover."""
+def test_startup_seeds_the_cadence_from_config_but_never_overrides_the_worker(client):
+    """A fresh database gets config's poll_interval_seconds. After that the
+    worker owns the value (it records the interval it runs at) - the API used
+    to force 60 s on every start, which left settings.yaml's value dead."""
     import api
+    from config import poll_interval_seconds
     from storage import db as storage
-    assert storage.get_poll_interval_seconds(api.db_path) == 60
+    assert storage.get_poll_interval_seconds(api.db_path) == poll_interval_seconds(api.config)
+
+    storage.set_poll_interval_seconds(api.db_path, 120)       # a worker running at 2 min
+    try:
+        importlib.reload(api)                                 # the API restarts
+        assert storage.get_poll_interval_seconds(api.db_path) == 120
+    finally:
+        storage.set_poll_interval_seconds(api.db_path, poll_interval_seconds(api.config))
 
 
 def test_push_key_and_subscription_lifecycle(client):

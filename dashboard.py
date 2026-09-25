@@ -23,7 +23,7 @@ from analytics import accuracy
 from analytics import charting
 from analytics import events as event_analysis
 from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
-from config import load_settings
+from config import load_settings, poll_interval_seconds
 from data import market_data
 from paper_trading.engine import calculate_contracts, calculate_pnl, close as close_position
 from paper_trading.engine import (
@@ -58,7 +58,7 @@ config = load_settings()
 db_path = config["database"]["path"]
 storage.init_db(db_path)
 storage.ensure_account(db_path, config["account"]["starting_balance"])
-storage.ensure_worker_settings(db_path, config["poll_interval_minutes"] * 60)
+storage.ensure_worker_settings(db_path, poll_interval_seconds(config))
 storage.ensure_autopilot(db_path, default_enabled=True)
 storage.ensure_calibration(db_path)
 
@@ -264,10 +264,8 @@ components.html(
     height=0,
 )
 
-# Worker poll cadence is fixed at 1 minute (was a user-facing selector; 1 min is
-# the sweet spot - fast enough to be useful, slow enough to avoid rate-limiting).
-if storage.get_poll_interval_seconds(db_path) != 60:
-    storage.set_poll_interval_seconds(db_path, 60)
+# Worker poll cadence comes from config (poll_interval_seconds); the worker
+# records the value it runs at, so it isn't forced here any more.
 
 
 @st.fragment(run_every="30s")

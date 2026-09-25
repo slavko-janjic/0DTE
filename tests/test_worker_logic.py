@@ -795,3 +795,20 @@ def test_shadow_mirrors_trade_the_old_and_new_gate_side_by_side(tmp_path, monkey
     assert [row["strategy"] for row in rows] == ["autopilot_point"]
     import json as _json
     assert _json.loads(rows[0]["entry_reason_json"])["confidence_basis"] == "calibrated"
+
+
+# --- poll cadence ----------------------------------------------------------------
+
+def test_worker_publishes_the_cadence_it_runs_at(tmp_path):
+    db_path = str(tmp_path / "poll.db")
+    storage.init_db(db_path)
+    storage.ensure_worker_settings(db_path, 60)             # seeded by whoever started first
+    assert worker.publish_poll_interval({"poll_interval_seconds": 120}, db_path) == 120
+    assert storage.get_poll_interval_seconds(db_path) == 120   # what the UI will read
+
+
+def test_worker_publishes_on_a_fresh_database_too(tmp_path):
+    db_path = str(tmp_path / "fresh.db")
+    storage.init_db(db_path)                                 # no worker_settings row yet
+    assert worker.publish_poll_interval({"poll_interval_seconds": 90}, db_path) == 90
+    assert storage.get_poll_interval_seconds(db_path) == 90

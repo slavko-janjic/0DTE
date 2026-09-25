@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from config import load_settings
+from config import load_settings, poll_interval_seconds
 from storage import db as storage
 from webapi import live, payloads, push
 
@@ -46,16 +46,11 @@ db_path = os.environ.get("ZERODTE_DB_PATH") or config["database"]["path"]
 # at this process is a drop-in swap.
 storage.init_db(db_path)
 storage.ensure_account(db_path, config["account"]["starting_balance"])
-storage.ensure_worker_settings(db_path, config["poll_interval_minutes"] * 60)
+# Seeds a fresh database with config's cadence; after that the worker owns the
+# value (it records the interval it actually runs at on every start).
+storage.ensure_worker_settings(db_path, poll_interval_seconds(config))
 storage.ensure_autopilot(db_path, default_enabled=True)
 storage.ensure_calibration(db_path)
-
-# The worker's cadence is fixed at 1 minute. dashboard.py re-asserted this on
-# every load (the old user-facing selector is gone), so the API must too - or a
-# fresh database would silently fall back to config's poll_interval_minutes.
-WORKER_POLL_SECONDS = 60
-if storage.get_poll_interval_seconds(db_path) != WORKER_POLL_SECONDS:
-    storage.set_poll_interval_seconds(db_path, WORKER_POLL_SECONDS)
 
 # --- Web Push: ARMED / OPENED alerts that reach a phone with the app closed --
 # Optional: without pywebpush installed, push reports itself unavailable and the
