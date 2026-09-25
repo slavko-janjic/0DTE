@@ -723,3 +723,49 @@ def test_get_signal_history_since_returns_the_whole_window(tmp_path):
     # no row cap when a window is given (the old default capped at 2,000)
     assert len(storage.get_signal_history(path, "QQQ", limit=1)) == 1
     assert len(storage.get_signal_history(path, "QQQ", limit=1, since="2000-01-01")) == 3
+
+
+# --- WAL mode -------------------------------------------------------------------
+
+def test_init_db_puts_the_database_in_wal_mode_for_good(tmp_path):
+    import sqlite3
+    path = make_temp_db(tmp_path)
+    with sqlite3.connect(path) as conn:           # a fresh connection sees it
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_a_read_in_progress_no_longer_blocks_the_worker_writing(tmp_path):
+    # the API reads constantly; in rollback-journal mode an open read made the
+    # worker's commit fail with "database is locked" once its wait ran out
+    import sqlite3
+    path = make_temp_db(tmp_path)
+    storage.ensure_account(path, 10000.0)
+    reader = sqlite3.connect(path, isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT balance FROM account").fetchone()   # read txn held open
+        writer = sqlite3.connect(path, timeout=0.2)
+        writer.execute("UPDATE account SET balance = 5000 WHERE id = 1")
+        writer.commit()                                            # would raise pre-WAL
+        writer.close()
+        # the reader keeps its consistent snapshot until it finishes
+        assert reader.execute("SELECT balance FROM account").fetchone()[0] == 10000.0
+        reader.execute("COMMIT")
+    finally:
+        reader.close()
+    assert storage.get_balance(path) == 5000.0
+
+
+def test_backup_is_one_self_contained_file_with_everything_committed(tmp_path):
+    import sqlite3
+    path = make_temp_db(tmp_path)
+    pinned = sqlite3.connect(path)       # keeps the log from being folded back on close
+    try:
+        storage.ensure_account(path, 1234.0)   # committed, but still in the -wal file
+        target = storage.backup_db(path, tmp_path / "backups")
+    finally:
+        pinned.close()
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute("SELECT balance FROM account").fetchone()[0] == 1234.0
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]

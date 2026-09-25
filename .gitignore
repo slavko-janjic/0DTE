@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 storage/*.db
+# SQLite write-ahead log + its index (WAL mode) - live beside the database
+storage/*.db-wal
+storage/*.db-shm
 # Web Push (VAPID) private key - see webapi/push.py
 storage/*.pem
 storage/backups/
