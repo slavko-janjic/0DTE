@@ -510,3 +510,47 @@ def test_auto_force_reasons_membership():
     from paper_trading.engine import AUTO_FORCE_REASONS
     assert {"trailing_stop", "time_decay_stop", "time_cutoff", "catalyst"} == set(AUTO_FORCE_REASONS)
     assert "profit_target" not in AUTO_FORCE_REASONS  # that's AUTO_CLOSE_REASONS (force for all)
+
+
+# --- review fixes: exit priority, settlement, atomic balance ----------------
+
+def test_per_trade_stop_beats_the_time_cutoff():
+    # the worker only SUGGESTS a time cutoff for manual positions, so if the
+    # cutoff won here a manual stop was silently disarmed for the last 30 min
+    position = make_position(entry_price=2.0)
+    position.stop_loss_pct = -35
+    assert evaluate_exit(position, 0.60, 0.0, minutes_to_close=20,
+                         exit_rules=EXIT_RULES) == "stop_loss"
+    position.stop_loss_pct, position.profit_target_pct = None, 50
+    assert evaluate_exit(position, 3.5, 0.0, minutes_to_close=20,
+                         exit_rules=EXIT_RULES) == "profit_target"
+
+
+def test_settlement_price_is_intrinsic_value():
+    from paper_trading.engine import settlement_price
+    assert settlement_price("call", 500.0, 503.25) == 3.25
+    assert settlement_price("put", 500.0, 497.0) == 3.0
+    assert settlement_price("call", 500.0, 499.0) == 0.0     # OTM -> worthless
+    assert settlement_price("put", 500.0, None) == 0.0       # unknown -> conservative
+
+
+def test_buy_refuses_what_the_balance_cannot_cover(tmp_path):
+    path = str(tmp_path / "t.db")
+    storage.init_db(path)
+    storage.ensure_account(path, 300.0)
+    assert buy(path, "QQQ", "call", 450.0, "2026-07-07", 2.0, 2, 0.5) is None  # $400
+    assert storage.get_open_positions(path) == []
+    assert storage.get_balance(path) == 300.0
+
+
+def test_buy_and_close_never_read_modify_write_the_balance(tmp_path, monkeypatch):
+    # set_balance(get_balance() +/- x) across two connections is a lost update
+    # waiting for the worker and the API to close at the same moment
+    path = str(tmp_path / "t.db")
+    storage.init_db(path)
+    storage.ensure_account(path, 10000.0)
+    monkeypatch.setattr(storage, "set_balance",
+                        lambda *a, **k: pytest.fail("balance must be updated relatively"))
+    pid = buy(path, "QQQ", "call", 450.0, "2026-07-07", 2.0, 1, 0.5)
+    assert close(path, pid, 3.0, "manual") == 100.0
+    assert storage.get_balance(path) == 10100.0

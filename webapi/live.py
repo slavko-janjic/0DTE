@@ -21,7 +21,10 @@ from paper_trading import engine
 from paper_trading.models import Position
 from storage import db as storage
 from webapi import payloads
-from worker import is_market_open, minutes_to_market_close, next_trading_day
+from worker import (
+    expiry_settlement_price, is_expired, is_market_open, minutes_to_market_close,
+    next_trading_day, settle_expired_positions,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +47,9 @@ def refresh_open_positions(db_path: str, config: dict) -> tuple[dict, list[dict]
 
     Returns ({position_id: {price, spread_pct}}, [auto-close notices]). Positions
     whose quote is unavailable simply keep the worker's last stored price.
+    Anything past its expiration is settled first, by the worker's own rule.
     """
+    settle_expired_positions(config, db_path)
     open_positions = storage.get_open_positions(db_path)
     if not open_positions:
         return {}, []
@@ -57,8 +62,10 @@ def refresh_open_positions(db_path: str, config: dict) -> tuple[dict, list[dict]
         if ticker not in chains:
             chains[ticker] = _chain(ticker)
         chain = chains[ticker]
-        price = market_data.find_contract_price(chain, pos["option_type"], pos["strike"])
-        row = market_data.find_contract_row(chain, pos["option_type"], pos["strike"])
+        price = market_data.find_contract_price(chain, pos["option_type"], pos["strike"],
+                                                pos["expiration"])
+        row = market_data.find_contract_row(chain, pos["option_type"], pos["strike"],
+                                            pos["expiration"])
         spread = market_data.contract_spread_pct(row) if row is not None else None
         if price is None:
             continue
@@ -156,21 +163,30 @@ def place_trade(db_path: str, config: dict, ticker: str, option_type: str,
     }
 
 
-def close_position(db_path: str, position_id: int) -> dict:
+def close_position(db_path: str, config: dict, position_id: int) -> dict:
     """Close at the live bid-side price when one is available, else at the last
-    price the worker saw (and, failing that, flat at entry)."""
+    price the worker saw. An expired contract settles at intrinsic value
+    instead - it can't be sold. With no price at all the close is refused
+    rather than booked flat at entry, which would hide a loss."""
     position = next((row for row in storage.get_open_positions(db_path)
                      if row["id"] == position_id), None)
     if position is None:
         return {"ok": False, "message": "That position is no longer open."}
 
-    chain = _chain(position["ticker"])
-    live_price = market_data.find_contract_price(chain, position["option_type"],
-                                                 position["strike"])
-    exit_price = live_price if live_price is not None else position["current_price"]
-    if exit_price is None:
-        exit_price = position["entry_price"]
-    reason = position["suggested_exit_reason"] or "manual"
+    if is_expired(config, position["expiration"]):
+        exit_price = expiry_settlement_price(
+            config, db_path, position["ticker"], position["option_type"],
+            position["strike"], position["expiration"])
+        reason = "expired"
+    else:
+        chain = _chain(position["ticker"])
+        live_price = market_data.find_contract_price(chain, position["option_type"],
+                                                     position["strike"], position["expiration"])
+        exit_price = live_price if live_price is not None else position["current_price"]
+        if exit_price is None:
+            return {"ok": False, "message": "No price for that contract yet - "
+                                            "try again in a moment."}
+        reason = position["suggested_exit_reason"] or "manual"
 
     pnl = engine.close(db_path, position_id, exit_price, reason)
     if pnl is None:

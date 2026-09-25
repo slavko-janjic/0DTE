@@ -681,3 +681,30 @@ def test_heartbeat_age_reflects_a_stale_write(tmp_path):
         c.execute("UPDATE worker_heartbeat SET updated_at = ? WHERE id = 1", (stale,))
     hb = storage.get_heartbeat(path)
     assert hb["age_seconds"] > 300    # ~10 min -> clearly stale
+
+
+def test_effective_weights_follow_the_configs_categories(tmp_path):
+    # an override saved before signals were removed/added: dead keys are
+    # ignored, and a category the override never knew falls back to config
+    path = make_temp_db(tmp_path)
+    config = {"weights": {"technicals": 0.4, "order_flow": 0.3, "volatility_regime": 0.3}}
+    storage.set_weight_overrides(path, "QQQ", {"technicals": 0.2, "order_flow": 0.1,
+                                               "trump_news": 0.7})
+    assert storage.effective_weights(path, config, "QQQ") == {
+        "technicals": 0.2, "order_flow": 0.1, "volatility_regime": 0.3}
+
+
+def test_get_final_spot_picks_the_last_print_in_the_window(tmp_path):
+    path = make_temp_db(tmp_path)
+    for ts, spot in [("2026-09-24T19:58:00+00:00", 501.0),
+                     ("2026-09-24T19:59:30+00:00", 502.5),
+                     ("2026-09-25T14:00:00+00:00", 510.0)]:   # next day - outside
+        storage.insert_signal_snapshot(path, "QQQ", "bullish", 50.0, 0.5, "r", {},
+                                       spot_price=spot)
+        with storage.connect(path) as conn:
+            conn.execute("UPDATE signal_snapshots SET timestamp = ? WHERE id = "
+                         "(SELECT MAX(id) FROM signal_snapshots)", (ts,))
+    assert storage.get_final_spot(path, "QQQ", "2026-09-24T13:30:00+00:00",
+                                  "2026-09-24T20:05:00+00:00") == 502.5
+    assert storage.get_final_spot(path, "SPY", "2026-09-24T13:30:00+00:00",
+                                  "2026-09-24T20:05:00+00:00") is None

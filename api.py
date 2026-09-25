@@ -225,7 +225,7 @@ def post_trade(request: TradeRequest) -> dict:
 
 @app.post("/api/position/{position_id}/close")
 def post_close(position_id: int) -> dict:
-    result = _ok_or_400(live.close_position(db_path, position_id))
+    result = _ok_or_400(live.close_position(db_path, config, position_id))
     result["positions"] = payloads.positions_payload(db_path, config)
     return result
 

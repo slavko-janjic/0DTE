@@ -88,7 +88,7 @@ def test_worker_health_without_a_heartbeat_is_never_run(db):
 
 
 def test_wallet_totals_include_open_exposure(db, config):
-    engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 2, 0.4)
+    engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 2, 0.4)
     wallet = payloads.wallet(db, config)
     assert wallet["open_exposure"] == pytest.approx(280.0)
     assert wallet["balance"] == pytest.approx(10000 - 280.0)
@@ -176,7 +176,7 @@ def test_signal_history_is_empty_not_an_error_without_data(db, config):
 # --- positions / history / calendar --------------------------------------
 
 def test_position_rows_value_at_the_live_price_when_one_is_supplied(db, config):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 3, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 3, 0.4)
     rows = payloads.position_rows(db, config, {position_id: {"price": 1.75, "spread_pct": 4.2}})
     assert rows[0]["pnl"] == pytest.approx((1.75 - 1.40) * 3 * 100)
     assert rows[0]["pnl_pct"] == pytest.approx(25.0)
@@ -185,7 +185,7 @@ def test_position_rows_value_at_the_live_price_when_one_is_supplied(db, config):
 
 
 def test_position_rows_fall_back_to_the_workers_last_price(db, config):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 3, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 3, 0.4)
     storage.update_position_price(db, position_id, 1.20)
     rows = payloads.position_rows(db, config, {})
     assert rows[0]["current_price"] == 1.20
@@ -193,7 +193,7 @@ def test_position_rows_fall_back_to_the_workers_last_price(db, config):
 
 
 def test_trade_history_labels_a_manual_exit_as_you_closed(db, config):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
     engine.close(db, position_id, 1.80, "manual")
     trade = payloads.trade_history(db, config)["trades"][0]
     assert trade["exit_reason"] == "you closed"
@@ -201,7 +201,7 @@ def test_trade_history_labels_a_manual_exit_as_you_closed(db, config):
 
 
 def test_calendar_buckets_realized_pnl_by_exit_day(db, config):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
     engine.close(db, position_id, 1.80, "profit_target")
     today = datetime.now(MARKET_TZ)
     calendar = payloads.calendar_payload(db, config, today.year, today.month)
@@ -237,7 +237,7 @@ def test_cost_payload_reports_the_intraday_curve(db, config):
 
 def test_autopilot_payload_reports_mode_and_record(db, config):
     storage.set_autopilot_state(db, "continuous")
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4,
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4,
                              opened_by="auto")
     engine.close(db, position_id, 2.10, "profit_target")
     payload = payloads.autopilot_payload(db, config)
@@ -259,7 +259,7 @@ class FakeChain:
     """Just enough of an OptionChainSnapshot for the buy path."""
     def __init__(self, bid=1.90, ask=2.10):
         self.spot = 721.35
-        self.expiration = "2026-09-23"
+        self.expiration = "2099-01-02"
         self.contract = {"strike": 721.0, "bid": bid, "ask": ask, "lastPrice": 2.0}
         self.calls = [self.contract]
         self.puts = [self.contract]
@@ -271,9 +271,9 @@ def fake_market(monkeypatch):
     monkeypatch.setattr(live.market_data, "get_option_chain", lambda ticker: chain)
     monkeypatch.setattr(live.market_data, "find_atm_contract", lambda frame, spot: frame[0])
     monkeypatch.setattr(live.market_data, "find_contract_price",
-                        lambda chain, option_type, strike: 1.90)
+                        lambda chain, option_type, strike, expiration=None: 1.90)
     monkeypatch.setattr(live.market_data, "find_contract_row",
-                        lambda chain, option_type, strike: chain.contract if chain else None)
+                        lambda chain, option_type, strike, expiration=None: chain.contract if chain else None)
     return chain
 
 
@@ -310,21 +310,21 @@ def test_place_trade_rejects_an_untracked_ticker(db, config, fake_market):
 
 
 def test_close_position_credits_the_balance_once(db, config, fake_market):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 2, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 2, 0.4)
     balance_after_buy = storage.get_balance(db)
 
-    result = live.close_position(db, position_id)
+    result = live.close_position(db, config, position_id)
     assert result["ok"] is True
     assert storage.get_balance(db) == pytest.approx(balance_after_buy + 1.90 * 2 * 100)
 
     # a second close (worker racing the UI) must not credit again
-    again = live.close_position(db, position_id)
+    again = live.close_position(db, config, position_id)
     assert again["ok"] is False
     assert storage.get_balance(db) == pytest.approx(balance_after_buy + 1.90 * 2 * 100)
 
 
 def test_refresh_open_positions_auto_closes_on_the_profit_target(db, config, fake_market):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.00, 1, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.00, 1, 0.4)
     storage.set_position_exit_targets(db, position_id, 50, -35)
 
     quotes, closed = live.refresh_open_positions(db, config)   # live price 1.90 = +90%
@@ -334,7 +334,7 @@ def test_refresh_open_positions_auto_closes_on_the_profit_target(db, config, fak
 
 
 def test_refresh_open_positions_keeps_a_position_short_of_its_target(db, config, fake_market):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.80, 1, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.80, 1, 0.4)
     storage.set_position_exit_targets(db, position_id, 50, -35)
     quotes, closed = live.refresh_open_positions(db, config)   # +5.6%
     assert closed == []
@@ -342,7 +342,7 @@ def test_refresh_open_positions_keeps_a_position_short_of_its_target(db, config,
 
 
 def test_set_targets_stores_the_stop_as_a_negative(db, config):
-    position_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
     live.set_targets(db, position_id, 30, 20)
     position = storage.get_open_positions(db)[0]
     assert position["profit_target_pct"] == 30
@@ -367,9 +367,9 @@ def test_set_autopilot_mode_rejects_an_unknown_mode(db, config):
 
 
 def test_clear_history_keeps_open_positions_and_balance(db, config):
-    closed_id = engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4)
+    closed_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
     engine.close(db, closed_id, 1.80, "manual")
-    engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4)
+    engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
     balance = storage.get_balance(db)
 
     live.clear_history(db)
@@ -471,7 +471,7 @@ def test_revert_calibration_clears_overrides_inversions_and_bands(db, config):
 
 def test_overview_exposes_armed_tickers_and_open_auto_positions(db, config, monkeypatch):
     storage.set_autopilot_state(db, "continuous")
-    engine.buy(db, "QQQ", "call", 721.0, "2026-09-23", 1.40, 1, 0.4, opened_by="auto")
+    engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4, opened_by="auto")
     monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: False)
 
     autopilot = payloads.overview(db, config)["autopilot"]
@@ -491,3 +491,30 @@ def test_autopilot_intents_are_the_workers_own_decision(db, config, monkeypatch)
     assert intents[0]["lean"] == "call"
     # armed or not, the decision always carries its reason
     assert intents[0]["would_enter"] or intents[0]["blocker"]
+
+
+def test_close_position_refuses_rather_than_booking_flat_without_a_price(db, config, monkeypatch):
+    monkeypatch.setattr(live.market_data, "get_option_chain", lambda ticker: None)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
+    balance = storage.get_balance(db)
+    result = live.close_position(db, config, position_id)
+    assert result["ok"] is False
+    assert storage.get_balance(db) == balance
+    assert len(storage.get_open_positions(db)) == 1
+
+
+def test_close_position_settles_an_expired_contract(db, config, fake_market):
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2020-01-02", 1.40, 1, 0.4)
+    result = live.close_position(db, config, position_id)   # no final spot -> 0.00
+    assert result["ok"] is True
+    closed = storage.get_closed_positions(db)[0]
+    assert closed["exit_reason"] == "expired"
+    assert closed["exit_price"] == 0.0     # not the live 1.90 of some other expiry
+
+
+def test_refresh_settles_expired_positions_instead_of_repricing_them(db, config, fake_market):
+    engine.buy(db, "QQQ", "call", 721.0, "2020-01-02", 1.40, 1, 0.4)
+    quotes, _closed = live.refresh_open_positions(db, config)
+    assert quotes == {}
+    assert storage.get_open_positions(db) == []
+    assert storage.get_closed_positions(db)[0]["exit_reason"] == "expired"
