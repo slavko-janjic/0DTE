@@ -210,3 +210,14 @@ def test_inverted_strategy_not_shaken_out_by_the_signal_it_fades():
     # -> against the put -> that IS a reversal for this strategy
     flipped = shadow_exit_score(entry_cfg, -0.65)
     assert evaluate_exit(position, 1.00, flipped, 200, FADE_EXIT) == "signal_reversal"
+
+
+def test_shadow_positive_gamma_penalty_mirrors_the_autopilot():
+    from paper_trading.shadow import should_shadow_enter
+    entry = {"min_confidence_pct": 55, "positive_gamma_confidence_penalty": 10}
+    args = dict(direction="bullish", confidence_pct=60.0, minutes_since_open=60,
+                minutes_to_close=240, subscores={}, has_open_for_ticker=False, entries_today=0)
+    assert should_shadow_enter(entry, gamma_regime="negative", **args) == "call"
+    assert should_shadow_enter(entry, gamma_regime="positive", **args) is None   # needs 65
+    assert should_shadow_enter({"min_confidence_pct": 55}, gamma_regime="positive",
+                               **args) == "call"                                # off by default

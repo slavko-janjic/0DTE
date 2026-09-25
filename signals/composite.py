@@ -12,9 +12,13 @@ class CompositeSignal:
     ticker: str
     composite_score: float          # -1..1
     direction: str                  # 'bullish' | 'bearish' | 'neutral'
-    confidence_pct: float           # 0..100
+    confidence_pct: float           # 0..100 - what's displayed (calibrated when a map exists)
     recommendation: str
     subscores_used: dict[str, float]
+    # |composite| * 100, before calibration - what grading keys off
+    raw_confidence_pct: float | None = None
+    # what the autopilot gates on (accuracy.gate_confidence); defaults to raw
+    gate_confidence_pct: float | None = None
 
 
 def compute_composite_score(subscores: dict[str, float | None], weights: dict[str, float]) -> float | None:
@@ -65,4 +69,5 @@ def compute_signal(
         ticker=ticker, composite_score=score, direction=direction,
         confidence_pct=confidence_pct, recommendation=recommendation,
         subscores_used=subscores_used,
+        raw_confidence_pct=confidence_pct, gate_confidence_pct=confidence_pct,
     )

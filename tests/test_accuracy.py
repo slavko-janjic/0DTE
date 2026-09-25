@@ -568,3 +568,31 @@ def test_plan_calibration_confidence_map_ignores_an_older_composite():
         "QQQ", history, {"technicals": 1.0}, [], [],
         _cal_cfg(confidence_min_graded=20, composite_since=cutoff), date(2026, 7, 7))
     assert not any(a["kind"] == "confidence_map" for a in actions)
+
+
+# --- the autopilot's gate: a band's lower confidence bound -------------------
+
+THIN_BAND = [{"lo": 0, "hi": 20, "observed_accuracy_pct": 56.1,
+              "count": 900, "independent_count": 41}]
+
+
+def test_wilson_lower_bound_known_values():
+    assert accuracy.wilson_lower_bound(56.1, 41) == pytest.approx(43.4, abs=0.1)
+    assert accuracy.wilson_lower_bound(56.1, 41, z=0) == pytest.approx(56.1)  # z=0: the estimate
+    assert accuracy.wilson_lower_bound(56.1, 4000) == pytest.approx(54.8, abs=0.1)  # tightens with n
+    assert accuracy.wilson_lower_bound(100.0, 3) > 0                     # sane at the edges
+    assert accuracy.wilson_lower_bound(50.0, 0) == 0.0
+
+
+def test_gate_confidence_uses_the_lower_bound_not_the_estimate():
+    # the real case: raw 6% displayed as 56% cleared a 55% gate
+    assert accuracy.calibrated_confidence(6.0, THIN_BAND, 10) == pytest.approx(56.1)
+    gate = accuracy.gate_confidence(6.0, THIN_BAND, 10)
+    assert gate < 55 and gate == pytest.approx(43.4, abs=0.1)
+    assert accuracy.gate_confidence(6.0, THIN_BAND, 10, z=0) == pytest.approx(56.1)
+
+
+def test_gate_confidence_falls_back_to_raw_like_the_display_does():
+    assert accuracy.gate_confidence(62.0, None) == 62.0                  # no map yet
+    assert accuracy.gate_confidence(25.0, THIN_BAND, 10) == 25.0         # outside every band
+    assert accuracy.gate_confidence(6.0, THIN_BAND, 50) == 6.0           # band too thin to trust

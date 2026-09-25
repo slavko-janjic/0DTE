@@ -575,3 +575,23 @@ def test_long_chart_ranges_are_thinned_but_keep_the_latest_point():
     assert thinned[0] == 0 and thinned[-1] == 4999
     assert thinned == sorted(thinned)
     assert payloads._thin(items[:390], 800) == items[:390]    # a session is untouched
+
+
+def test_autopilot_intents_gate_on_the_band_lower_bound(db, config, monkeypatch):
+    # raw 6%, shown as its band's 56% hit rate - but 41 calls only support ~43%
+    add_signal(db, "QQQ", confidence=6.0, calibrated=56.1, direction="bullish")
+    storage.set_confidence_bands(db, "QQQ", [
+        {"lo": 0, "hi": 20, "observed_accuracy_pct": 56.1, "count": 900, "independent_count": 41}])
+    storage.set_autopilot_state(db, "continuous")
+    monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(payloads, "minutes_since_market_open", lambda *args, **kwargs: 45)
+    monkeypatch.setattr(payloads, "minutes_to_market_close", lambda *args, **kwargs: 300)
+
+    intent = payloads.autopilot_intents(db, config)[0]
+    assert intent["would_enter"] is False
+    assert intent["shown_confidence_pct"] == pytest.approx(56.1)
+    assert intent["confidence_pct"] == pytest.approx(43.4, abs=0.1)
+    assert "56% shown" in intent["blocker"] and "supports 43%" in intent["blocker"]
+
+    config["calibration"] = {"gate_lower_bound_z": 0}          # the old rule would have armed
+    assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True

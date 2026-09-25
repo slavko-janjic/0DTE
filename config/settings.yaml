@@ -125,7 +125,7 @@ weights:
 # dashboard - these are the tunables). Manual trading always stays available.
 autopilot:
   tickers: [QQQ, SPY]           # only auto-enter these tickers (empty/absent = all polled tickers)
-  min_confidence_pct: 55        # only enter on signals at least this confident
+  min_confidence_pct: 55        # only enter on signals at least this confident (on calibrated maps, the band's lower bound - see calibration.gate_lower_bound_z)
   profit_target_pct: 50         # auto-set on every auto trade at entry
   stop_loss_pct: -35            # auto-set on every auto trade at entry (negative)
   risk_per_trade_pct: 5         # % of current balance risked per auto trade
@@ -150,7 +150,31 @@ autopilot:
 # trades before they mean anything (multiple-testing: with several strategies
 # running, one will look great by luck early on).
 shadow_strategies:
-  - name: baseline            # mirrors the real autopilot's opening-range setup
+  # --- the autopilot's confidence gate, old vs new (added 2026-09-25) --------
+  # Both mirror the real autopilot: QQQ/SPY, the 30-90 min window, the
+  # positive-gamma penalty, and the exits an auto position gets. They differ
+  # only in the confidence the 55% gate checks: autopilot_point is the rule it
+  # traded on until 2026-09-25 (the calibrated band's point estimate),
+  # autopilot_lb the lower bound it uses now. Same data, same fills - the
+  # leaderboard settles which gate was right. reversal 101 = never: a reversal
+  # only SUGGESTS an exit for an auto position, so the autopilot holds through
+  # it. (Catalyst stand-downs and the global daily caps aren't mirrored.)
+  - name: autopilot_point
+    entry: { min_confidence_pct: 55, positive_gamma_confidence_penalty: 10,
+             only_tickers: [QQQ, SPY], window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: autopilot_lb
+    entry: { confidence_basis: gate, min_confidence_pct: 55,
+             positive_gamma_confidence_penalty: 10,
+             only_tickers: [QQQ, SPY], window_start_minutes: 30, window_end_minutes: 90,
+             no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: baseline            # the autopilot's opening-range setup (predates the lower-bound gate)
     entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
              no_entry_last_minutes: 60 }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
@@ -295,6 +319,12 @@ calibration:
   # windows), not raw graded minutes - see weight_suggestion_min_graded above.
   confidence_min_graded: 30     # independent composite calls needed before storing a confidence map
   band_min_count: 10            # independent calls a band needs before it recalibrates a raw confidence
+  # The autopilot gates on the LOWER confidence bound of a band's hit rate
+  # (Wilson, over its independent calls), not the point estimate shown on the
+  # Signals card. Gating on the estimate let a raw 6% QQQ signal clear the 55%
+  # gate because its band was right 56% of the time over just 41 calls (90%
+  # lower bound ~43%). 1.645 = one-sided 90%; 0 = gate on the point estimate.
+  gate_lower_bound_z: 1.645
 
 exit_rules:
   profit_target_pct: 50

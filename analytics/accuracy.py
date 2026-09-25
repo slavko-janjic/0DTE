@@ -7,6 +7,7 @@ ahead with a known spot price - until then there's nothing to grade it against.
 Neutral signals ("no clear edge") are excluded since they made no directional call.
 """
 import json
+import math
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -437,15 +438,57 @@ def calibrated_confidence(
     min_band_count is compared against the band's independent_count; maps stored
     before that field existed fall back to the raw `count` and self-heal on the
     next nightly calibration pass."""
-    if not bands:
+    band = _trusted_band(raw_pct, bands, min_band_count)
+    if band is None:
         return raw_pct
-    for band in bands:
+    return max(0.0, min(100.0, band["observed_accuracy_pct"]))
+
+
+# One-sided 90%: the gate only trusts a hit rate the sample can back up.
+DEFAULT_GATE_Z = 1.645
+
+
+def gate_confidence(
+    raw_pct: float, bands: list[dict] | None, min_band_count: int = 5,
+    z: float = DEFAULT_GATE_Z,
+) -> float:
+    """The confidence the autopilot GATES on: the lower confidence bound of
+    the matched band's observed hit rate, not its point estimate.
+
+    calibrated_confidence() is the right number to display, but gating on it
+    compared a thin-sample point estimate against a threshold set on the raw
+    scale: a QQQ band right 56% of the time over 41 independent calls let a
+    raw 6% signal clear the 55% gate, though its 90% lower bound is ~43%.
+    Falls back to raw exactly like calibrated_confidence (no trusted band
+    means the raw scale the gate was designed for). z=0 gives back the point
+    estimate - the old rule."""
+    band = _trusted_band(raw_pct, bands, min_band_count)
+    if band is None:
+        return raw_pct
+    n = band.get("independent_count", band.get("count", 0))
+    return wilson_lower_bound(band["observed_accuracy_pct"], n, z)
+
+
+def wilson_lower_bound(accuracy_pct: float, n: int, z: float = DEFAULT_GATE_Z) -> float:
+    """Wilson score lower bound (percent) for a hit rate seen over n trials -
+    well-behaved for small n and rates near 0/100, unlike p - z*SE."""
+    if n <= 0:
+        return 0.0
+    p = max(0.0, min(1.0, accuracy_pct / 100.0))
+    denominator = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, min(100.0, (centre - margin) / denominator * 100.0))
+
+
+def _trusted_band(raw_pct: float, bands: list[dict] | None, min_band_count: int) -> dict | None:
+    """The stored band a raw confidence falls in, if it has enough INDEPENDENT
+    samples to be trusted; else None."""
+    for band in bands or []:
         if band["lo"] <= raw_pct < band["hi"]:
             sample_size = band.get("independent_count", band.get("count", 0))
-            if sample_size >= min_band_count:
-                return max(0.0, min(100.0, band["observed_accuracy_pct"]))
-            return raw_pct
-    return raw_pct
+            return band if sample_size >= min_band_count else None
+    return None
 
 
 def history_snapshots(rows) -> list[dict]:
