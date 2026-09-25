@@ -5,3 +5,7 @@ pyyaml>=6.0
 pytest>=8.0
 pandas>=2.2
 numpy>=1.26
+fastapi>=0.110
+uvicorn[standard]>=0.27
+httpx>=0.27   # fastapi's TestClient (tests/test_api_endpoints.py)
+pywebpush>=2.0   # Web Push for autopilot alerts with the app closed (webapi/push.py)

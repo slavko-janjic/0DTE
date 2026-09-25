@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 storage/*.db
+# Web Push (VAPID) private key - see webapi/push.py
+storage/*.pem
 storage/backups/
 .claude/launch.json
 worker.log
