@@ -13,6 +13,8 @@ Non-negotiables preserved from the Streamlit dashboard:
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -31,19 +33,45 @@ log = logging.getLogger(__name__)
 AUTOPILOT_MODES = ("off", "day", "continuous")
 
 
-def _chain(ticker: str):
-    """A chain fetch that degrades to None instead of raising: a flaky quote
-    source must read as 'unavailable' in the UI, never as a 500."""
-    try:
-        return market_data.get_option_chain(ticker)
-    except Exception:  # noqa: BLE001 - any upstream failure is just "no quote"
-        log.warning("option chain fetch failed for %s", ticker, exc_info=True)
-        return None
+# --- option chains: a short shared cache ---------------------------------
+# Every positions refresh (each worker cycle, per open device) and every quote
+# preview used to fetch a fresh chain - ~3 Yahoo requests and 0.5-0.9 s each,
+# per ticker, the page waiting on it. The worker only reprices every minute, so
+# a chain a few seconds old costs nothing; entries and exits still fetch fresh
+# (max_age=0) so fills stay honest. One lock per ticker makes concurrent
+# requests share a single fetch instead of each making their own.
+CHAIN_TTL_SECONDS = 15
+
+_clock = time.monotonic
+_chain_cache: dict[str, tuple[float, object]] = {}
+_chain_locks: dict[str, threading.Lock] = {}
+_chain_locks_guard = threading.Lock()
+
+
+def _chain(ticker: str, max_age: float = CHAIN_TTL_SECONDS):
+    """The ticker's option chain, reused if fetched within max_age seconds
+    (0 = always fetch). Degrades to None instead of raising: a flaky quote
+    source must read as 'unavailable' in the UI, never as a 500. Failures
+    aren't cached, so the next request retries."""
+    with _chain_locks_guard:
+        lock = _chain_locks.setdefault(ticker, threading.Lock())
+    with lock:
+        cached = _chain_cache.get(ticker)
+        if cached is not None and max_age > 0 and _clock() - cached[0] <= max_age:
+            return cached[1]
+        try:
+            chain = market_data.get_option_chain(ticker)
+        except Exception:  # noqa: BLE001 - any upstream failure is just "no quote"
+            log.warning("option chain fetch failed for %s", ticker, exc_info=True)
+            chain = None
+        if chain is not None:
+            _chain_cache[ticker] = (_clock(), chain)
+        return chain
 
 
 def refresh_open_positions(db_path: str, config: dict) -> tuple[dict, list[dict]]:
-    """Re-price every open position from a fresh chain and run the per-trade
-    profit-target / stop-loss check.
+    """Re-price every open position from a live chain (at most CHAIN_TTL_SECONDS
+    old) and run the per-trade profit-target / stop-loss check.
 
     Returns ({position_id: {price, spread_pct}}, [auto-close notices]). Positions
     whose quote is unavailable simply keep the worker's last stored price.
@@ -84,7 +112,9 @@ def refresh_open_positions(db_path: str, config: dict) -> tuple[dict, list[dict]
 
 def quote(ticker: str, option_type: str, amount: float | None = None) -> dict:
     """The ATM contract the Buy button would actually hit, at its ask-side fill
-    price - so the form can show what the trade costs before it is placed."""
+    price - so the form can show what the trade costs before it is placed.
+    A preview, so a chain up to CHAIN_TTL_SECONDS old is fine; the trade itself
+    re-quotes fresh."""
     chain = _chain(ticker)
     if chain is None:
         return {"available": False, "message": "Couldn't fetch a live quote right now."}
@@ -126,7 +156,7 @@ def place_trade(db_path: str, config: dict, ticker: str, option_type: str,
     if not amount or amount <= 0:
         return {"ok": False, "message": "Enter an amount to risk."}
 
-    chain = _chain(ticker)
+    chain = _chain(ticker, max_age=0)       # a fill uses a fresh quote, never a cached one
     if chain is None:
         return {"ok": False, "message": "Couldn't fetch a live quote right now - "
                                         "try again in a moment."}
@@ -179,7 +209,7 @@ def close_position(db_path: str, config: dict, position_id: int) -> dict:
             position["strike"], position["expiration"])
         reason = "expired"
     else:
-        chain = _chain(position["ticker"])
+        chain = _chain(position["ticker"], max_age=0)   # fresh, like an entry
         live_price = market_data.find_contract_price(chain, position["option_type"],
                                                      position["strike"], position["expiration"])
         exit_price = live_price if live_price is not None else position["current_price"]

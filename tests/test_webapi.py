@@ -54,6 +54,15 @@ def config(tmp_path):
     return make_config(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def fresh_chain_cache():
+    """live caches option chains module-wide; one test's fake chain must never
+    answer for the next test."""
+    live._chain_cache.clear()
+    yield
+    live._chain_cache.clear()
+
+
 def add_signal(db_path, ticker="QQQ", *, minutes_ago=1, direction="bullish", confidence=72.0,
                calibrated=None, score=0.4, spot=721.0, streak=3, gamma="negative"):
     timestamp = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
@@ -671,3 +680,73 @@ def test_push_alert_state_follows_the_same_rules(db, config, open_session):
     assert push.alert_state(db, config)["armed"] == {}
     add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=0)
     assert set(push.alert_state(db, config)["armed"]) == {"QQQ"}
+
+
+# --- option chain cache -------------------------------------------------------
+
+@pytest.fixture()
+def counted_chains(monkeypatch):
+    """get_option_chain returning a FakeChain and counting the fetches, on a
+    clock the test moves by hand."""
+    calls = []
+    monkeypatch.setattr(live.market_data, "get_option_chain",
+                        lambda ticker: calls.append(ticker) or FakeChain())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(live, "_clock", lambda: clock["now"])
+    return calls, clock
+
+
+# fake_market comes BEFORE counted_chains: both patch get_option_chain and the
+# later one wins - the counter must be the one in force (fake_market's pricing
+# helpers stay patched either way).
+
+def test_refreshes_within_the_ttl_share_one_fetch(db, config, fake_market, counted_chains):
+    calls, clock = counted_chains
+    engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.80, 1, 0.4)
+    live.refresh_open_positions(db, config)
+    clock["now"] += live.CHAIN_TTL_SECONDS - 1
+    live.refresh_open_positions(db, config)
+    live.quote("QQQ", "call", 500.0)             # the trade form's preview reuses it too
+    assert calls == ["QQQ"]
+    clock["now"] += 2                            # past the TTL -> fetched again
+    live.refresh_open_positions(db, config)
+    assert calls == ["QQQ", "QQQ"]
+
+
+def test_trades_and_closes_always_fetch_fresh(db, config, fake_market, counted_chains):
+    calls, _clock = counted_chains
+    live.quote("QQQ", "call", 500.0)                               # cached...
+    assert live.place_trade(db, config, "QQQ", "call", 500.0)["ok"]  # ...but a fill re-quotes
+    position_id = storage.get_open_positions(db)[0]["id"]
+    assert live.close_position(db, config, position_id)["ok"]       # and so does an exit
+    assert calls == ["QQQ", "QQQ", "QQQ"]
+
+
+def test_a_failed_fetch_is_not_cached(db, config, fake_market, monkeypatch):
+    results = [None, FakeChain()]
+    monkeypatch.setattr(live.market_data, "get_option_chain", lambda ticker: results.pop(0))
+    assert live.quote("QQQ", "call", 500.0)["available"] is False
+    assert live.quote("QQQ", "call", 500.0)["available"] is True     # retried, not stuck
+
+
+def test_concurrent_requests_share_a_single_fetch(monkeypatch):
+    import threading
+    release = threading.Event()
+    calls = []
+
+    def slow_fetch(ticker):
+        calls.append(ticker)
+        release.wait(timeout=5)
+        return FakeChain()
+
+    monkeypatch.setattr(live.market_data, "get_option_chain", slow_fetch)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(live._chain("QQQ")))
+               for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    release.set()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert calls == ["QQQ"]                       # one fetch served all four
+    assert len(results) == 4 and all(result is results[0] for result in results)
