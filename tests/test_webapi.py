@@ -617,3 +617,57 @@ def test_overview_and_intents_surface_an_expired_calendar(db, config, monkeypatc
 def test_overview_calendar_is_empty_when_covered(db, config):
     config["market_catalysts_through"] = config["market_holidays_through"] = "2099-12-31"
     assert payloads.overview(db, config)["calendar"] == []
+
+
+# --- ARMED must never fire where the worker won't trade -------------------
+
+@pytest.fixture()
+def open_session(monkeypatch):
+    """Market open, 45 min in - inside every entry window the config allows."""
+    monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(payloads, "minutes_since_market_open", lambda *args, **kwargs: 45)
+    monkeypatch.setattr(payloads, "minutes_to_market_close", lambda *args, **kwargs: 300)
+
+
+def _market_today():
+    return datetime.now(MARKET_TZ).date()
+
+
+def test_a_fresh_strong_signal_arms(db, config, open_session):
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=1)
+    storage.set_autopilot_state(db, "day", _market_today().isoformat())
+    assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True
+
+
+def test_a_day_session_from_another_date_never_arms(db, config, open_session):
+    # the worker disarms a past session after the close - but not while it's down
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=1)
+    yesterday = (_market_today() - timedelta(days=1)).isoformat()
+    storage.set_autopilot_state(db, "day", yesterday)
+    intent = payloads.autopilot_intents(db, config)[0]
+    assert intent["would_enter"] is False
+    assert intent["blocker"] == f"the {yesterday} day session is over - arm a new one to trade today"
+
+    tomorrow = (_market_today() + timedelta(days=1)).isoformat()
+    storage.set_autopilot_state(db, "day", tomorrow)
+    assert payloads.autopilot_intents(db, config)[0]["blocker"] == \
+        f"day session is armed for {tomorrow}, not today"
+
+
+def test_a_stale_signal_never_arms(db, config, open_session):
+    # a dead worker's last strong signal must not start saying "copy now"
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=20)
+    storage.set_autopilot_state(db, "continuous")
+    intent = payloads.autopilot_intents(db, config)[0]
+    assert intent["would_enter"] is False
+    assert intent["blocker"].startswith("signal is stale (20 min ago)")
+
+
+def test_push_alert_state_follows_the_same_rules(db, config, open_session):
+    # the push watcher's input - what decides a "copy now" notification
+    from webapi import push
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=20)
+    storage.set_autopilot_state(db, "continuous")
+    assert push.alert_state(db, config)["armed"] == {}
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=0)
+    assert set(push.alert_state(db, config)["armed"]) == {"QQQ"}

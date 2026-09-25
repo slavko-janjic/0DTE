@@ -681,6 +681,22 @@ def cost_payload(db_path: str, config: dict, ticker: str) -> dict:
 
 # --- autopilot ------------------------------------------------------------
 
+# A signal older than this (or 3 poll intervals, if longer) isn't one the
+# worker is acting on - it only enters on the signal it computed this cycle.
+MIN_SIGNAL_FRESH_SECONDS = 180
+
+
+def _day_session_block(mode: str, armed_date: str | None, today: date) -> str | None:
+    """A day session only trades on its armed date (storage.get_autopilot_enabled).
+    The worker disarms a past one after the close - but not while it's down."""
+    if mode != "day" or armed_date == today.isoformat():
+        return None
+    if armed_date and armed_date > today.isoformat():
+        return f"day session is armed for {armed_date}, not today"
+    return (f"the {armed_date} day session is over - arm a new one to trade today"
+            if armed_date else "day session has no armed date - re-arm it")
+
+
 def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
                       clock: dict | None = None, now: datetime | None = None,
                       open_rows: list | None = None, closed_rows: list | None = None) -> list[dict]:
@@ -689,14 +705,21 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     `explain_auto_decision` is the function the worker itself calls, so this is
     the real intent rather than a re-implementation of it. Empty while the
     market is closed or autopilot is off - there is nothing it would do.
+
+    This also drives the ARMED banner and push alerts ("copy now"), so it must
+    never arm where the worker won't trade. Beyond the shared guard rails the
+    worker only acts when a day session is armed for TODAY, and only on the
+    signal it computed THIS cycle - so an intent stands down on a day session
+    armed for another date, and on a stale signal (a dead worker's last word).
     """
     ap_cfg = config.get("autopilot", {})
     tickers = ap_cfg.get("tickers") or config["tickers"]
     tz = _tz(config)
     now = now or datetime.now(tz)
     clock = clock or market_clock(config, now)
-    if mode is None:
-        mode, _armed = storage.get_autopilot_state(db_path)
+    armed_date = None
+    if mode is None or mode == "day":
+        mode, armed_date = storage.get_autopilot_state(db_path)
     if not clock["open"] or mode == "off":
         return []
 
@@ -705,7 +728,12 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     catalysts = day_setup_mod.catalysts_for_date(
         config.get("market_catalysts", []), now.date(), tz.key)
     minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts, now, tz.key)
-    calendar_block = day_setup_mod.calendar_blocker(config, now.astimezone(tz).date())
+    today = now.astimezone(tz).date()
+    # hard stops for every ticker, most actionable first
+    stand_down = (_day_session_block(mode, armed_date, today)
+                  or day_setup_mod.calendar_blocker(config, today))
+    fresh_for = timedelta(seconds=max(3 * storage.get_poll_interval_seconds(db_path),
+                                      MIN_SIGNAL_FRESH_SECONDS))
     profit_target = ap_cfg.get("profit_target_pct", 50)
     stop_loss = ap_cfg.get("stop_loss_pct", -35)
 
@@ -717,6 +745,9 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
                             "confidence_pct": None, "direction": None, "blocker": None,
                             "message": "no signal yet this session."})
             continue
+        age = now - datetime.fromisoformat(snap["timestamp"])
+        stale = (f"signal is stale ({_age_text(age)}) - the worker only acts on a "
+                 f"signal from its current cycle" if age > fresh_for else None)
         shown, _raw = display_confidence(snap)
         # the worker gates on the band's lower bound, not the shown estimate
         gate = gate_confidence_for(config, snap["confidence"],
@@ -729,7 +760,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
             starting_balance=config["account"]["starting_balance"], now=now,
             tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=snap["gamma_regime"],
-            calendar_blocker=calendar_block,
+            stand_down_reason=stand_down or stale,
         )
         blocker = intent.blocker
         if blocker and blocker.startswith("confidence") and shown is not None \

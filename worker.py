@@ -379,7 +379,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             tz_name=tz_name,
             minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=gamma_regime,
-            calendar_blocker=calendar_block,
+            stand_down_reason=calendar_block,
         )
         intents.append((intent, ticker, signal, chain))
 
