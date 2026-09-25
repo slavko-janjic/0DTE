@@ -89,23 +89,28 @@ front of the app without exposing it outside your tailnet:
 If the toggle can't turn on at all, it says why (not HTTPS, or not installed on
 iPhone). Push needs the `pywebpush` package (in `requirements.txt`). The server
 generates its push key on first start as `vapid_private.pem`, beside the database
-(`%LOCALAPPDATA%\0DTE\` by default - see below). If that file is deleted, each
+(`%USERPROFILE%\0DTE-data\` by default - see below). If that file is deleted, each
 phone just has to turn notifications on again.
 
 ### Where the data lives
 
-The live database is at `%LOCALAPPDATA%\0DTE\0dte.db` (`database.path` in
+The live database is at `%USERPROFILE%\0DTE-data\0dte.db` (`database.path` in
 `config/settings.yaml`), deliberately **outside** the OneDrive-synced project
 folder: it's written every minute, and OneDrive locking it mid-write can fail a
 commit. Nightly backups go to `storage/backups/` (`database.backup_dir`), which
 *is* synced - each backup is written once and never touched again, so OneDrive
 copies them safely.
 
+Don't put it under `AppData`: Windows redirects a packaged app's AppData writes
+into a private per-app folder, so a tool run from inside one (e.g. the Claude
+desktop app) and the scheduled tasks would each see a different file.
+
 If the worker or dashboard refuses to start with "the database is configured at
 … which doesn't exist yet, but the old one is still at …", the database hasn't
 been moved yet: stop both tasks, copy `storage/0dte.db` and
-`storage/vapid_private.pem` to `%LOCALAPPDATA%\0DTE\`, rename the old
-`0dte.db`, then start the tasks again.
+`storage/vapid_private.pem` to `%USERPROFILE%\0DTE-data\`, rename the old
+`0dte.db`, then start the tasks again. Check through the web app (balance,
+worker pid) that the tasks really use the new file before renaming anything.
 
 ## Notes
 

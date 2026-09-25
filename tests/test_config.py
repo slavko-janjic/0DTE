@@ -68,6 +68,14 @@ def test_shipped_settings_keep_the_live_db_out_of_the_project_folder(no_db_overr
     assert backup_dir(settings).is_relative_to(PROJECT_ROOT)
 
 
+def test_shipped_settings_keep_the_live_db_out_of_appdata(no_db_override):
+    # a packaged app's AppData writes are redirected per app, so a tool run from
+    # inside one and the scheduled tasks would see different files - the first
+    # move to AppData\Local\0DTE started the tasks on an empty database
+    parts = {part.lower() for part in Path(database_path(load_settings())).parts}
+    assert "appdata" not in parts
+
+
 def test_refuses_to_orphan_the_legacy_database(tmp_path, no_db_override):
     legacy = tmp_path / "old" / "0dte.db"
     legacy.parent.mkdir()

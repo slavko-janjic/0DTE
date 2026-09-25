@@ -409,7 +409,13 @@ database:
   # snapshot. ~ and %VARS% expand; a relative path is from the project root.
   # The Web Push key (vapid_private.pem) lives beside it. ZERODTE_DB_PATH
   # overrides this (tests, a second instance on a copy).
-  path: "~/AppData/Local/0DTE/0dte.db"
+  #
+  # NOT under AppData: Windows redirects a packaged app's writes to AppData into
+  # a private per-app folder. Tools run from inside such an app (the Claude
+  # desktop app, for one) would then see a different file than the scheduled
+  # tasks - the first move to AppData\Local\0DTE did exactly that, and the
+  # tasks started on an empty database.
+  path: "~/0DTE-data/0dte.db"
   # Nightly backups stay in the synced folder: each is written once, closed and
   # never touched again, so OneDrive syncs them safely - off-machine copies.
   backup_dir: "storage/backups"
