@@ -596,3 +596,40 @@ def test_gate_confidence_falls_back_to_raw_like_the_display_does():
     assert accuracy.gate_confidence(62.0, None) == 62.0                  # no map yet
     assert accuracy.gate_confidence(25.0, THIN_BAND, 10) == 25.0         # outside every band
     assert accuracy.gate_confidence(6.0, THIN_BAND, 50) == 6.0           # band too thin to trust
+
+
+# --- only grade against the price near the horizon ---------------------------------
+
+def test_a_late_session_call_is_not_graded_on_the_next_mornings_price():
+    # 15:45 ET call; the worker stops at 16:00, so the next price is 09:30 tomorrow
+    evening = datetime(2026, 9, 24, 19, 45, tzinfo=timezone.utc)
+    morning = datetime(2026, 9, 25, 13, 30, tzinfo=timezone.utc)
+    graded = accuracy.evaluate_signal_accuracy(
+        [{"timestamp": evening, "direction": "bullish", "spot_price": 100.0},
+         {"timestamp": morning, "direction": "bullish", "spot_price": 103.0}], 30)
+    assert graded[0]["evaluated"] is False and graded[0]["future_price"] is None
+
+
+def test_grading_price_must_land_within_the_lag_limit():
+    lag = accuracy.GRADE_MAX_LAG_MINUTES
+    on_time = accuracy.evaluate_signal_accuracy(
+        [_snap(0, "bullish", 100.0), _snap(30 + lag, "bullish", 101.0)], 30)
+    assert on_time[0]["evaluated"] is True and on_time[0]["hit"] is True
+    too_late = accuracy.evaluate_signal_accuracy(
+        [_snap(0, "bullish", 100.0), _snap(30 + lag + 1, "bullish", 101.0)], 30)
+    assert too_late[0]["evaluated"] is False
+
+
+def test_a_worker_outage_leaves_calls_ungraded_not_misgraded():
+    # a 2-hour hole in the data mid-session: the price 30 min later is unknown
+    graded = accuracy.evaluate_signal_accuracy(
+        [_snap(0, "bullish", 100.0), _snap(120, "bearish", 95.0)], 30)
+    assert graded[0]["evaluated"] is False
+
+
+def test_an_infinite_lag_restores_the_old_behaviour():
+    import math
+    graded = accuracy.evaluate_signal_accuracy(
+        [_snap(0, "bullish", 100.0), _snap(24 * 60, "bullish", 103.0)], 30,
+        max_lag_minutes=math.inf)
+    assert graded[0]["evaluated"] is True and graded[0]["future_price"] == 103.0

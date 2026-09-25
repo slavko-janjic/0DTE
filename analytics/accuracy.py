@@ -3,8 +3,12 @@ right direction. Takes plain dicts with datetime timestamps rather than DB
 rows, so it's easy to unit test with synthetic data.
 
 A signal is "evaluated" once a later snapshot exists at least horizon_minutes
-ahead with a known spot price - until then there's nothing to grade it against.
-Neutral signals ("no clear edge") are excluded since they made no directional call.
+ahead with a known spot price - and no more than GRADE_MAX_LAG_MINUTES past
+that mark. Until then there's nothing to grade it against; and a price from
+much later (the next morning, after a weekend, across a worker outage) isn't
+the price horizon_minutes later, so the call stays ungraded rather than being
+scored on a move it never predicted. Neutral signals ("no clear edge") are
+excluded since they made no directional call.
 """
 import json
 import math
@@ -16,6 +20,12 @@ from zoneinfo import ZoneInfo
 from signals.composite import direction_from_score
 
 DEFAULT_WINDOW_DAYS = 30
+
+# How late past the horizon a grading price may be and still count as "the
+# price horizon_minutes later". Polling is every minute (5 in early history),
+# so a normal grading price is well inside this; the overnight gap, a weekend
+# or a worker outage are not.
+GRADE_MAX_LAG_MINUTES = 10
 
 
 # --- which history gets graded -----------------------------------------------
@@ -51,14 +61,24 @@ def since_composite(history: list[dict], start: datetime | None) -> list[dict]:
     return [snap for snap in history if snap["timestamp"] >= start]
 
 
-def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float) -> list[dict]:
+def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float,
+                             max_lag_minutes: float | None = None) -> list[dict]:
     """snapshots: ascending by timestamp, each with timestamp/direction/spot_price.
     Returns a new list with 'evaluated', 'hit', and 'future_price' added to each dict.
 
     The grading price is the first LATER snapshot at or past the horizon, found
     by bisection - O(n log n), so a long look-back window stays cheap. (Slicing
     the tail for every snapshot copied the rest of the list each time -
-    quadratic as the window grows.)"""
+    quadratic as the window grows.)
+
+    It must also land within max_lag_minutes (default GRADE_MAX_LAG_MINUTES) of
+    the horizon. The worker only polls during the session, so a call made in
+    its last half hour used to be graded on the NEXT morning's price - the
+    overnight gap, not the call (7.2% of graded QQQ/SPY calls). Those, and
+    calls straddling a weekend or worker outage, now stay ungraded."""
+    lag_minutes = GRADE_MAX_LAG_MINUTES if max_lag_minutes is None else max_lag_minutes
+    # math.inf = no limit (the old behaviour); timedelta itself can't hold infinity
+    max_lag = timedelta.max if math.isinf(lag_minutes) else timedelta(minutes=lag_minutes)
     times = [snap.get("timestamp") for snap in snapshots]
     results = []
     for i, snap in enumerate(snapshots):
@@ -72,7 +92,9 @@ def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float) -> l
         j = bisect_left(times, target_time, lo=i + 1)
         while j < len(snapshots) and snapshots[j].get("spot_price") is None:
             j += 1
-        future_price = snapshots[j]["spot_price"] if j < len(snapshots) else None
+        future_price = None
+        if j < len(snapshots) and snapshots[j]["timestamp"] - target_time <= max_lag:
+            future_price = snapshots[j]["spot_price"]
         if future_price is None:
             results.append(entry)
             continue
