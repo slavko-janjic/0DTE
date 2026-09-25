@@ -19,7 +19,10 @@ from zoneinfo import ZoneInfo
 import single_instance
 
 from analytics import accuracy
-from config import load_settings, poll_interval_seconds
+from config import (
+    DatabaseNotMigrated, backup_dir, check_database_location, database_path, load_settings,
+    poll_interval_seconds,
+)
 from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
@@ -877,7 +880,7 @@ def run_loop(config: dict, db_path: str) -> None:
                 print(f"pre-market setup failed: {exc}")
             # daily off-hours backup - idempotent, skips if today's file exists
             try:
-                storage.backup_db(db_path, Path(db_path).parent / "backups")
+                storage.backup_db(db_path, backup_dir(config))
             except Exception as exc:
                 print(f"backup failed: {exc}")
         # heartbeat every cycle (open or closed) so the dashboard can tell a
@@ -918,7 +921,12 @@ def main() -> None:
         _setup_file_logging()
 
     config = load_settings()
-    db_path = config["database"]["path"]
+    db_path = database_path(config)
+    try:
+        check_database_location(db_path)
+    except DatabaseNotMigrated as exc:
+        print(f"refusing to start: {exc}")
+        sys.exit(2)
     storage.init_db(db_path)
     storage.ensure_account(db_path, config["account"]["starting_balance"])
     storage.ensure_worker_settings(db_path, poll_interval_seconds(config))

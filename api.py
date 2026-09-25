@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from config import load_settings, poll_interval_seconds
+from config import check_database_location, database_path, load_settings, poll_interval_seconds
 from storage import db as storage
 from webapi import live, payloads, push
 
@@ -40,7 +40,9 @@ config = load_settings()
 # ZERODTE_DB_PATH lets a second instance (or a test) run against a copy of the
 # database without touching config/settings.yaml - the worker's path is the one
 # in the config, and nothing here should be able to move it by accident.
-db_path = os.environ.get("ZERODTE_DB_PATH") or config["database"]["path"]
+db_path = database_path(config)
+# never quietly start on a fresh database while the pre-move one still exists
+check_database_location(db_path)
 
 # Same first-run bootstrap the Streamlit app did, so pointing the scheduled task
 # at this process is a drop-in swap.
