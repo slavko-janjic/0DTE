@@ -535,6 +535,7 @@ def positions_payload(db_path: str, config: dict, live: dict | None = None) -> d
 
 def trade_history(db_path: str, config: dict, limit: int = 200) -> dict:
     tz = _tz(config)
+    this_year = datetime.now(tz).year
     rows = []
     for pos in storage.get_closed_positions(db_path)[:limit]:
         exit_time = datetime.fromisoformat(pos["exit_time"]).astimezone(tz) \
@@ -542,7 +543,9 @@ def trade_history(db_path: str, config: dict, limit: int = 200) -> dict:
         reason = pos["exit_reason"] or ""
         rows.append({
             "id": pos["id"],
-            "date": exit_time.strftime("%m-%d") if exit_time else "",
+            # month-day is enough within this year; older rows carry the year
+            "date": (exit_time.strftime("%m-%d") if exit_time.year == this_year
+                     else exit_time.strftime("%Y-%m-%d")) if exit_time else "",
             "exit_time": pos["exit_time"],
             "ticker": pos["ticker"],
             "option_type": pos["option_type"],
@@ -648,7 +651,7 @@ def cost_payload(db_path: str, config: dict, ticker: str) -> dict:
     buckets = spread_by_minute_bucket(storage.get_quote_history(db_path, ticker),
                                       bucket_minutes=30)
     payload = {"ticker": ticker, "rows": rows, "curve": [], "cheapest": [],
-               "at_open": None, "midday": None}
+               "at_open": None, "lowest_pct": None, "lowest_clock": None}
     if not buckets:
         payload["message"] = (f"No quote history for {ticker} yet - the worker logs one "
                               "per cycle during market hours.")
@@ -670,12 +673,13 @@ def cost_payload(db_path: str, config: dict, ticker: str) -> dict:
         for bucket in cheapest_windows(buckets, top=3, min_samples=5)
     ]
     payload["at_open"] = payload["curve"][0]["median_pct"]
-    cheapest_point = min((point for point in payload["curve"]
-                          if point["median_pct"] is not None),
-                         key=lambda point: point["median_pct"], default=None)
-    if cheapest_point:
-        payload["midday"] = cheapest_point["median_pct"]
-        payload["midday_label"] = cheapest_point["clock"]
+    # the single cheapest 30-min bucket (was keyed "midday", though it's
+    # wherever the curve bottoms out - not necessarily mid-day)
+    lowest = min((point for point in payload["curve"] if point["median_pct"] is not None),
+                 key=lambda point: point["median_pct"], default=None)
+    if lowest:
+        payload["lowest_pct"] = lowest["median_pct"]
+        payload["lowest_clock"] = lowest["clock"]
     return payload
 
 
@@ -1018,7 +1022,9 @@ def calibration_payload(db_path: str, config: dict, ticker: str) -> dict:
         "suggestion": suggestion,
         "events": [
             {
-                "when": datetime.fromisoformat(event["created_at"]).strftime("%m-%d %H:%M"),
+                # stored in UTC; shown in market time like every other clock here
+                "when": datetime.fromisoformat(event["created_at"]).astimezone(tz)
+                        .strftime("%m-%d %H:%M"),
                 "ticker": event["ticker"],
                 "action": EVENT_LABELS.get(event["kind"], event["kind"]),
                 "detail": _event_detail(event["kind"], json.loads(event["detail_json"])),

@@ -629,8 +629,8 @@
       : '';
     $('cost-stats').innerHTML =
       '<div class="stat"><div class="n">' + A.pct(payload.at_open, 1) + '</div><div class="l">At the open</div></div>' +
-      '<div class="stat"><div class="n up">' + A.pct(payload.midday, 1) + '</div><div class="l">' +
-        A.escapeHtml(payload.midday_label ? 'Cheapest ' + payload.midday_label : 'Mid-day') + '</div></div>';
+      '<div class="stat"><div class="n up">' + A.pct(payload.lowest_pct, 1) + '</div><div class="l">' +
+        A.escapeHtml(payload.lowest_clock ? 'Cheapest ' + payload.lowest_clock : 'Cheapest') + '</div></div>';
   }
 
   function loadCost() {

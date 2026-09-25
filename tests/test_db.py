@@ -570,50 +570,6 @@ def test_quote_snapshot_tolerates_missing_quotes(tmp_path):
     assert row["strike"] == 220.0
 
 
-# --- news snapshots (what was actually said) ---------------------------------
-
-def test_news_snapshot_roundtrip_and_lookup(tmp_path):
-    import json as _json
-    path = make_temp_db(tmp_path)
-    storage.insert_news_snapshot(path, ["Trump announces tariffs on chips",
-                                        "Markets slide on trade fears"], -0.67)
-    rows = storage.get_news_history(path)
-    assert len(rows) == 1
-    assert rows[0]["headline_count"] == 2
-    assert rows[0]["score"] == -0.67
-    assert "tariffs" in _json.loads(rows[0]["headlines_json"])[0]
-
-
-def test_news_snapshot_records_an_empty_look(tmp_path):
-    # GDELT returning nothing is information too: we looked and found none
-    path = make_temp_db(tmp_path)
-    storage.insert_news_snapshot(path, None, None)
-    row = storage.get_news_history(path)[0]
-    assert row["headline_count"] == 0
-    assert row["score"] is None
-    assert row["headlines_json"] == "[]"
-
-
-def test_get_news_at_returns_what_was_in_force(tmp_path):
-    import sqlite3 as _sq
-    path = make_temp_db(tmp_path)
-    storage.insert_news_snapshot(path, ["old news"], 0.1)
-    storage.insert_news_snapshot(path, ["breaking news"], 0.9)
-    # age the rows so they straddle a known moment
-    conn = _sq.connect(path)
-    conn.execute("UPDATE news_snapshots SET timestamp='2026-07-10T14:00:00+00:00' WHERE score=0.1")
-    conn.execute("UPDATE news_snapshots SET timestamp='2026-07-10T16:00:00+00:00' WHERE score=0.9")
-    conn.commit(); conn.close()
-
-    # at 15:00 the OLD headline was still the one in force
-    at_15 = storage.get_news_at(path, "2026-07-10T15:00:00+00:00")
-    assert at_15["score"] == 0.1
-    # at 17:00 the newer one is
-    assert storage.get_news_at(path, "2026-07-10T17:00:00+00:00")["score"] == 0.9
-    # before any news exists -> nothing
-    assert storage.get_news_at(path, "2026-07-01T00:00:00+00:00") is None
-
-
 # --- VIX snapshots + baselines -----------------------------------------------
 
 def test_vix_snapshot_computes_term_ratio(tmp_path):

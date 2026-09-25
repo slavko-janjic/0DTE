@@ -240,7 +240,8 @@ def test_cost_payload_reports_the_intraday_curve(db, config):
     cost = payloads.cost_payload(db, config, "QQQ")
     assert len(cost["curve"]) == 4
     assert cost["at_open"] == pytest.approx(9.0)
-    assert cost["midday"] == pytest.approx(6.0)  # cheapest bucket
+    assert cost["lowest_pct"] == pytest.approx(6.0)  # cheapest bucket
+    assert cost["lowest_clock"]                      # and when it is
     assert cost["rows"][0]["samples"] == 24
 
 
@@ -750,3 +751,29 @@ def test_concurrent_requests_share_a_single_fetch(monkeypatch):
         thread.join(timeout=5)
     assert calls == ["QQQ"]                       # one fetch served all four
     assert len(results) == 4 and all(result is results[0] for result in results)
+
+
+# --- small display fixes ------------------------------------------------------
+
+def test_trade_dates_carry_the_year_once_it_isnt_this_year(db, config):
+    this_year = datetime.now(MARKET_TZ).year
+    old_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
+    engine.close(db, old_id, 1.80, "manual")
+    new_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 1.40, 1, 0.4)
+    engine.close(db, new_id, 1.80, "manual")
+    with storage.connect(db) as conn:     # 15:00 ET on a fixed day, last year and this year
+        conn.execute("UPDATE positions SET exit_time = ? WHERE id = ?",
+                     (f"{this_year - 1}-12-30T20:00:00+00:00", old_id))
+        conn.execute("UPDATE positions SET exit_time = ? WHERE id = ?",
+                     (f"{this_year}-03-02T20:00:00+00:00", new_id))
+    dates = {row["id"]: row["date"] for row in payloads.trade_history(db, config)["trades"]}
+    assert dates[old_id] == f"{this_year - 1}-12-30"
+    assert dates[new_id] == "03-02"
+
+
+def test_calibration_events_show_market_time_not_utc(db, config):
+    storage.log_calibration_event(db, "QQQ", "weights_nudged", {})
+    with storage.connect(db) as conn:
+        conn.execute("UPDATE calibration_events SET created_at = '2026-07-06T20:30:00+00:00'")
+    event = payloads.calibration_payload(db, config, "QQQ")["events"][0]
+    assert event["when"] == "07-06 16:30"          # 20:30 UTC = 16:30 ET (EDT), not "20:30"
