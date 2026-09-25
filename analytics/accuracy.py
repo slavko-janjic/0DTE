@@ -7,16 +7,58 @@ ahead with a known spot price - until then there's nothing to grade it against.
 Neutral signals ("no clear edge") are excluded since they made no directional call.
 """
 import json
+from bisect import bisect_left
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from signals.composite import direction_from_score
 
+DEFAULT_WINDOW_DAYS = 30
+
+
+# --- which history gets graded -----------------------------------------------
+# Two different spans. Each signal's own score is stored per snapshot, so
+# per-signal accuracy can use the whole look-back window. The COMPOSITE is only
+# comparable with itself: when signals are added, removed or rescored it becomes
+# a different signal, so composite-level stats (overall accuracy, confidence
+# bands, the calibration confidence map) start at config's composite_since.
+
+def history_window_start(config: dict, now: datetime | None = None) -> datetime:
+    """Start of the graded look-back window (UTC): accuracy_window_days back.
+    A time window, not a row count - a 2,000-row limit was ~5.5 sessions at
+    one poll a minute, far too little to judge a signal on."""
+    now = now if now is not None else datetime.now(timezone.utc)
+    days = config.get("accuracy_window_days", DEFAULT_WINDOW_DAYS)
+    return now.astimezone(timezone.utc) - timedelta(days=days)
+
+
+def composite_start(config: dict) -> datetime | None:
+    """Midnight (market tz) of config's composite_since date, or None when unset."""
+    since = config.get("composite_since")
+    if not since:
+        return None
+    tz = ZoneInfo(config.get("market_hours", {}).get("timezone", "America/New_York"))
+    day = since if isinstance(since, date) else date.fromisoformat(str(since))
+    return datetime(day.year, day.month, day.day, tzinfo=tz)
+
+
+def since_composite(history: list[dict], start: datetime | None) -> list[dict]:
+    """The part of a history produced by the current composite definition."""
+    if start is None:
+        return history
+    return [snap for snap in history if snap["timestamp"] >= start]
+
 
 def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float) -> list[dict]:
     """snapshots: ascending by timestamp, each with timestamp/direction/spot_price.
-    Returns a new list with 'evaluated', 'hit', and 'future_price' added to each dict."""
+    Returns a new list with 'evaluated', 'hit', and 'future_price' added to each dict.
+
+    The grading price is the first LATER snapshot at or past the horizon, found
+    by bisection - O(n log n), so a long look-back window stays cheap. (Slicing
+    the tail for every snapshot copied the rest of the list each time -
+    quadratic as the window grows.)"""
+    times = [snap.get("timestamp") for snap in snapshots]
     results = []
     for i, snap in enumerate(snapshots):
         entry = dict(snap, evaluated=False, hit=None, future_price=None)
@@ -26,11 +68,10 @@ def evaluate_signal_accuracy(snapshots: list[dict], horizon_minutes: float) -> l
             continue
 
         target_time = ts + timedelta(minutes=horizon_minutes)
-        future_price = next(
-            (later["spot_price"] for later in snapshots[i + 1:]
-             if later["timestamp"] >= target_time and later.get("spot_price") is not None),
-            None,
-        )
+        j = bisect_left(times, target_time, lo=i + 1)
+        while j < len(snapshots) and snapshots[j].get("spot_price") is None:
+            j += 1
+        future_price = snapshots[j]["spot_price"] if j < len(snapshots) else None
         if future_price is None:
             results.append(entry)
             continue
@@ -475,11 +516,20 @@ def plan_calibration(
     have a per-category cooldown. Known limitation (v1): after an inversion the
     graded history mixes pre- and post-flip samples until the horizon window
     rolls past, which the cooldown papers over.
+
+    Only categories in current_weights (the live signals) are graded: a removed
+    signal still in the history would otherwise take a share of the suggested
+    weight. cfg["composite_since"] (datetime or None) limits the confidence map
+    to the current composite definition.
     """
     horizon = cfg.get("horizon_minutes", 30)
     actions: list[dict] = []
 
-    category_accuracy = evaluate_category_accuracy(history, horizon)
+    category_accuracy = {
+        category: result
+        for category, result in evaluate_category_accuracy(history, horizon).items()
+        if category in current_weights
+    }
 
     # 1. weights: nudge a fraction of the way toward the accuracy-based suggestion
     suggested = suggest_weights(
@@ -516,7 +566,8 @@ def plan_calibration(
 
     # 3. confidence map: enough INDEPENDENT composite calls -> store observed
     # accuracy per band (raw minute counts would clear any gate trivially)
-    evaluated = evaluate_signal_accuracy(history, horizon)
+    evaluated = evaluate_signal_accuracy(
+        since_composite(history, cfg.get("composite_since")), horizon)
     if independent_observations(evaluated, horizon) >= cfg.get("confidence_min_graded", 20):
         bands = confidence_map(evaluated, horizon)
         if bands:

@@ -708,3 +708,18 @@ def test_get_final_spot_picks_the_last_print_in_the_window(tmp_path):
                                   "2026-09-24T20:05:00+00:00") == 502.5
     assert storage.get_final_spot(path, "SPY", "2026-09-24T13:30:00+00:00",
                                   "2026-09-24T20:05:00+00:00") is None
+
+
+def test_get_signal_history_since_returns_the_whole_window(tmp_path):
+    path = make_temp_db(tmp_path)
+    for ts in ["2026-09-01T14:00:00+00:00", "2026-09-10T14:00:00+00:00",
+               "2026-09-20T14:00:00+00:00"]:
+        storage.insert_signal_snapshot(path, "QQQ", "bullish", 50.0, 0.5, "r", {}, spot_price=1.0)
+        with storage.connect(path) as conn:
+            conn.execute("UPDATE signal_snapshots SET timestamp = ? WHERE id = "
+                         "(SELECT MAX(id) FROM signal_snapshots)", (ts,))
+    rows = storage.get_signal_history(path, "QQQ", since="2026-09-05T00:00:00+00:00")
+    assert [row["timestamp"][:10] for row in rows] == ["2026-09-10", "2026-09-20"]
+    # no row cap when a window is given (the old default capped at 2,000)
+    assert len(storage.get_signal_history(path, "QQQ", limit=1)) == 1
+    assert len(storage.get_signal_history(path, "QQQ", limit=1, since="2000-01-01")) == 3

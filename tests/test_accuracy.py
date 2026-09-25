@@ -509,3 +509,62 @@ def test_context_direction_streak_buckets():
     # snapshots from before streak tracking are excluded, not bucketed as fresh
     assert accuracy.context_direction_streak({"direction_streak": None}) is None
     assert accuracy.context_direction_streak({}) is None
+
+
+# --- look-back window + current-composite cutoff -------------------------------
+
+def test_grading_takes_the_first_later_price_past_the_horizon():
+    # equal timestamps, a missing price at the target, and nothing gradeable
+    # at the end - the bisection must pick exactly what the linear scan did
+    snaps = [_snap(0, "bullish", 100.0), _snap(0, "bearish", 100.0),
+             _snap(30, "bullish", None), _snap(31, "neutral", 101.0),
+             _snap(45, "bullish", 99.0)]
+    graded = accuracy.evaluate_signal_accuracy(snaps, horizon_minutes=30)
+    assert [g["future_price"] for g in graded] == [101.0, 101.0, None, None, None]
+    assert [g["hit"] for g in graded] == [True, False, None, None, None]
+
+
+def test_history_window_start_is_a_time_window():
+    now = datetime(2026, 9, 25, 15, 0, tzinfo=timezone.utc)
+    assert accuracy.history_window_start({"accuracy_window_days": 10}, now) == \
+        datetime(2026, 9, 15, 15, 0, tzinfo=timezone.utc)
+    assert accuracy.history_window_start({}, now) == now - timedelta(days=30)
+
+
+def test_composite_start_is_market_midnight_of_the_configured_date():
+    config = {"composite_since": "2026-09-17",
+              "market_hours": {"timezone": "America/New_York"}}
+    start = accuracy.composite_start(config)
+    assert start.isoformat() == "2026-09-17T00:00:00-04:00"
+    assert accuracy.composite_start({}) is None
+
+
+def test_since_composite_drops_calls_from_an_older_composite():
+    history = [_snap(0, "bullish", 100.0), _snap(60, "bullish", 100.0)]
+    cutoff = history[1]["timestamp"]
+    assert accuracy.since_composite(history, cutoff) == [history[1]]
+    assert accuracy.since_composite(history, None) == history
+
+
+def test_plan_calibration_only_weighs_live_signals():
+    # a removed signal still sitting in the window with a great record must
+    # not be handed a share of the live signals' weight
+    good_dead = _history_for_category(direction_correct=True, n=8, category="trump_news")
+    for row in good_dead:
+        row["subscores"]["technicals"] = row["subscores"]["trump_news"] * -1  # always wrong
+    actions = accuracy.plan_calibration(
+        "QQQ", good_dead, {"technicals": 1.0}, [], [], _cal_cfg(), date(2026, 7, 7))
+    # with the dead signal graded, technicals' weight was pushed toward ~1% of
+    # its own share; with only live signals there is nothing to reallocate
+    assert not any(action["kind"] == "weights" for action in actions)
+    assert all(action["category"] == "technicals" for action in actions
+               if action["kind"] in ("invert", "uninvert"))
+
+
+def test_plan_calibration_confidence_map_ignores_an_older_composite():
+    history = _history_for_category(direction_correct=True, n=25, category="technicals")
+    cutoff = history[-5]["timestamp"]            # only 5 calls in the current composite
+    actions = accuracy.plan_calibration(
+        "QQQ", history, {"technicals": 1.0}, [], [],
+        _cal_cfg(confidence_min_graded=20, composite_since=cutoff), date(2026, 7, 7))
+    assert not any(a["kind"] == "confidence_map" for a in actions)
