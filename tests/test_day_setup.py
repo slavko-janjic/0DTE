@@ -138,3 +138,66 @@ def test_build_day_setup_keeps_a_genuinely_large_but_possible_gap():
     assert setup["gap_pct"] == 8.0
     assert setup["gap_direction"] == "up"
     assert setup["overnight_high"] == 216.0
+
+
+# --- calendar coverage -------------------------------------------------------------
+
+_COVERED = {"market_catalysts_through": "2026-12-31", "market_holidays_through": "2028-12-31"}
+
+
+def test_calendars_covered_well_ahead_need_no_attention():
+    assert day_setup.calendar_coverage(_COVERED, date(2026, 9, 25)) == []
+    assert day_setup.calendar_blocker(_COVERED, date(2026, 9, 25)) is None
+
+
+def test_calendar_warns_inside_the_last_30_days_without_blocking():
+    [entry] = day_setup.calendar_coverage(_COVERED, date(2026, 12, 10))
+    assert (entry["key"], entry["status"], entry["days_left"]) == \
+        ("market_catalysts_through", "expiring", 21)
+    assert "2026-12-31" in entry["message"] and "in 21 days" in entry["message"]
+    assert day_setup.calendar_blocker(_COVERED, date(2026, 12, 10)) is None
+    # its last covered day still counts as covered
+    [last] = day_setup.calendar_coverage(_COVERED, date(2026, 12, 31))
+    assert last["status"] == "expiring" and "(today)" in last["message"]
+    assert day_setup.calendar_blocker(_COVERED, date(2026, 12, 31)) is None
+
+
+def test_expired_calendar_blocks_the_autopilot():
+    entries = day_setup.calendar_coverage(_COVERED, date(2027, 1, 4))
+    assert entries[0]["status"] == "expired"
+    assert "standing down" in entries[0]["message"]
+    blocker = day_setup.calendar_blocker(_COVERED, date(2027, 1, 4))
+    assert blocker == "catalyst calendar ended 2026-12-31 - extend it in settings.yaml"
+
+
+def test_expired_calendars_sort_first():
+    config = {"market_catalysts_through": "2027-01-20", "market_holidays_through": "2026-12-31"}
+    entries = day_setup.calendar_coverage(config, date(2027, 1, 4))
+    assert [(e["key"], e["status"]) for e in entries] == [
+        ("market_holidays_through", "expired"), ("market_catalysts_through", "expiring")]
+    assert day_setup.calendar_blocker(config, date(2027, 1, 4)).startswith("holiday calendar")
+
+
+def test_unset_coverage_is_flagged_but_never_blocks():
+    entries = day_setup.calendar_coverage({}, date(2026, 9, 25))
+    assert {e["status"] for e in entries} == {"unset"}
+    assert day_setup.calendar_blocker({}, date(2026, 9, 25)) is None
+
+
+def test_coverage_accepts_yaml_dates():
+    # an unquoted YAML date parses to datetime.date, not a string
+    config = {"market_catalysts_through": date(2026, 12, 31),
+              "market_holidays_through": date(2028, 12, 31)}
+    assert day_setup.calendar_blocker(config, date(2027, 1, 4)) is not None
+
+
+def test_shipped_calendar_lists_stay_inside_their_coverage():
+    # every listed holiday / early close is within market_holidays_through, and
+    # the coverage keys parse (catalysts may list known dates past theirs, e.g.
+    # 2027 FOMC, because the list is only COMPLETE through the key)
+    from config import load_settings
+    config = load_settings()
+    holidays_through = date.fromisoformat(config["market_holidays_through"])
+    date.fromisoformat(config["market_catalysts_through"])
+    for day in config["market_holidays"] + config["market_half_days"]:
+        assert date.fromisoformat(day) <= holidays_through

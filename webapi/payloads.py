@@ -239,6 +239,10 @@ def overview(db_path: str, config: dict) -> dict:
         "worker": worker_health(db_path),
         "autopilot": autopilot,
         "market": clock,
+        # hand-maintained calendars that are expired / running out - shown as
+        # a banner on every page, like a dead worker
+        "calendar": day_setup_mod.calendar_coverage(
+            config, datetime.now(_tz(config)).date()),
     }
 
 
@@ -701,6 +705,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     catalysts = day_setup_mod.catalysts_for_date(
         config.get("market_catalysts", []), now.date(), tz.key)
     minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts, now, tz.key)
+    calendar_block = day_setup_mod.calendar_blocker(config, now.astimezone(tz).date())
     profit_target = ap_cfg.get("profit_target_pct", 50)
     stop_loss = ap_cfg.get("stop_loss_pct", -35)
 
@@ -724,6 +729,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
             starting_balance=config["account"]["starting_balance"], now=now,
             tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=snap["gamma_regime"],
+            calendar_blocker=calendar_block,
         )
         blocker = intent.blocker
         if blocker and blocker.startswith("confidence") and shown is not None \

@@ -554,3 +554,18 @@ def test_buy_and_close_never_read_modify_write_the_balance(tmp_path, monkeypatch
     pid = buy(path, "QQQ", "call", 450.0, "2026-07-07", 2.0, 1, 0.5)
     assert close(path, pid, 3.0, "manual") == 100.0
     assert storage.get_balance(path) == 10100.0
+
+
+def test_expired_calendar_stands_the_autopilot_down_first():
+    from paper_trading.engine import explain_auto_decision
+    blocker = "catalyst calendar ended 2026-12-31 - extend it in settings.yaml"
+    intent = explain_auto_decision(
+        ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
+        minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
+        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", calendar_blocker=blocker)
+    assert intent.would_enter is False
+    assert intent.blocker == blocker
+    assert should_auto_enter(
+        ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
+        minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
+        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", calendar_blocker=blocker) is None

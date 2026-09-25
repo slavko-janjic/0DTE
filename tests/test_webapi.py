@@ -595,3 +595,25 @@ def test_autopilot_intents_gate_on_the_band_lower_bound(db, config, monkeypatch)
 
     config["calibration"] = {"gate_lower_bound_z": 0}          # the old rule would have armed
     assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True
+
+
+def test_overview_and_intents_surface_an_expired_calendar(db, config, monkeypatch):
+    config["market_catalysts_through"] = "2020-01-01"
+    config["market_holidays_through"] = "2099-12-31"
+    overview = payloads.overview(db, config)
+    assert [entry["status"] for entry in overview["calendar"]] == ["expired"]
+    assert "standing down" in overview["calendar"][0]["message"]
+
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish")
+    storage.set_autopilot_state(db, "continuous")
+    monkeypatch.setattr(payloads, "is_market_open", lambda *args, **kwargs: True)
+    monkeypatch.setattr(payloads, "minutes_since_market_open", lambda *args, **kwargs: 45)
+    monkeypatch.setattr(payloads, "minutes_to_market_close", lambda *args, **kwargs: 300)
+    intent = payloads.autopilot_intents(db, config)[0]
+    assert intent["would_enter"] is False
+    assert intent["blocker"].startswith("catalyst calendar ended 2020-01-01")
+
+
+def test_overview_calendar_is_empty_when_covered(db, config):
+    config["market_catalysts_through"] = config["market_holidays_through"] = "2099-12-31"
+    assert payloads.overview(db, config)["calendar"] == []

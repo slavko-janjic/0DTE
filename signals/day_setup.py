@@ -8,6 +8,75 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 
+# --- hand-maintained calendar coverage ----------------------------------------
+# market_catalysts and market_holidays/market_half_days are typed in by hand,
+# a year or so at a time. When one runs out nothing notices: past the last
+# catalyst the autopilot silently stops standing down around FOMC/CPI, and past
+# the last holiday a closed market reads as a normal trading day. Each list
+# therefore carries a *_through date - the last day it is known complete for.
+# The last listed event can't stand in for it: a list complete through December
+# may simply have nothing after the 10th.
+
+CALENDAR_WARN_DAYS = 30
+
+_CALENDARS = (
+    # (config key, display name, the lists it vouches for)
+    ("market_catalysts_through", "Catalyst calendar", "market_catalysts"),
+    ("market_holidays_through", "Holiday calendar", "market_holidays / market_half_days"),
+)
+
+
+def calendar_coverage(config: dict, today: date,
+                      warn_days: int = CALENDAR_WARN_DAYS) -> list[dict]:
+    """The hand-maintained calendars that need attention, most urgent first:
+    'expired' (today is past its *_through date - the autopilot stands down),
+    'expiring' (within warn_days of it) or 'unset' (no *_through date, so
+    nothing can tell whether it's current - warned about, but not blocking).
+    Empty when every calendar is covered for more than warn_days.
+
+    Each entry: {key, name, through (ISO or None), days_left, status, message}."""
+    entries = []
+    for key, name, lists in _CALENDARS:
+        raw = config.get(key)
+        if not raw:
+            entries.append({
+                "key": key, "name": name, "through": None, "days_left": None,
+                "status": "unset",
+                "message": f"{key} isn't set in settings.yaml, so nothing checks "
+                           f"whether {lists} is still current.",
+            })
+            continue
+        through = raw if isinstance(raw, date) else date.fromisoformat(str(raw))
+        days_left = (through - today).days
+        fix = f"add the new dates to {lists} in settings.yaml and move {key}"
+        if days_left < 0:
+            status = "expired"
+            message = (f"{name} ended {through.isoformat()} - the autopilot is standing "
+                       f"down until you {fix}.")
+        elif days_left < warn_days:
+            status = "expiring"
+            when = "today" if days_left == 0 else f"in {days_left} day{'s' if days_left != 1 else ''}"
+            message = (f"{name} ends {through.isoformat()} ({when}) - {fix}, or the "
+                       f"autopilot stands down after that date.")
+        else:
+            continue
+        entries.append({"key": key, "name": name, "through": through.isoformat(),
+                        "days_left": days_left, "status": status, "message": message})
+    order = {"expired": 0, "expiring": 1, "unset": 2}
+    return sorted(entries, key=lambda entry: order[entry["status"]])
+
+
+def calendar_blocker(config: dict, today: date) -> str | None:
+    """Why the autopilot must stand down for calendar reasons, or None. Only an
+    EXPIRED calendar blocks: trading on past it means holding through
+    unlisted catalysts or treating a holiday as a session."""
+    for entry in calendar_coverage(config, today):
+        if entry["status"] == "expired":
+            return (f"{entry['name'].lower()} ended {entry['through']} - extend it "
+                    f"in settings.yaml")
+    return None
+
+
 def _clip(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, value))
 

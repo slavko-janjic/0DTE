@@ -812,3 +812,19 @@ def test_worker_publishes_on_a_fresh_database_too(tmp_path):
     storage.init_db(db_path)                                 # no worker_settings row yet
     assert worker.publish_poll_interval({"poll_interval_seconds": 90}, db_path) == 90
     assert storage.get_poll_interval_seconds(db_path) == 90
+
+
+# --- calendar coverage -------------------------------------------------------------
+
+def test_autopilot_stands_down_once_the_catalyst_calendar_has_expired(tmp_path, monkeypatch):
+    db_path = _auto_db(tmp_path)
+    _patch_market_clock(monkeypatch)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0})
+    expired = {**AUTO_CONFIG, "market_catalysts_through": "2020-01-01"}
+    maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], expired, db_path)
+    assert storage.get_open_positions(db_path) == []
+    # the same signal trades once the calendar is extended
+    covered = {**AUTO_CONFIG, "market_catalysts_through": "2099-12-31"}
+    maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], covered, db_path)
+    assert len(storage.get_open_positions(db_path)) == 1

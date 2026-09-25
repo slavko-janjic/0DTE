@@ -349,6 +349,9 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
     catalysts_today = day_setup_mod.catalysts_for_date(
         config.get("market_catalysts", []), now.date(), tz_name)
     minutes_to_catalyst = day_setup_mod.minutes_to_next_catalyst(catalysts_today, now, tz_name)
+    # an expired hand-maintained calendar means catalysts/holidays could be
+    # missing - stand down rather than trade blind
+    calendar_block = day_setup_mod.calendar_blocker(config, now.date())
 
     # Dry-run the decision for EVERY candidate first, log a one-line intent
     # summary (the "what's it about to do" trail), then act on the top qualifier.
@@ -376,6 +379,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             tz_name=tz_name,
             minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=gamma_regime,
+            calendar_blocker=calendar_block,
         )
         intents.append((intent, ticker, signal, chain))
 
@@ -840,6 +844,9 @@ def run_loop(config: dict, db_path: str) -> None:
     pid = os.getpid()
     poll_seconds = publish_poll_interval(config, db_path)
     print(f"polling every {poll_seconds}s")
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    for entry in day_setup_mod.calendar_coverage(config, datetime.now(tz).date()):
+        print(f"CALENDAR {entry['status'].upper()}: {entry['message']}")
     while True:
         if is_market_open(config):
             run_once(config, db_path)
