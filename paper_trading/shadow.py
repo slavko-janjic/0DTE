@@ -35,6 +35,13 @@ def should_shadow_enter(
 
     entry_cfg keys (all optional except min_confidence_pct):
       min_confidence_pct        - confidence floor
+      confidence_basis          - which confidence the floor is checked
+                                  against (read by the worker): 'calibrated'
+                                  point estimate (default) or 'gate', the
+                                  lower-bound value the real autopilot uses
+      positive_gamma_confidence_penalty
+                                - extra confidence required in a positive-gamma
+                                  (rangebound) regime, as the autopilot does
       window_start_minutes /    - entry window, minutes after the open
       window_end_minutes          (omit both = whole session)
       no_entry_last_minutes     - runway floor before the close (default 45)
@@ -65,7 +72,10 @@ def should_shadow_enter(
     else:
         return None
 
-    if confidence_pct < entry_cfg.get("min_confidence_pct", 55):
+    min_confidence = entry_cfg.get("min_confidence_pct", 55)
+    if gamma_regime == "positive":
+        min_confidence += entry_cfg.get("positive_gamma_confidence_penalty", 0)
+    if confidence_pct < min_confidence:
         return None
 
     start = entry_cfg.get("window_start_minutes")

@@ -23,7 +23,9 @@ from paper_trading.engine import (
 from paper_trading.shadow import strategy_edge, strategy_scorecard
 from signals import day_setup as day_setup_mod
 from storage import db as storage
-from worker import is_market_open, minutes_since_market_open, minutes_to_market_close
+from worker import (
+    gate_confidence_for, is_market_open, minutes_since_market_open, minutes_to_market_close,
+)
 
 CATEGORY_INFO = {
     "technicals": ("Technicals", "Is the short-term price trend pointing up or down right now "
@@ -710,9 +712,12 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
                             "confidence_pct": None, "direction": None, "blocker": None,
                             "message": "no signal yet this session."})
             continue
-        confidence, _raw = display_confidence(snap)
+        shown, _raw = display_confidence(snap)
+        # the worker gates on the band's lower bound, not the shown estimate
+        gate = gate_confidence_for(config, snap["confidence"],
+                                   storage.get_confidence_bands(db_path, ticker))
         intent = explain_auto_decision(
-            ticker=ticker, direction=snap["direction"], confidence_pct=confidence or 0.0,
+            ticker=ticker, direction=snap["direction"], confidence_pct=gate or 0.0,
             minutes_since_open=clock["minutes_since_open"],
             minutes_to_close=clock["minutes_to_close"],
             open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap_cfg,
@@ -720,19 +725,26 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
             tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=snap["gamma_regime"],
         )
+        blocker = intent.blocker
+        if blocker and blocker.startswith("confidence") and shown is not None \
+                and round(shown) != round(gate):
+            # the Signals card shows the point estimate - say why the gate differs
+            blocker += (f"; the {shown:.0f}% shown is its band's hit rate, "
+                        f"but the sample only supports {gate:.0f}%")
         intents.append({
             "ticker": ticker,
             "direction": intent.direction,
             "lean": intent.lean,
-            "confidence_pct": _num(intent.confidence_pct),
+            "confidence_pct": _num(intent.confidence_pct),       # the gate value
+            "shown_confidence_pct": _num(shown),
             "min_confidence_pct": _num(intent.min_confidence_pct),
             "would_enter": intent.would_enter,
-            "blocker": intent.blocker,
+            "blocker": blocker,
             "message": (f"<b>ARMED</b> — would buy <b>{intent.lean}s</b> now. "
                         f"Mirror: ATM 0DTE {intent.lean}, "
                         f"+{profit_target:.0f}% / {stop_loss:.0f}%."
                         if intent.would_enter else
-                        f"standing down: {intent.blocker}"),
+                        f"standing down: {blocker}"),
         })
     return intents
 
@@ -795,7 +807,12 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
             {"label": "Window",
              "value": f"{ap_cfg.get('decision_start_minutes', 30):.0f}–"
                       f"{ap_cfg.get('decision_end_minutes', 90):.0f} min"},
-            {"label": "Confidence gate", "value": f"≥ {ap_cfg.get('min_confidence_pct', 55):.0f}%"},
+            {"label": "Confidence gate",
+             "value": f"≥ {ap_cfg.get('min_confidence_pct', 55):.0f}% "
+                      + ("(band lower bound)"
+                         if config.get("calibration", {}).get(
+                             "gate_lower_bound_z", accuracy.DEFAULT_GATE_Z)
+                         else "(band estimate)")},
             {"label": "Exits", "value": f"+{ap_cfg.get('profit_target_pct', 50):.0f}% / "
                                         f"{ap_cfg.get('stop_loss_pct', -35):.0f}%"},
             {"label": "Per session", "value": f"{ap_cfg.get('max_entries_per_session', 1)} / ticker"},

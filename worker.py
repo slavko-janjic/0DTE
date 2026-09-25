@@ -213,9 +213,12 @@ def poll_ticker(
 
     # Calibrated confidence: raw stays in the `confidence` column (all grading
     # and future calibration key off raw, avoiding a feedback loop); the
-    # calibrated value is what gets displayed and what autopilot decides on.
+    # calibrated point estimate is what gets displayed. The autopilot gates on
+    # the band's lower confidence bound instead - see accuracy.gate_confidence.
     raw_confidence = signal.confidence_pct
     bands = storage.get_confidence_bands(db_path, ticker)
+    signal.raw_confidence_pct = raw_confidence
+    signal.gate_confidence_pct = gate_confidence_for(config, raw_confidence, bands)
     calibrated = accuracy.calibrated_confidence(
         raw_confidence, bands, config.get("calibration", {}).get("band_min_count", 5),
     )
@@ -256,6 +259,22 @@ def poll_ticker(
     except Exception as exc:
         print(f"[{ticker}] shadow lab failed: {exc}")
     return signal, chain
+
+
+def gate_confidence_for(config: dict, raw_confidence: float, bands: list[dict] | None) -> float:
+    """The autopilot's gate confidence under this config's calibration knobs -
+    one place, so the worker's decision and the UI's intent readout agree."""
+    cal = config.get("calibration", {})
+    return accuracy.gate_confidence(
+        raw_confidence, bands, cal.get("band_min_count", 5),
+        cal.get("gate_lower_bound_z", accuracy.DEFAULT_GATE_Z),
+    )
+
+
+def _gate(signal) -> float:
+    """A signal's gate confidence, or its displayed one when none was set."""
+    gate = getattr(signal, "gate_confidence_pct", None)
+    return gate if gate is not None else signal.confidence_pct
 
 
 def record_quote_snapshot(ticker: str, config: dict, db_path: str,
@@ -338,7 +357,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
     closed_rows = storage.get_closed_positions(db_path)
     intents = []
     for ticker, signal, chain in sorted(
-        candidates, key=lambda c: c[1].confidence_pct, reverse=True,
+        candidates, key=lambda c: _gate(c[1]), reverse=True,
     ):
         if chain is None:
             continue
@@ -346,7 +365,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
         intent = explain_auto_decision(
             ticker=ticker,
             direction=signal.direction,
-            confidence_pct=signal.confidence_pct,
+            confidence_pct=_gate(signal),
             minutes_since_open=minutes_since_open,
             minutes_to_close=minutes_to_close,
             open_rows=open_rows,
@@ -398,7 +417,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             )
             print(f"[{ticker}] AUTO-OPENED position {position_id}: {contracts}x {option_type} "
                   f"{contract['strike']:g} @ ${entry_price:.2f} "
-                  f"(confidence {signal.confidence_pct:.0f}%)")
+                  f"(gate confidence {_gate(signal):.0f}%, shown {signal.confidence_pct:.0f}%)")
             return  # one entry per cycle - the strongest qualifying candidate
 
 
@@ -560,17 +579,22 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             continue
 
         # ...and may trade ONE subscore instead of the blended composite, to test
-        # a single signal on its own (the composite is 7 signals averaged, which
-        # can dilute a good one). Confidence mirrors how the composite derives
-        # it: |score| * 100.
+        # a single signal on its own (the composite blends several signals,
+        # which can dilute a good one). Confidence mirrors how the composite
+        # derives it: |score| * 100.
         source = entry_cfg.get("signal_source")
+        basis = entry_cfg.get("confidence_basis", "calibrated")
         if source:
             score = signal.subscores_used.get(source)
             if score is None:
                 continue  # that signal had no data this cycle
             entry_direction = direction_from_score(score)
             entry_confidence = abs(score) * 100.0
+        elif basis == "gate":
+            # exactly what the real autopilot gates on
+            entry_direction, entry_confidence = signal.direction, _gate(signal)
         else:
+            # the calibrated point estimate (every strategy predating the gate)
             entry_direction, entry_confidence = signal.direction, signal.confidence_pct
 
         has_open = any(row["expiration"] >= today.isoformat()
@@ -597,6 +621,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             # what this strategy actually acted on (differs from the composite
             # when signal_source pins it to a single subscore)
             "signal_source": source or "composite",
+            "confidence_basis": "raw" if source else basis,
             "direction": entry_direction,
             "confidence_pct": entry_confidence,
             "composite_score": signal.composite_score,

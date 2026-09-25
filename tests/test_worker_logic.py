@@ -739,3 +739,59 @@ def test_calibration_does_not_rerun_over_the_weekend(tmp_path, monkeypatch):
     worker.run_daily_calibration(CAL_CONFIG, db_path)          # Saturday, Sunday...
     worker.run_daily_calibration(CAL_CONFIG, db_path)
     assert len(storage.get_calibration_events(db_path)) == events
+
+
+# --- the confidence gate ------------------------------------------------------
+
+def _gated_signal(shown, gate, direction="bullish"):
+    return SimpleNamespace(direction=direction, confidence_pct=shown, gate_confidence_pct=gate,
+                           composite_score=0.5, subscores_used={"technicals": 0.5})
+
+
+def test_autopilot_gates_on_the_lower_bound_not_the_shown_confidence(tmp_path, monkeypatch):
+    db_path = _auto_db(tmp_path)
+    _patch_market_clock(monkeypatch)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0})
+    # shows 70%, but the sample only supports 40% -> must stand down
+    maybe_auto_enter_best([("QQQ", _gated_signal(70.0, 40.0), _fake_chain())],
+                          AUTO_CONFIG, db_path)
+    assert storage.get_open_positions(db_path) == []
+    # and the strongest candidate is picked by gate, not by the shown number
+    maybe_auto_enter_best([("QQQ", _gated_signal(90.0, 56.0), _fake_chain()),
+                           ("SPY", _gated_signal(60.0, 58.0), _fake_chain())],
+                          AUTO_CONFIG, db_path)
+    assert [row["ticker"] for row in storage.get_open_positions(db_path)] == ["SPY"]
+
+
+def test_gate_confidence_for_reads_the_configured_bound():
+    bands = [{"lo": 0, "hi": 20, "observed_accuracy_pct": 56.1, "independent_count": 41}]
+    config = {"calibration": {"band_min_count": 10}}
+    assert worker.gate_confidence_for(config, 6.0, bands) == pytest.approx(43.4, abs=0.1)
+    config["calibration"]["gate_lower_bound_z"] = 0          # the old point-estimate rule
+    assert worker.gate_confidence_for(config, 6.0, bands) == pytest.approx(56.1)
+
+
+def test_shadow_mirrors_trade_the_old_and_new_gate_side_by_side(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "gate.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=240.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0,
+                                          "bid": 1.9, "ask": 2.1})
+    entry = {"min_confidence_pct": 55, "window_start_minutes": 30,
+             "window_end_minutes": 90, "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "autopilot_point", "entry": entry, "exit": exit_cfg},
+        {"name": "autopilot_lb", "entry": {**entry, "confidence_basis": "gate"}, "exit": exit_cfg},
+    ]}
+    from datetime import date as _date
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration=_date.today().isoformat())
+    worker.process_shadow_strategies("QQQ", config, db_path, chain,
+                                     _gated_signal(56.1, 43.4), None)
+    rows = storage.get_open_shadow_positions(db_path, "QQQ")
+    assert [row["strategy"] for row in rows] == ["autopilot_point"]
+    import json as _json
+    assert _json.loads(rows[0]["entry_reason_json"])["confidence_basis"] == "calibrated"
