@@ -266,6 +266,11 @@
 
   /* ---- price + score chart ------------------------------------------- */
 
+  /* composite accuracy only counts calls since its current definition */
+  function sinceText(data) {
+    return data.composite_since ? ' since ' + A.escapeHtml(data.composite_since) : '';
+  }
+
   function buildChart(data) {
     var points = data.points || [];
     if (!points.length) {
@@ -331,7 +336,7 @@
 
     var accuracy = A.isNum(data.accuracy_pct)
       ? 'Overall accuracy (' + data.horizon_minutes + ' min): ' + A.pct(data.accuracy_pct) +
-        ' · ' + data.graded_count + ' graded'
+        ' · ' + data.graded_count + ' graded' + sinceText(data)
       : 'Signals are graded ' + data.horizon_minutes + ' min later — none graded yet';
     $('chart-legend').innerHTML =
       '<span><i style="background:var(--faint)"></i>Price</span>' +
@@ -935,8 +940,9 @@
     $('cal-status').innerHTML =
       'Last run: <b>' + A.escapeHtml(payload.last_run || 'never') + '</b> · learning rate ' +
       A.pct(payload.learning_rate_pct) + '/day · graded ' + payload.graded_count +
-      ' calls at ' + payload.horizon_minutes + ' min' +
+      ' calls at ' + payload.horizon_minutes + ' min' + sinceText(payload) +
       (A.isNum(payload.overall_accuracy_pct) ? ' (' + A.pct(payload.overall_accuracy_pct) + ' right)' : '') +
+      (A.isNum(payload.window_days) ? ' · signals over ' + payload.window_days + ' days' : '') +
       ' · auto-inverted for ' + A.escapeHtml(payload.ticker) + ': ' +
       (payload.inversions.length
         ? payload.inversions.map(function (row) { return A.escapeHtml(row.name); }).join(', ')

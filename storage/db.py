@@ -898,9 +898,17 @@ def get_latest_signal(db_path: str | Path, ticker: str) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def get_signal_history(db_path: str | Path, ticker: str, limit: int = 2000) -> list[sqlite3.Row]:
-    """Oldest-first signal history for charting/accuracy tracking."""
+def get_signal_history(db_path: str | Path, ticker: str, limit: int = 2000,
+                       since: str | None = None) -> list[sqlite3.Row]:
+    """Oldest-first signal history for charting/accuracy tracking: the newest
+    `limit` rows, or - with `since` (UTC ISO) - every row from then on."""
     with connect(db_path) as conn:
+        if since is not None:
+            return conn.execute(
+                "SELECT * FROM signal_snapshots WHERE ticker = ? AND timestamp >= ? "
+                "ORDER BY timestamp ASC",
+                (ticker, since),
+            ).fetchall()
         rows = conn.execute(
             """SELECT * FROM (
                    SELECT * FROM signal_snapshots WHERE ticker = ?

@@ -727,12 +727,15 @@ def run_daily_calibration(config: dict, db_path: str) -> None:
         "inversion_min_graded": config.get("weight_suggestion_min_graded", 10),
         "inversion_max_accuracy_pct": 40.0,
         "horizon_minutes": config.get("accuracy_horizon_minutes", 30),
+        "composite_since": accuracy.composite_start(config),
     }
     all_events = storage.get_calibration_events(db_path, limit=500)
+    window_start = accuracy.history_window_start(config).isoformat()
 
     for ticker in config["tickers"]:
         try:
-            history = accuracy.history_snapshots(storage.get_signal_history(db_path, ticker))
+            history = accuracy.history_snapshots(
+                storage.get_signal_history(db_path, ticker, since=window_start))
             current_weights = storage.effective_weights(db_path, config, ticker)
             recent_events = [
                 {"kind": row["kind"], "detail": json.loads(row["detail_json"]),

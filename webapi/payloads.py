@@ -350,26 +350,51 @@ def signal_payload(db_path: str, config: dict, ticker: str) -> dict:
     return base
 
 
+# The chart is a 720-unit-wide SVG: a 30-day "all" range is ~7,500 points per
+# ticker, which is payload and DOM for no visible gain. Longer ranges are
+# thinned evenly (a full session, ~390 points, never is).
+MAX_CHART_POINTS = 800
+
+
+def _thin(items: list, limit: int) -> list:
+    """Every k-th item so at most `limit` remain, always keeping the newest."""
+    if len(items) <= limit:
+        return items
+    step = len(items) / limit
+    thinned = [items[int(i * step)] for i in range(limit)]
+    thinned[-1] = items[-1]
+    return thinned
+
+
+def _window_info(config: dict) -> dict:
+    """What the accuracy numbers cover, so the UI can say so."""
+    start = accuracy.composite_start(config)
+    return {"window_days": config.get("accuracy_window_days", accuracy.DEFAULT_WINDOW_DAYS),
+            "composite_since": start.date().isoformat() if start else None}
+
+
 def signal_history(db_path: str, config: dict, ticker: str, range_key: str = "session") -> dict:
     """Points for the price + composite-score chart, plus the accuracy readout.
 
-    The range filters the chart only: accuracy always covers the full graded
-    history, because that is what it measures. "session" defaults to the most
+    The range filters the chart only: accuracy always covers the current
+    composite's graded calls within the look-back window, because that is
+    what it measures. "session" defaults to the most
     recent day that HAS data rather than the calendar today - otherwise the
     chart is empty every evening and weekend, which reads as breakage.
     """
     tz = _tz(config)
     horizon = config["accuracy_horizon_minutes"]
-    rows = storage.get_signal_history(db_path, ticker)
     payload = {"ticker": ticker, "range": range_key, "points": [], "events": [],
                "levels": [], "sessions": [], "horizon_minutes": horizon,
-               "accuracy_pct": None, "graded_count": 0, "daily": []}
-    if not rows:
+               "accuracy_pct": None, "graded_count": 0, "daily": [],
+               **_window_info(config)}
+    # same cached grading the Tuning page uses: accuracy is over the current
+    # composite only, the chart can show the whole look-back window
+    snapshots, evaluated, _categories, _bands = _analysis(db_path, config, ticker)
+    if not snapshots:
         payload["message"] = "Not enough history yet - check back after a few poll cycles."
         return payload
 
-    snapshots = accuracy.history_snapshots(rows)
-    evaluated = accuracy.evaluate_signal_accuracy(snapshots, horizon)
     payload["accuracy_pct"] = _num(accuracy.overall_accuracy_pct(evaluated))
     payload["graded_count"] = sum(1 for snap in evaluated if snap["evaluated"])
     payload["daily"] = [
@@ -407,6 +432,7 @@ def signal_history(db_path: str, config: dict, ticker: str, range_key: str = "se
     ]
     # a multi-day range needs the date in the label; a single session doesn't
     label_format = "%H:%M" if range_key == "session" else "%m-%d %H:%M"
+    points_drawn = _thin(points, MAX_CHART_POINTS)
     payload["points"] = [
         {
             "t": snap["timestamp"].astimezone(tz).strftime(label_format),
@@ -416,7 +442,7 @@ def signal_history(db_path: str, config: dict, ticker: str, range_key: str = "se
             "confidence": _num(snap["confidence"]),
             "direction": snap["direction"],
         }
-        for snap in points
+        for snap in points_drawn
     ]
 
     if points:
@@ -789,19 +815,30 @@ _ANALYSIS_CACHE: dict[str, tuple] = {}
 
 
 def _analysis(db_path: str, config: dict, ticker: str):
-    """(snapshots, evaluated, category_results, confidence_bands) for a ticker."""
-    rows = storage.get_signal_history(db_path, ticker)
+    """(snapshots, evaluated, category_results, confidence_bands) for a ticker.
+
+    snapshots and category_results span the whole look-back window (each
+    signal's own score is stored, so it grades fine across composite changes);
+    evaluated and the bands are the CURRENT composite only. Categories are
+    limited to the live signals in config, so removed ones don't linger."""
+    rows = storage.get_signal_history(
+        db_path, ticker, since=accuracy.history_window_start(config).isoformat())
     if not rows:
         return [], [], {}, []
-    fingerprint = (len(rows), rows[-1]["timestamp"], config["accuracy_horizon_minutes"])
+    horizon = config["accuracy_horizon_minutes"]
+    fingerprint = (len(rows), rows[0]["timestamp"], rows[-1]["timestamp"], horizon,
+                   tuple(_window_info(config).values()))
     cached = _ANALYSIS_CACHE.get(ticker)
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
 
-    horizon = config["accuracy_horizon_minutes"]
     snapshots = accuracy.history_snapshots(rows)
-    evaluated = accuracy.evaluate_signal_accuracy(snapshots, horizon)
-    categories = accuracy.evaluate_category_accuracy(snapshots, horizon)
+    evaluated = accuracy.evaluate_signal_accuracy(
+        accuracy.since_composite(snapshots, accuracy.composite_start(config)), horizon)
+    categories = {category: result
+                  for category, result in accuracy.evaluate_category_accuracy(
+                      snapshots, horizon).items()
+                  if category in config["weights"]}
     bands = accuracy.confidence_calibration(evaluated)
     result = (snapshots, evaluated, categories, bands)
     _ANALYSIS_CACHE[ticker] = (fingerprint, result)
@@ -899,6 +936,7 @@ def calibration_payload(db_path: str, config: dict, ticker: str) -> dict:
         "learning_rate_pct": cal_cfg.get("learning_rate", 0.25) * 100,
         "min_graded": min_graded,
         "horizon_minutes": horizon,
+        **_window_info(config),
         "graded_count": sum(1 for snap in evaluated if snap["evaluated"]),
         "overall_accuracy_pct": _num(accuracy.overall_accuracy_pct(evaluated)),
         "inversions": [{"key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0]}

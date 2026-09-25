@@ -518,3 +518,60 @@ def test_refresh_settles_expired_positions_instead_of_repricing_them(db, config,
     assert quotes == {}
     assert storage.get_open_positions(db) == []
     assert storage.get_closed_positions(db)[0]["exit_reason"] == "expired"
+
+
+# --- accuracy window --------------------------------------------------------
+
+def test_history_reaches_past_the_old_2000_row_cap(db, config):
+    # 2,100 one-minute snapshots: the old row cap silently dropped the oldest
+    with storage.connect(db) as conn:
+        base = datetime.now(timezone.utc) - timedelta(minutes=2200)
+        conn.executemany(
+            "INSERT INTO signal_snapshots (ticker, timestamp, direction, confidence, "
+            "composite_score, recommendation, subscores_json, spot_price) "
+            "VALUES ('QQQ', ?, 'bullish', 50, 0.5, 'r', '{\"technicals\": 0.5}', 700)",
+            [((base + timedelta(minutes=i)).isoformat(),) for i in range(2100)])
+    payloads._ANALYSIS_CACHE.clear()
+    snapshots, _evaluated, _categories, _bands = payloads._analysis(db, config, "QQQ")
+    assert len(snapshots) == 2100
+
+
+def test_accuracy_counts_only_the_current_composite(db, config):
+    for minutes in range(600, 0, -10):
+        add_signal(db, "QQQ", minutes_ago=minutes, spot=700 + minutes / 10)
+    payloads._ANALYSIS_CACHE.clear()
+    everything = payloads.signal_history(db, config, "QQQ", "all")
+
+    cutoff = datetime.now(MARKET_TZ).date().isoformat()
+    config["composite_since"] = cutoff
+    payloads._ANALYSIS_CACHE.clear()
+    current = payloads.signal_history(db, config, "QQQ", "all")
+    assert current["composite_since"] == cutoff
+    assert current["window_days"] == 30
+    # the chart still shows the whole window...
+    assert len(current["points"]) == len(everything["points"])
+    # ...but only today's calls are graded (fewer, unless it is just past midnight)
+    assert current["graded_count"] <= everything["graded_count"]
+    assert all(day["date"] >= cutoff for day in current["daily"])
+
+
+def test_tuning_page_never_lists_a_removed_signal(db, config):
+    add_signal(db, "QQQ", minutes_ago=90)
+    with storage.connect(db) as conn:
+        conn.execute("UPDATE signal_snapshots SET subscores_json = ?",
+                     (json.dumps({"technicals": 0.5, "trump_news": 0.9}),))
+    for minutes in range(80, 0, -10):
+        add_signal(db, "QQQ", minutes_ago=minutes)
+    payloads._ANALYSIS_CACHE.clear()
+    keys = {row["key"] for row in payloads.calibration_payload(db, config, "QQQ")["categories"]}
+    assert "trump_news" not in keys
+    assert "technicals" in keys
+
+
+def test_long_chart_ranges_are_thinned_but_keep_the_latest_point():
+    items = list(range(5000))
+    thinned = payloads._thin(items, 800)
+    assert len(thinned) == 800
+    assert thinned[0] == 0 and thinned[-1] == 4999
+    assert thinned == sorted(thinned)
+    assert payloads._thin(items[:390], 800) == items[:390]    # a session is untouched
