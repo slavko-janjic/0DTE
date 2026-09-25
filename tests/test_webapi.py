@@ -23,7 +23,7 @@ def make_config(tmp_path) -> dict:
         "tickers": ["QQQ", "SPY"],
         "database": {"path": str(tmp_path / "test.db")},
         "account": {"starting_balance": 10000, "risk_per_trade_pct": 5},
-        "poll_interval_minutes": 5,
+        "poll_interval_seconds": 300,
         "accuracy_horizon_minutes": 30,
         "market_hours": {"open": "09:30", "close": "16:00", "timezone": "America/New_York"},
         "market_holidays": [],

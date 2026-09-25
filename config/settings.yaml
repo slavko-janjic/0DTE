@@ -10,7 +10,12 @@ tickers:
   - TSLA  # mega-cap with daily (0DTE) options
   - NVDA  # mega-cap with daily (0DTE) options
 
-poll_interval_minutes: 5
+# How often the worker polls every ticker, in seconds (15-600). The worker
+# reads this at startup and records it in the database, where the web UI's
+# staleness checks and streak labels pick it up - so a change takes effect on
+# the next worker restart. Most other settings here (accuracy gating, the
+# direction-streak shadow strategies) assume one poll a minute.
+poll_interval_seconds: 60
 
 market_hours:
   open: "09:30"

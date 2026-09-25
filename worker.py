@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import single_instance
 
 from analytics import accuracy
-from config import load_settings
+from config import load_settings, poll_interval_seconds
 from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
@@ -823,8 +823,23 @@ def maybe_disarm_day_session(config: dict, db_path: str) -> None:
           f"realized P&L ${total_pnl:+,.2f} - auto-pilot disarmed")
 
 
+def publish_poll_interval(config: dict, db_path: str) -> int:
+    """Records the cadence this worker runs at (config poll_interval_seconds)
+    in the database, where the web UI reads it for staleness checks and streak
+    labels - so the UI always describes the RUNNING worker. Returns it.
+
+    Config is the only source: the web API and the old dashboard used to force
+    60 s into this row themselves, which left settings.yaml's value dead."""
+    seconds = poll_interval_seconds(config)
+    storage.ensure_worker_settings(db_path, seconds)
+    storage.set_poll_interval_seconds(db_path, seconds)
+    return seconds
+
+
 def run_loop(config: dict, db_path: str) -> None:
     pid = os.getpid()
+    poll_seconds = publish_poll_interval(config, db_path)
+    print(f"polling every {poll_seconds}s")
     while True:
         if is_market_open(config):
             run_once(config, db_path)
@@ -864,8 +879,7 @@ def run_loop(config: dict, db_path: str) -> None:
             storage.record_heartbeat(db_path, pid, note)
         except Exception as exc:
             print(f"heartbeat failed: {exc}")
-        # read fresh each cycle so the dashboard can change it without a restart
-        time.sleep(storage.get_poll_interval_seconds(db_path))
+        time.sleep(poll_seconds)
 
 
 def _setup_file_logging() -> None:
@@ -900,7 +914,7 @@ def main() -> None:
     db_path = config["database"]["path"]
     storage.init_db(db_path)
     storage.ensure_account(db_path, config["account"]["starting_balance"])
-    storage.ensure_worker_settings(db_path, config["poll_interval_minutes"] * 60)
+    storage.ensure_worker_settings(db_path, poll_interval_seconds(config))
     storage.ensure_autopilot(db_path, default_enabled=True)  # continuous by default
     storage.ensure_calibration(db_path)  # auto-calibration on by default (dashboard toggle)
 
