@@ -179,3 +179,34 @@ def test_strategy_edge_empty_and_single_trade():
     assert strategy_edge([]) == {}
     one = strategy_edge(_pnl_rows("s", [42.0]))["s"]
     assert one["trades"] == 1 and one["t_stat"] == 0.0  # no spread to test against
+
+
+from paper_trading.engine import evaluate_exit
+from paper_trading.shadow import shadow_exit_score
+
+FADE_EXIT = {"profit_target_pct": 40, "stop_loss_pct": -30,
+             "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 60}
+
+
+def test_shadow_exit_score_flips_only_for_inverted_strategies():
+    assert shadow_exit_score({"invert": True}, 0.7) == -0.7
+    assert shadow_exit_score({}, 0.7) == 0.7
+    assert shadow_exit_score({"invert": True}, None) is None
+
+
+def test_inverted_strategy_not_shaken_out_by_the_signal_it_fades():
+    # fade_conviction buys a put when the composite is >= 60% bullish. With the
+    # raw score, the reversal exit (put + composite >= +0.60) was already true
+    # at entry and closed the position on the next cycle.
+    entry_cfg = {"min_confidence_pct": 60, "invert": True}
+    row = {"id": 1, "ticker": "SPY", "option_type": "put", "strike": 500.0,
+           "expiration": "2026-09-24", "contracts": 1, "entry_price": 1.00,
+           "status": "open", "current_price": 1.00, "max_price": 1.00}
+    position = shadow_position_from_row(row, FADE_EXIT)
+
+    still_bullish = shadow_exit_score(entry_cfg, 0.65)
+    assert evaluate_exit(position, 1.00, still_bullish, 200, FADE_EXIT) is None
+    # the faded signal flipping bearish means the inverted read turned bullish
+    # -> against the put -> that IS a reversal for this strategy
+    flipped = shadow_exit_score(entry_cfg, -0.65)
+    assert evaluate_exit(position, 1.00, flipped, 200, FADE_EXIT) == "signal_reversal"

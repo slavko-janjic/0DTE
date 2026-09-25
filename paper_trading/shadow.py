@@ -101,6 +101,20 @@ def should_shadow_enter(
     return option_type
 
 
+def shadow_exit_score(entry_cfg: dict, composite_score: float | None) -> float | None:
+    """The composite score an open shadow position's reversal exit should see.
+
+    An inverted strategy trades AGAINST the composite, so its position agrees
+    with the flipped score. Feeding it the raw score would make the reversal
+    exit fire when the composite strengthens in the direction being faded - for
+    a strategy entering at >= the reversal threshold, on the very next cycle.
+    Flipping here keeps "reversal" meaning "the signal this strategy trusts has
+    turned against the position"."""
+    if composite_score is not None and entry_cfg.get("invert"):
+        return -composite_score
+    return composite_score
+
+
 def shadow_position_from_row(row, exit_cfg: dict) -> Position:
     """Builds an engine Position from a shadow_positions row so evaluate_exit
     applies unchanged. Per-trade stop/target come from the strategy's exit

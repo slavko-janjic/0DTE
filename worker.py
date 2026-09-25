@@ -26,7 +26,7 @@ from paper_trading.engine import (
     close as close_position, evaluate_exit, explain_auto_decision, should_auto_enter,
 )
 from paper_trading.models import Position
-from paper_trading.shadow import shadow_position_from_row, should_shadow_enter
+from paper_trading.shadow import shadow_exit_score, shadow_position_from_row, should_shadow_enter
 from signals import day_setup as day_setup_mod
 from signals import indicators
 from signals.composite import build_recommendation, compute_signal, direction_from_score
@@ -451,6 +451,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         if not name:
             continue
         exit_cfg = strategy.get("exit", {})
+        entry_cfg = strategy.get("entry", {})
 
         # --- exits on this strategy's open positions in this ticker ---------
         for row in open_by_strategy.get(name, []):
@@ -464,7 +465,8 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             storage.update_shadow_price(db_path, row["id"], current_price)
             position = shadow_position_from_row(row, exit_cfg)
             position.max_price = max(position.max_price or current_price, current_price)
-            reason = evaluate_exit(position, current_price, signal.composite_score,
+            reason = evaluate_exit(position, current_price,
+                                   shadow_exit_score(entry_cfg, signal.composite_score),
                                    minutes_to_close, exit_cfg)
             if reason:
                 pnl = storage.close_shadow_position(db_path, row["id"], current_price, reason)
@@ -475,7 +477,6 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         # --- one possible entry per strategy per cycle -----------------------
         if chain is None or not is_market_open(config):
             continue
-        entry_cfg = strategy.get("entry", {})
 
         # a strategy may be pinned to specific tickers (exits above still run for
         # any position it already holds, in case the pinning changed)
