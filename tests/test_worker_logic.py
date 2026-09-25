@@ -895,3 +895,26 @@ def test_setup_file_logging_logs_even_when_stdout_is_a_terminal(tmp_path, monkey
     print("boom", file=worker.sys.stderr)
     text = log.read_text(encoding="utf-8")
     assert "| polling every 60s" in text and "| boom" in text
+
+
+# --- affordability ------------------------------------------------------------------
+
+def test_autopilot_logs_why_it_cant_afford_a_contract(tmp_path, monkeypatch, capsys):
+    db_path = _auto_db(tmp_path)
+    storage.set_balance(db_path, 1000.0)              # 5% = $50 vs a $200 contract
+    _patch_market_clock(monkeypatch)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0})
+    maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], AUTO_CONFIG, db_path)
+    assert storage.get_open_positions(db_path) == []
+    out = capsys.readouterr().out
+    assert "balance too small - 5% of $1,000 is $50, one contract costs $200" in out
+
+
+def test_autopilot_logs_a_missing_quote_instead_of_skipping_silently(tmp_path, monkeypatch, capsys):
+    db_path = _auto_db(tmp_path)
+    _patch_market_clock(monkeypatch)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract", lambda df, spot: None)
+    maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], AUTO_CONFIG, db_path)
+    assert storage.get_open_positions(db_path) == []
+    assert "no usable ATM call quote this cycle" in capsys.readouterr().out

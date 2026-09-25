@@ -323,6 +323,20 @@ def _gamma_from_chain(chain: market_data.OptionChainSnapshot | None,
     return score, indicators.gamma_regime(score, deadband)
 
 
+def _atm_entry(chain, direction: str) -> tuple[object, float | None]:
+    """(contract, ask-side entry price) the autopilot would buy for this
+    direction - the ATM call for bullish, put for bearish; (None, None) when
+    neutral or the chain has no usable quote."""
+    lean = {"bullish": "call", "bearish": "put"}.get(direction)
+    if lean is None or chain is None:
+        return None, None
+    df = chain.calls if lean == "call" else chain.puts
+    contract = market_data.find_atm_contract(df, chain.spot)
+    if contract is None:
+        return None, None
+    return contract, market_data.contract_entry_price(contract)  # honest fill: ask-side
+
+
 def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.OptionChainSnapshot]],
                           config: dict, db_path: str) -> None:
     """Auto-pilot entry: considers this cycle's candidates strongest-first and
@@ -361,6 +375,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
     # At most one entry per cycle, so a single pre-cycle rows snapshot is exact.
     open_rows = storage.get_open_positions(db_path)
     closed_rows = storage.get_closed_positions(db_path)
+    balance = storage.get_balance(db_path)
     intents = []
     for ticker, signal, chain in sorted(
         candidates, key=lambda c: _gate(c[1]), reverse=True,
@@ -368,6 +383,10 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
         if chain is None:
             continue
         _, gamma_regime = _gamma_from_chain(chain, config)
+        # price the contract it would buy BEFORE deciding, so "can the balance
+        # afford it?" is part of the decision (and the log line) rather than a
+        # silent skip afterwards
+        contract, entry_price = _atm_entry(chain, signal.direction)
         intent = explain_auto_decision(
             ticker=ticker,
             direction=signal.direction,
@@ -383,33 +402,32 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=gamma_regime,
             stand_down_reason=calendar_block,
+            balance=balance,
+            entry_price=entry_price,
         )
-        intents.append((intent, ticker, signal, chain))
+        intents.append((intent, ticker, signal, chain, contract, entry_price))
 
     if intents:
         summary = " | ".join(
             f"{i.ticker} {i.lean or 'neutral'} {i.confidence_pct:.0f}% "
             + ("-> WOULD ENTER" if i.would_enter else f"({i.blocker})")
-            for i, _, _, _ in intents
+            for i, *_ in intents
         )
         print(f"autopilot intent: {summary}")
 
-    for intent, ticker, signal, chain in intents:
+    for intent, ticker, signal, chain, contract, entry_price in intents:
         if not intent.would_enter:
             continue
         option_type = intent.lean
-
-        df = chain.calls if option_type == "call" else chain.puts
-        contract = market_data.find_atm_contract(df, chain.spot)
-        if contract is None:
+        if contract is None or entry_price is None:
+            # affordability couldn't be checked without a quote - say so, don't
+            # skip in silence
+            print(f"[{ticker}] autopilot would enter, but there's no usable ATM "
+                  f"{option_type} quote this cycle - skipping")
             continue
-        entry_price = market_data.contract_entry_price(contract)  # honest fill: ask-side
-        if entry_price is None:
-            continue
-        balance = storage.get_balance(db_path)
         contracts = calculate_contracts(balance, autopilot_cfg.get("risk_per_trade_pct", 5), entry_price)
         if contracts <= 0:
-            continue
+            continue  # unreachable: the decision already checked affordability
 
         position_id = buy_position(
             db_path, ticker, option_type, float(contract["strike"]),

@@ -777,3 +777,26 @@ def test_calibration_events_show_market_time_not_utc(db, config):
         conn.execute("UPDATE calibration_events SET created_at = '2026-07-06T20:30:00+00:00'")
     event = payloads.calibration_payload(db, config, "QQQ")["events"][0]
     assert event["when"] == "07-06 16:30"          # 20:30 UTC = 16:30 ET (EDT), not "20:30"
+
+
+def test_intents_say_when_the_balance_cant_afford_a_contract(db, config, open_session):
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=0)
+    storage.set_autopilot_state(db, "continuous")
+    storage.set_balance(db, 1445.0)
+    storage.insert_quote_snapshot(db, "QQQ", "call", 721.0, 721.3, 1.50, 1.57, 1.535, 4.6, 45)
+    intent = payloads.autopilot_intents(db, config)[0]
+    assert intent["would_enter"] is False
+    assert intent["blocker"] == "balance too small - 5% of $1,445 is $72, one contract costs ~$157"
+    storage.set_balance(db, 5000.0)
+    assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True
+
+
+def test_intents_skip_the_check_on_a_stale_quote(db, config, open_session):
+    add_signal(db, "QQQ", confidence=90.0, direction="bullish", minutes_ago=0)
+    storage.set_autopilot_state(db, "continuous")
+    storage.set_balance(db, 1445.0)
+    storage.insert_quote_snapshot(db, "QQQ", "call", 721.0, 721.3, 1.50, 1.57, 1.535, 4.6, 45)
+    with storage.connect(db) as conn:          # yesterday's quote says nothing about now
+        conn.execute("UPDATE quote_snapshots SET timestamp = ?",
+                     ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),))
+    assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True

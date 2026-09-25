@@ -569,3 +569,29 @@ def test_expired_calendar_stands_the_autopilot_down_first():
         ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
         starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker) is None
+
+
+def _decide(**extra):
+    from paper_trading.engine import explain_auto_decision
+    return explain_auto_decision(
+        ticker="QQQ", direction="bullish", confidence_pct=80.0, minutes_since_open=120,
+        minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
+        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", **extra)
+
+
+def test_autopilot_stands_down_when_the_balance_cant_buy_one_contract():
+    # the real case: $1,445 at the default 5% is ~$72 against a $157 contract
+    intent = _decide(balance=1445.0, entry_price=1.57)
+    assert intent.would_enter is False
+    assert intent.blocker == "balance too small - 5% of $1,445 is $72, one contract costs $157"
+    assert _decide(balance=5000.0, entry_price=1.57).would_enter is True     # $250 buys one
+
+
+def test_an_estimated_price_is_marked_as_such():
+    intent = _decide(balance=1445.0, entry_price=1.57, entry_price_estimated=True)
+    assert intent.blocker.endswith("costs ~$157")
+
+
+def test_affordability_is_skipped_without_a_price():
+    assert _decide(balance=100.0).would_enter is True          # no quote: nothing to check
+    assert _decide(entry_price=9.99).would_enter is True       # no balance given
