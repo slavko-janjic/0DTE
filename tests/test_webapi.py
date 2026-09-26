@@ -800,3 +800,17 @@ def test_intents_skip_the_check_on_a_stale_quote(db, config, open_session):
         conn.execute("UPDATE quote_snapshots SET timestamp = ?",
                      ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),))
     assert payloads.autopilot_intents(db, config)[0]["would_enter"] is True
+
+
+def test_the_circuit_breaker_is_sized_off_the_accounts_opening_equity(db, config):
+    # a $5,000 account (config still says starting_balance 10,000) loses $600 today
+    storage.set_balance(db, 5000.0)
+    position_id = engine.buy(db, "QQQ", "call", 721.0, "2099-01-02", 3.00, 2, 0.4,
+                             opened_by="auto")                       # $600 in
+    engine.close(db, position_id, 0.0, "stop_loss")                  # all of it lost
+    today = payloads.autopilot_today(db, config)
+    assert today["loss_limit"] == pytest.approx(500.0)               # 10% of $5,000
+    assert today["circuit_breaker"] is True                          # the old $1,000 wouldn't trip
+    row = next(r for r in payloads.autopilot_payload(db, config)["config"]
+               if r["label"] == "Daily loss limit")
+    assert row["value"] == "10% of opening equity ($500)"

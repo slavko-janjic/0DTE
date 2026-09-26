@@ -18,7 +18,7 @@ from analytics import accuracy, charting
 from analytics.spreads import cheapest_windows, spread_by_minute_bucket, spread_summary
 from paper_trading.engine import (
     calculate_pnl, daily_realized_pnl, explain_auto_decision, month_calendar_cells,
-    summarize_pnl, trade_events,
+    session_start_equity, summarize_pnl, trade_events,
 )
 from paper_trading.shadow import strategy_edge, strategy_scorecard
 from signals import day_setup as day_setup_mod
@@ -202,7 +202,9 @@ def autopilot_today(db_path: str, config: dict) -> dict:
                     if row["opened_by"] == "auto" and _is_today(row["exit_time"], tz, today))
 
     ap_cfg = config.get("autopilot", {})
-    limit = ap_cfg.get("daily_loss_limit_pct", 10) / 100.0 * config["account"]["starting_balance"]
+    # same base the worker uses: the account's equity at today's open
+    limit = ap_cfg.get("daily_loss_limit_pct", 10) / 100.0 * _loss_limit_base(
+        db_path, open_rows, closed, datetime.now(tz), tz)
     cap = (ap_cfg.get("max_entries_per_session", 1)
            if mode == "day" and ap_cfg.get("tactic", "opening_range") == "opening_range"
            else ap_cfg.get("max_trades_per_day", 4))
@@ -212,8 +214,15 @@ def autopilot_today(db_path: str, config: dict) -> dict:
         "trades_today": trades_today,
         "trades_cap": cap,
         "pnl_today": pnl_today,
+        "loss_limit": limit,
         "circuit_breaker": pnl_today <= -limit,
     }
+
+
+def _loss_limit_base(db_path: str, open_rows, closed_rows, now: datetime, tz: ZoneInfo) -> float:
+    """What the daily loss limit is a % of - the account's equity at today's
+    open (engine.session_start_equity), exactly as the worker computes it."""
+    return session_start_equity(storage.get_balance(db_path), open_rows, closed_rows, now, tz.key)
 
 
 def overview(db_path: str, config: dict) -> dict:
@@ -741,6 +750,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     profit_target = ap_cfg.get("profit_target_pct", 50)
     stop_loss = ap_cfg.get("stop_loss_pct", -35)
     balance = storage.get_balance(db_path)
+    loss_base = session_start_equity(balance, open_rows, closed_rows, now, tz.key)
 
     intents = []
     for ticker in tickers:
@@ -770,7 +780,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
             minutes_since_open=clock["minutes_since_open"],
             minutes_to_close=clock["minutes_to_close"],
             open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap_cfg,
-            starting_balance=config["account"]["starting_balance"], now=now,
+            loss_limit_base=loss_base, now=now,
             tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=snap["gamma_regime"],
             stand_down_reason=stand_down or stale,
@@ -868,7 +878,8 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
                                         f"{ap_cfg.get('stop_loss_pct', -35):.0f}%"},
             {"label": "Per session", "value": f"{ap_cfg.get('max_entries_per_session', 1)} / ticker"},
             {"label": "Daily loss limit",
-             "value": f"{ap_cfg.get('daily_loss_limit_pct', 10):.0f}% of start"},
+             "value": f"{ap_cfg.get('daily_loss_limit_pct', 10):.0f}% of opening equity "
+                      f"(${today['loss_limit']:,.0f})"},
         ],
     }
 

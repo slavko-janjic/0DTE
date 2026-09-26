@@ -304,7 +304,7 @@ def _enter(ticker="QQQ", direction="bullish", confidence=60.0, since_open=120,
         ticker=ticker, direction=direction, confidence_pct=confidence,
         minutes_since_open=since_open, minutes_to_close=to_close,
         open_rows=list(open_rows), closed_rows=list(closed_rows),
-        autopilot_cfg=cfg, starting_balance=10000.0, now=_AP_NOW, tz_name="UTC",
+        autopilot_cfg=cfg, loss_limit_base=10000.0, now=_AP_NOW, tz_name="UTC",
         minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
     )
 
@@ -562,13 +562,13 @@ def test_expired_calendar_stands_the_autopilot_down_first():
     intent = explain_auto_decision(
         ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
-        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker)
+        loss_limit_base=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker)
     assert intent.would_enter is False
     assert intent.blocker == blocker
     assert should_auto_enter(
         ticker="QQQ", direction="bullish", confidence_pct=95.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
-        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker) is None
+        loss_limit_base=10000.0, now=_AP_NOW, tz_name="UTC", stand_down_reason=blocker) is None
 
 
 def _decide(**extra):
@@ -576,7 +576,7 @@ def _decide(**extra):
     return explain_auto_decision(
         ticker="QQQ", direction="bullish", confidence_pct=80.0, minutes_since_open=120,
         minutes_to_close=180, open_rows=[], closed_rows=[], autopilot_cfg=AUTOPILOT_CFG,
-        starting_balance=10000.0, now=_AP_NOW, tz_name="UTC", **extra)
+        loss_limit_base=10000.0, now=_AP_NOW, tz_name="UTC", **extra)
 
 
 def test_autopilot_stands_down_when_the_balance_cant_buy_one_contract():
@@ -595,3 +595,41 @@ def test_an_estimated_price_is_marked_as_such():
 def test_affordability_is_skipped_without_a_price():
     assert _decide(balance=100.0).would_enter is True          # no quote: nothing to check
     assert _decide(entry_price=9.99).would_enter is True       # no balance given
+
+
+# --- the daily loss limit's base ----------------------------------------------------
+
+def test_session_start_equity_backs_out_todays_realized_pnl():
+    from paper_trading.engine import session_start_equity
+    now = datetime(2026, 9, 28, 17, 0, tzinfo=timezone.utc)          # Mon 13:00 ET
+    open_rows = [{"cost_basis": 300.0}]
+    closed = [
+        {"exit_time": "2026-09-28T15:00:00+00:00", "pnl": -120.0},    # today
+        {"exit_time": "2026-09-28T16:00:00+00:00", "pnl": 40.0},      # today
+        {"exit_time": "2026-09-25T19:00:00+00:00", "pnl": 999.0},     # Friday: already in the base
+        {"exit_time": None, "pnl": None},
+    ]
+    # cash 4,620 + 300 in an open position - (-120 + 40) today = 5,000 at the open
+    assert session_start_equity(4620.0, open_rows, closed, now, "America/New_York") == 5000.0
+
+
+def test_session_start_equity_uses_the_market_date():
+    from paper_trading.engine import session_start_equity
+    now = datetime(2026, 9, 29, 1, 0, tzinfo=timezone.utc)           # Mon 21:00 ET
+    closed = [{"exit_time": "2026-09-28T23:30:00+00:00", "pnl": -50.0}]   # Mon 19:30 ET
+    assert session_start_equity(1000.0, [], closed, now, "America/New_York") == 1050.0
+
+
+def test_daily_loss_limit_scales_with_the_account():
+    from paper_trading.engine import explain_auto_decision
+    losing_day = [_ap_row(ticker="SPY", exit_time="2026-07-07T15:00:00+00:00", pnl=-600.0)]
+
+    def decide(base):
+        return explain_auto_decision(
+            ticker="QQQ", direction="bullish", confidence_pct=80.0, minutes_since_open=120,
+            minutes_to_close=180, open_rows=[], closed_rows=losing_day,
+            autopilot_cfg=AUTOPILOT_CFG, loss_limit_base=base, now=_AP_NOW, tz_name="UTC")
+
+    # -$600 is past 10% of a $5,000 account, but not of the old fixed $10,000
+    assert decide(5000.0).blocker == "daily loss limit hit - stopped for today"
+    assert decide(10000.0).would_enter is True
