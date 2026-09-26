@@ -79,6 +79,27 @@ def summarize_pnl(
     }
 
 
+def session_start_equity(balance: float, open_rows: list, closed_rows: list,
+                         now: datetime, tz_name: str = "America/New_York") -> float:
+    """What the account was worth when today's session began - the base the
+    autopilot's daily loss limit is a percentage of.
+
+    Equity = cash balance + the cost of open positions. Buying moves cash into
+    a position and closing moves it back plus the P&L, so equity only changes
+    by realized P&L: the day's opening equity is today's equity minus today's
+    realized P&L (market-tz date). A manual balance edit during the day moves
+    the base with it. It replaces the fixed config starting_balance, which on a
+    $5,000 account made "10% of start" a $1,000 - i.e. 20% - limit."""
+    tz = ZoneInfo(tz_name)
+    today = now.astimezone(tz).date()
+    open_cost = sum(row["cost_basis"] for row in open_rows)
+    realized_today = sum(
+        (row["pnl"] or 0.0) for row in closed_rows
+        if row["exit_time"] and datetime.fromisoformat(row["exit_time"]).astimezone(tz).date() == today
+    )
+    return balance + open_cost - realized_today
+
+
 def daily_realized_pnl(closed_rows: list, tz_name: str = "America/New_York") -> dict:
     """Realized P&L bucketed by exit date (in the market timezone) - feeds the
     dashboard's daily P&L calendar. Returns {datetime.date: pnl}. Takes plain
@@ -225,7 +246,7 @@ def explain_auto_decision(
     open_rows: list,
     closed_rows: list,
     autopilot_cfg: dict,
-    starting_balance: float,
+    loss_limit_base: float,
     now: datetime,
     tz_name: str = "America/New_York",
     minutes_to_catalyst: float | None = None,
@@ -242,6 +263,9 @@ def explain_auto_decision(
     stand_down_reason is a hard stop decided outside the signal and checked
     first - an expired catalyst/holiday calendar (day_setup.calendar_blocker),
     or, for the UI's dry run, a signal the worker isn't acting on.
+
+    loss_limit_base is what daily_loss_limit_pct is a percentage of - callers
+    pass session_start_equity(), so the limit tracks the account's real size.
 
     balance + entry_price (the per-contract ask) add the last guard rail: can
     risk_per_trade_pct of the balance buy one contract? Checked only when both
@@ -317,7 +341,7 @@ def explain_auto_decision(
             if now - datetime.fromisoformat(row["exit_time"]) < cooldown:
                 return _i(False, f"cooldown after a recent {ticker} close")
 
-    loss_limit = autopilot_cfg.get("daily_loss_limit_pct", 10) / 100.0 * starting_balance
+    loss_limit = autopilot_cfg.get("daily_loss_limit_pct", 10) / 100.0 * loss_limit_base
     todays_auto_pnl = sum(
         (row["pnl"] or 0.0) for row in closed_rows
         if row["opened_by"] == "auto" and _is_today(row["exit_time"])
@@ -345,7 +369,7 @@ def should_auto_enter(
     open_rows: list,
     closed_rows: list,
     autopilot_cfg: dict,
-    starting_balance: float,
+    loss_limit_base: float,
     now: datetime,
     tz_name: str = "America/New_York",
     minutes_to_catalyst: float | None = None,
@@ -361,7 +385,7 @@ def should_auto_enter(
         ticker=ticker, direction=direction, confidence_pct=confidence_pct,
         minutes_since_open=minutes_since_open, minutes_to_close=minutes_to_close,
         open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=autopilot_cfg,
-        starting_balance=starting_balance, now=now, tz_name=tz_name,
+        loss_limit_base=loss_limit_base, now=now, tz_name=tz_name,
         minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
         stand_down_reason=stand_down_reason, balance=balance, entry_price=entry_price,
     )

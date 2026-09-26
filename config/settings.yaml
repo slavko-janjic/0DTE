@@ -178,7 +178,7 @@ autopilot:
   max_concurrent_positions: 3   # cap on simultaneously open AUTO positions
   max_trades_per_day: 4         # cap on auto entries per calendar day (market tz)
   cooldown_minutes: 30          # no re-entry in a ticker this soon after any close
-  daily_loss_limit_pct: 10      # circuit breaker: stop for the day after losing this % (of starting balance) on auto trades
+  daily_loss_limit_pct: 10      # circuit breaker: stop for the day after losing this % of the account's equity at the open (balance + open positions) on auto trades
   no_entry_first_minutes: 30    # let the opening range form (continuous tactic)
   no_entry_last_minutes: 60     # don't open with too little runway before the bell
   tactic: opening_range         # opening_range = one deliberate decision per day-session; continuous = enter any time guard rails pass

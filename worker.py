@@ -26,8 +26,8 @@ from config import (
 from data import market_data
 from paper_trading.engine import (
     AUTO_CLOSE_REASONS, AUTO_FORCE_REASONS, buy as buy_position, calculate_contracts,
-    close as close_position, evaluate_exit, explain_auto_decision, settlement_price,
-    should_auto_enter,
+    close as close_position, evaluate_exit, explain_auto_decision, session_start_equity,
+    settlement_price, should_auto_enter,
 )
 from paper_trading.models import Position
 from paper_trading.shadow import shadow_exit_score, shadow_position_from_row, should_shadow_enter
@@ -376,6 +376,8 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
     open_rows = storage.get_open_positions(db_path)
     closed_rows = storage.get_closed_positions(db_path)
     balance = storage.get_balance(db_path)
+    # the daily loss limit is a % of what the account was worth at the open
+    loss_limit_base = session_start_equity(balance, open_rows, closed_rows, now, tz_name)
     intents = []
     for ticker, signal, chain in sorted(
         candidates, key=lambda c: _gate(c[1]), reverse=True,
@@ -396,7 +398,7 @@ def maybe_auto_enter_best(candidates: list[tuple[str, object, market_data.Option
             open_rows=open_rows,
             closed_rows=closed_rows,
             autopilot_cfg=autopilot_cfg,
-            starting_balance=config["account"]["starting_balance"],
+            loss_limit_base=loss_limit_base,
             now=now,
             tz_name=tz_name,
             minutes_to_catalyst=minutes_to_catalyst,

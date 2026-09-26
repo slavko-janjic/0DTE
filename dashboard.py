@@ -28,7 +28,7 @@ from data import market_data
 from paper_trading.engine import calculate_contracts, calculate_pnl, close as close_position
 from paper_trading.engine import (
     buy as buy_position, daily_realized_pnl, explain_auto_decision, month_calendar_cells, price_target_exit,
-    shift_month, summarize_pnl, trade_events,
+    session_start_equity, shift_month, summarize_pnl, trade_events,
 )
 from paper_trading.models import Position
 from paper_trading.shadow import strategy_edge, strategy_scorecard
@@ -464,7 +464,9 @@ def render_autopilot_intent() -> None:
                 ticker=t, direction=sig["direction"], confidence_pct=conf or 0.0,
                 minutes_since_open=since_open, minutes_to_close=to_close,
                 open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=ap,
-                starting_balance=config["account"]["starting_balance"], now=now,
+                loss_limit_base=session_start_equity(
+                    storage.get_balance(db_path), open_rows, closed_rows, now, tz_name),
+                now=now,
                 tz_name=tz_name, minutes_to_catalyst=mtc, gamma_regime=sig["gamma_regime"],
             )
             intents.append(intent)

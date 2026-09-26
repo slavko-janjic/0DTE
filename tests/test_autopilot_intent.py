@@ -23,7 +23,7 @@ def _intent(**kw):
     base = dict(
         ticker="SPY", direction="bearish", confidence_pct=61.0,
         minutes_since_open=60, minutes_to_close=300, open_rows=[], closed_rows=[],
-        autopilot_cfg=CFG, starting_balance=10000, now=NOW, tz_name=TZ,
+        autopilot_cfg=CFG, loss_limit_base=10000, now=NOW, tz_name=TZ,
         minutes_to_catalyst=None, gamma_regime=None,
     )
     base.update(kw)
@@ -100,7 +100,7 @@ def test_already_holding_blocks():
 def test_should_auto_enter_is_a_faithful_wrapper():
     common = dict(
         minutes_since_open=60, minutes_to_close=300, open_rows=[], closed_rows=[],
-        autopilot_cfg=CFG, starting_balance=10000, now=NOW, tz_name=TZ,
+        autopilot_cfg=CFG, loss_limit_base=10000, now=NOW, tz_name=TZ,
     )
     # would-enter case -> returns the lean
     assert should_auto_enter(ticker="SPY", direction="bearish", confidence_pct=61.0, **common) == "put"
