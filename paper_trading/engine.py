@@ -231,6 +231,9 @@ def explain_auto_decision(
     minutes_to_catalyst: float | None = None,
     gamma_regime: str | None = None,
     stand_down_reason: str | None = None,
+    balance: float | None = None,
+    entry_price: float | None = None,
+    entry_price_estimated: bool = False,
 ) -> AutoIntent:
     """The autopilot's entry decision, WITH its reasoning - the same guard rails
     as should_auto_enter, in the same order, but returning why it would stand
@@ -238,7 +241,12 @@ def explain_auto_decision(
 
     stand_down_reason is a hard stop decided outside the signal and checked
     first - an expired catalyst/holiday calendar (day_setup.calendar_blocker),
-    or, for the UI's dry run, a signal the worker isn't acting on."""
+    or, for the UI's dry run, a signal the worker isn't acting on.
+
+    balance + entry_price (the per-contract ask) add the last guard rail: can
+    risk_per_trade_pct of the balance buy one contract? Checked only when both
+    are known. It used to happen after the decision, where the worker skipped
+    silently while the UI (and its push) still said ARMED."""
     lean = {"bullish": "call", "bearish": "put"}.get(direction)
     min_conf = autopilot_cfg.get("min_confidence_pct", 55)
     gamma_penalty = autopilot_cfg.get("positive_gamma_confidence_penalty", 0)
@@ -317,6 +325,14 @@ def explain_auto_decision(
     if todays_auto_pnl <= -loss_limit:
         return _i(False, "daily loss limit hit - stopped for today")
 
+    if balance is not None and entry_price:
+        risk_pct = autopilot_cfg.get("risk_per_trade_pct", 5)
+        if calculate_contracts(balance, risk_pct, entry_price) < 1:
+            about = "~" if entry_price_estimated else ""
+            return _i(False, f"balance too small - {risk_pct:g}% of ${balance:,.0f} is "
+                             f"${balance * risk_pct / 100:,.0f}, one contract costs "
+                             f"{about}${entry_price * 100:,.0f}")
+
     return _i(True, None)
 
 
@@ -335,6 +351,8 @@ def should_auto_enter(
     minutes_to_catalyst: float | None = None,
     gamma_regime: str | None = None,
     stand_down_reason: str | None = None,
+    balance: float | None = None,
+    entry_price: float | None = None,
 ) -> str | None:
     """Auto-pilot entry decision: returns 'call'/'put' to enter, or None. Thin
     wrapper over explain_auto_decision (the single source of the guard-rail
@@ -345,7 +363,7 @@ def should_auto_enter(
         open_rows=open_rows, closed_rows=closed_rows, autopilot_cfg=autopilot_cfg,
         starting_balance=starting_balance, now=now, tz_name=tz_name,
         minutes_to_catalyst=minutes_to_catalyst, gamma_regime=gamma_regime,
-        stand_down_reason=stand_down_reason,
+        stand_down_reason=stand_down_reason, balance=balance, entry_price=entry_price,
     )
     return intent.lean if intent.would_enter else None
 

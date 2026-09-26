@@ -740,9 +740,18 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
                                       MIN_SIGNAL_FRESH_SECONDS))
     profit_target = ap_cfg.get("profit_target_pct", 50)
     stop_loss = ap_cfg.get("stop_loss_pct", -35)
+    balance = storage.get_balance(db_path)
 
     intents = []
     for ticker in tickers:
+        # no live chain here: estimate the contract's cost from the ATM ask the
+        # worker logs each cycle - only while it's as fresh as a signal, else
+        # skip the affordability check rather than guess
+        quote = storage.get_latest_quote(db_path, ticker)
+        est_ask = None
+        if quote is not None and quote["ask"] and \
+                now - datetime.fromisoformat(quote["timestamp"]) <= fresh_for:
+            est_ask = quote["ask"]
         snap = storage.get_latest_signal(db_path, ticker)
         if snap is None:
             intents.append({"ticker": ticker, "would_enter": False, "lean": None,
@@ -765,6 +774,7 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
             tz_name=tz.key, minutes_to_catalyst=minutes_to_catalyst,
             gamma_regime=snap["gamma_regime"],
             stand_down_reason=stand_down or stale,
+            balance=balance, entry_price=est_ask, entry_price_estimated=True,
         )
         blocker = intent.blocker
         if blocker and blocker.startswith("confidence") and shown is not None \
