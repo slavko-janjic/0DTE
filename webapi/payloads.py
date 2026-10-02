@@ -542,11 +542,16 @@ def positions_payload(db_path: str, config: dict, live: dict | None = None) -> d
             "exit_pct_options": EXIT_PCT_OPTIONS}
 
 
-def trade_history(db_path: str, config: dict, limit: int = 200) -> dict:
+def trade_history(db_path: str, config: dict, limit: int = 200,
+                  ticker: str | None = None) -> dict:
+    """Closed trades, newest first. `ticker` narrows it to one symbol BEFORE the
+    limit, so a ticker's own history isn't crowded out by the others."""
     tz = _tz(config)
     this_year = datetime.now(tz).year
     rows = []
-    for pos in storage.get_closed_positions(db_path)[:limit]:
+    closed = [pos for pos in storage.get_closed_positions(db_path)
+              if ticker is None or pos["ticker"] == ticker]
+    for pos in closed[:limit]:
         exit_time = datetime.fromisoformat(pos["exit_time"]).astimezone(tz) \
             if pos["exit_time"] else None
         reason = pos["exit_reason"] or ""
@@ -602,14 +607,18 @@ def calendar_payload(db_path: str, config: dict, year: int | None = None,
 MIN_LAB_TRADES = 20
 
 
-def lab_payload(db_path: str, config: dict) -> dict:
+def lab_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
+    """The strategy leaderboard - across every ticker, or for one. Each
+    strategy trades each ticker on its own book, so a per-ticker view is just
+    that ticker's trades; a strategy pinned to other tickers says so."""
     strategies = config.get("shadow_strategies", [])
     if not strategies:
         return {"rows": [], "message": "No shadow strategies configured "
                                        "(settings.yaml -> shadow_strategies)."}
-    closed = storage.get_closed_shadow_positions(db_path)
+    closed = [row for row in storage.get_closed_shadow_positions(db_path)
+              if ticker is None or row["ticker"] == ticker]
     open_counts: dict[str, int] = {}
-    for row in storage.get_open_shadow_positions(db_path):
+    for row in storage.get_open_shadow_positions(db_path, ticker):
         open_counts[row["strategy"]] = open_counts.get(row["strategy"], 0) + 1
 
     cards = strategy_scorecard(closed)
@@ -620,6 +629,9 @@ def lab_payload(db_path: str, config: dict) -> dict:
         card = cards.get(name)
         edge = edges.get(name, {})
         verdict = edge.get("verdict", "no trades yet") if card else "no trades yet"
+        only = strategy.get("entry", {}).get("only_tickers")
+        if ticker is not None and only and ticker not in only and not card:
+            verdict = f"not run on {ticker}"
         rows.append({
             "name": name,
             "trades": card["trades"] if card else 0,
@@ -637,7 +649,7 @@ def lab_payload(db_path: str, config: dict) -> dict:
         })
     # strongest first among those with data; warming-up rows keep config order
     rows.sort(key=lambda row: (row["trades"] == 0, -(row["total_pnl"] or 0.0)))
-    return {"rows": rows, "min_trades": MIN_LAB_TRADES}
+    return {"rows": rows, "min_trades": MIN_LAB_TRADES, "ticker": ticker}
 
 
 # --- cost of trading ------------------------------------------------------
@@ -810,11 +822,15 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     return intents
 
 
-def autopilot_payload(db_path: str, config: dict) -> dict:
+def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
     """Mode, per-ticker intent (the bot's own dry-run decision), record, config.
 
     `explain_auto_decision` is the same function the worker calls, so what this
     shows is the bot's real intent - not a re-implementation of it.
+
+    `ticker` narrows the auto-trade RECORD to one symbol (the intents always
+    cover every traded ticker - the page picks the one it's showing); mode,
+    config, wallet and today's caps are account-wide.
     """
     ap_cfg = config.get("autopilot", {})
     tickers = ap_cfg.get("tickers") or config["tickers"]
@@ -829,7 +845,8 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
     intents = autopilot_intents(db_path, config, mode=today["mode"], clock=clock, now=now,
                                 open_rows=open_rows, closed_rows=closed_rows)
 
-    auto_pnls = [row["pnl"] or 0.0 for row in closed_rows if row["opened_by"] == "auto"]
+    auto_pnls = [row["pnl"] or 0.0 for row in closed_rows
+                 if row["opened_by"] == "auto" and (ticker is None or row["ticker"] == ticker)]
     record = {"trades": len(auto_pnls)}
     if auto_pnls:
         wins = sum(1 for pnl in auto_pnls if pnl > 0)
@@ -859,6 +876,8 @@ def autopilot_payload(db_path: str, config: dict) -> dict:
             "label": f"{start // 60:02d}:{start % 60:02d}–{end // 60:02d}:{end % 60:02d} ET",
         },
         "intents": intents,
+        "traded_tickers": list(tickers),     # the autopilot's whitelist
+        "record_ticker": ticker,
         "record": record,
         "wallet": wallet(db_path, config),
         "auto_pnl_today": today["pnl_today"],

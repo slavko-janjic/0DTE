@@ -14,6 +14,9 @@
   var state = {
     page: 'signals',
     ticker: null,
+    // Lab / Trades / Autopilot follow the selected ticker ('ticker') or show
+    // every ticker ('all'). Signals, Cost and Tuning are always per-ticker.
+    scope: 'ticker',
     range: 'session',
     calendar: { year: null, month: null },
     autopilotMode: null,
@@ -58,12 +61,17 @@
       }
     } catch (e) { /* private mode: fall back to system */ }
     var button = $('theme');
+    // On a phone there is no theme button (styles.css hides it), so the theme
+    // always follows the system there; a light/dark choice made on desktop
+    // keeps applying at desktop widths only.
+    var phone = window.matchMedia ? window.matchMedia('(max-width:760px)') : null;
     function apply() {
       var theme = THEMES[index];
-      if (theme.k === 'system') { root.removeAttribute('data-theme'); }
+      if (theme.k === 'system' || (phone && phone.matches)) { root.removeAttribute('data-theme'); }
       else { root.setAttribute('data-theme', theme.k); }
       button.innerHTML = theme.i + '<span>' + theme.l + '</span>';
     }
+    if (phone && phone.addEventListener) { phone.addEventListener('change', apply); }
     button.addEventListener('click', function () {
       index = (index + 1) % THEMES.length;
       try { localStorage.setItem('0dte-theme', THEMES[index].k); } catch (e) { /* ignore */ }
@@ -80,6 +88,34 @@
     qa('.page').forEach(function (section) { section.hidden = section.dataset.page !== page; });
     try { localStorage.setItem('0dte-page', page); } catch (e) { /* ignore */ }
     if (!skipLoad) { loadPage(); }
+  }
+
+  /* ---- ticker scope (Lab / Trades / Autopilot) ----------------------- */
+
+  /* The ticker those pages are narrowed to, or null for "all tickers". */
+  function scopedTicker() { return state.scope === 'ticker' ? state.ticker : null; }
+
+  function scopeQuery() {
+    var ticker = scopedTicker();
+    return ticker ? '?ticker=' + encodeURIComponent(ticker) : '';
+  }
+
+  function renderScope() {
+    var ticker = state.ticker || '—';
+    qa('.pills.scope').forEach(function (pills) {
+      pills.innerHTML =
+        '<button data-scope="ticker" class="' + (state.scope === 'ticker' ? 'on' : '') + '">' +
+          A.escapeHtml(ticker) + '</button>' +
+        '<button data-scope="all" class="' + (state.scope === 'all' ? 'on' : '') + '">All tickers</button>';
+    });
+    qa('.scopename').forEach(function (node) { node.textContent = scopedTicker() || 'all tickers'; });
+  }
+
+  function setScope(scope) {
+    state.scope = scope === 'all' ? 'all' : 'ticker';
+    try { localStorage.setItem('0dte-scope', state.scope); } catch (e) { /* ignore */ }
+    renderScope();
+    loadPage();
   }
 
   function loadPage() {
@@ -184,11 +220,10 @@
     qa('.tkname').forEach(function (node) { node.textContent = ticker; });
     qa('#senti .senti').forEach(function (b) { b.classList.toggle('sel', b.dataset.tk === ticker); });
     try { localStorage.setItem('0dte-ticker', ticker); } catch (e) { /* ignore */ }
+    renderScope();
     if (quiet) { return; }
-    loadSignal();
-    loadHistory();
-    if (state.page === 'cost') { loadCost(); }
-    if (state.page === 'tuning') { loadCalibration(); }
+    // the ticker is a global context: whichever page is open reloads for it
+    loadPage();
   }
 
   function optionMarkup(options, selected, sign) {
@@ -452,9 +487,23 @@
       toast('Auto-closed ' + A.escapeHtml(closed.ticker + ' ' + closed.option_type) +
         ' (' + A.escapeHtml(closed.reason) + ')', 'good');
     });
-    var rows = payload.positions || [];
+    var all = payload.positions || [];
+    var ticker = scopedTicker();
+    var rows = ticker ? all.filter(function (row) { return row.ticker === ticker; }) : all;
+    // never let the ticker filter hide an open position without saying so
+    var hidden = all.length - rows.length;
+    $('pos-hidden').hidden = !hidden;
+    if (hidden) {
+      var others = all.filter(function (row) { return row.ticker !== ticker; })
+        .map(function (row) { return row.ticker; })
+        .filter(function (tk, i, list) { return list.indexOf(tk) === i; });
+      $('pos-hidden').innerHTML = '<span>' + hidden + ' more open in ' +
+        A.escapeHtml(others.join(', ')) + '.</span> ' +
+        '<button class="btn ghost small" data-scope="all">Show all tickers</button>';
+    }
     if (!rows.length) {
-      $('positions').innerHTML = '<div class="empty" style="padding:0 17px 16px">No open positions.</div>';
+      $('positions').innerHTML = '<div class="empty" style="padding:0 17px 16px">No open positions' +
+        (ticker ? ' in ' + A.escapeHtml(ticker) : '') + '.</div>';
       return;
     }
     $('positions').innerHTML =
@@ -494,10 +543,12 @@
   }
 
   function loadTradeHistory() {
-    return A.get('/api/history').then(function (payload) {
+    var ticker = scopedTicker();
+    return A.get('/api/history' + scopeQuery()).then(function (payload) {
       var rows = payload.trades || [];
       if (!rows.length) {
-        $('history').innerHTML = '<div class="empty" style="padding:0 17px 16px">No closed trades yet.</div>';
+        $('history').innerHTML = '<div class="empty" style="padding:0 17px 16px">No closed trades' +
+          (ticker ? ' in ' + A.escapeHtml(ticker) : '') + ' yet.</div>';
         return;
       }
       $('history').innerHTML =
@@ -548,7 +599,7 @@
   /* ---- strategy lab ---------------------------------------------------- */
 
   function loadLab() {
-    return A.get('/api/lab').then(function (payload) {
+    return A.get('/api/lab' + scopeQuery()).then(function (payload) {
       var rows = payload.rows || [];
       if (!rows.length) {
         $('lab-table').innerHTML = '<div class="empty">' + A.escapeHtml(payload.message || 'No strategies yet.') + '</div>';
@@ -668,8 +719,18 @@
       : 'market closed';
     $('ap-window').className = 'badge num ' + (payload.window.open ? 'b-acc' : 'b-mut');
 
-    var intents = payload.intents || [];
-    $('ap-intents').innerHTML = intents.length
+    // narrowed to one ticker: its own intent, or a plain note when the
+    // autopilot doesn't trade it at all
+    var ticker = scopedTicker();
+    var traded = payload.traded_tickers || [];
+    var notTraded = ticker && traded.indexOf(ticker) < 0;
+    var intents = (payload.intents || []).filter(function (intent) {
+      return !ticker || intent.ticker === ticker;
+    });
+    $('ap-intents').innerHTML = notTraded
+      ? '<div class="empty">The autopilot doesn\'t trade ' + A.escapeHtml(ticker) +
+        ' — it only trades ' + A.escapeHtml(traded.join(', ')) + '.</div>'
+      : intents.length
       ? intents.map(function (intent) {
           var badge = A.isNum(intent.confidence_pct)
             ? '<span class="badge ' + (intent.would_enter ? 'b-acc' : 'b-mut') + '">' +
@@ -692,7 +753,8 @@
 
     var record = payload.record;
     if (!record.trades) {
-      $('ap-record').innerHTML = '<div class="empty">No auto trades yet.</div>';
+      $('ap-record').innerHTML = '<div class="empty">No auto trades' +
+        (ticker ? ' in ' + A.escapeHtml(ticker) : '') + ' yet.</div>';
       $('ap-record-sub').textContent = '';
     } else {
       $('ap-record').innerHTML =
@@ -707,7 +769,7 @@
   }
 
   function loadAutopilot() {
-    return A.get('/api/autopilot').then(renderAutopilot)
+    return A.get('/api/autopilot' + scopeQuery()).then(renderAutopilot)
       .catch(function (error) { fail($('ap-intents'), error); });
   }
 
@@ -1167,11 +1229,14 @@
     $('senti').addEventListener('click', function (event) {
       var button = event.target.closest('button[data-tk]');
       if (!button) { return; }
+      // stay on the current page - it reloads for the picked ticker
       selectTicker(button.dataset.tk);
-      if (state.page !== 'cost') {
-        showPage('signals');
-        window.scrollTo({ top: 0, behavior: 'instant' });
-      }
+    });
+
+    // "QQQ / All tickers" switches, plus the "show all" link in the positions note
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('button[data-scope]');
+      if (button) { setScope(button.dataset.scope); }
     });
 
     $('range-pills').addEventListener('click', function (event) {
@@ -1238,8 +1303,8 @@
     $('ap-mode').addEventListener('click', function (event) {
       var button = event.target.closest('button[data-mode]');
       if (!button || button.dataset.mode === state.autopilotMode) { return; }
-      A.post('/api/autopilot/mode', { mode: button.dataset.mode }).then(function (payload) {
-        renderAutopilot(payload);
+      A.post('/api/autopilot/mode', { mode: button.dataset.mode }).then(function () {
+        loadAutopilot();      // re-fetch with the page's ticker scope
         loadOverview();
         toast('Autopilot: ' + A.escapeHtml(button.textContent), 'good');
       }).catch(function (error) { toast(A.escapeHtml(error.message), 'bad'); });
@@ -1276,6 +1341,7 @@
     }
     try {
       state.ticker = localStorage.getItem('0dte-ticker') || null;
+      if (localStorage.getItem('0dte-scope') === 'all') { state.scope = 'all'; }
       var page = localStorage.getItem('0dte-page');
       if (page && q('.page[data-page="' + page + '"]')) { state.page = page; }
     } catch (e) { /* ignore */ }
@@ -1285,6 +1351,7 @@
       history.replaceState(null, '', window.location.pathname + window.location.search);
     }
     if (state.ticker) { selectTicker(state.ticker, true); }
+    renderScope();
     showPage(state.page, true);
     connectStream();
     // With the stream connected this is only a safety net; without it, it is
