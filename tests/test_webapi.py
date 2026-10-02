@@ -814,3 +814,46 @@ def test_the_circuit_breaker_is_sized_off_the_accounts_opening_equity(db, config
     row = next(r for r in payloads.autopilot_payload(db, config)["config"]
                if r["label"] == "Daily loss limit")
     assert row["value"] == "10% of opening equity ($500)"
+
+
+# --- weights card: say when (and why) there is nothing to apply -----------------
+
+def _categories(tech=192, flow=20, vol=20):
+    def result(n, acc):
+        return {"accuracy_pct": acc, "graded_count": n * 10, "independent_count": n}
+    return {"technicals": result(tech, 48.5), "order_flow": result(flow, 50.3),
+            "volatility_regime": result(vol, 53.6)}
+
+
+def test_weights_card_explains_a_suggestion_that_changes_nothing(db, config, monkeypatch):
+    # only one signal has 30+ independent calls -> nothing to move weight between
+    monkeypatch.setattr(payloads, "_analysis",
+                        lambda db_path, config, ticker: ([], [], _categories(), []))
+    config["weight_suggestion_min_graded"] = 30
+    suggestion = payloads.calibration_payload(db, config, "QQQ")["suggestion"]
+    assert suggestion["changes"] is False
+    assert suggestion["note"].startswith("No change suggested yet")
+    assert "only Technicals does (Order flow 20, Volatility regime 20 so far)" in suggestion["note"]
+    rows = {row["key"]: row for row in suggestion["rows"]}
+    assert rows["technicals"]["eligible"] is True and rows["technicals"]["independent"] == 192
+    assert rows["order_flow"]["eligible"] is False
+    # and the API refuses to pin the unchanged weights as an "override"
+    result = live.apply_weights(db, config, "QQQ")
+    assert result["ok"] is False and "nothing to apply" in result["message"]
+    assert storage.get_weight_overrides(db, "QQQ") is None
+
+
+def test_weights_card_flags_a_real_change(db, config, monkeypatch):
+    # two eligible signals with different records -> weight moves, no note
+    monkeypatch.setattr(payloads, "_analysis",
+                        lambda db_path, config, ticker: ([], [], _categories(flow=20, vol=60), []))
+    config["weight_suggestion_min_graded"] = 30
+    suggestion = payloads.calibration_payload(db, config, "QQQ")["suggestion"]
+    assert suggestion["changes"] is True and suggestion["note"] is None
+    assert live.apply_weights(db, config, "QQQ")["ok"] is True
+
+
+def test_weights_differ_ignores_rounding():
+    current = {"technicals": 0.33, "order_flow": 0.33}
+    assert payloads.weights_differ(current, {"technicals": 0.33, "order_flow": 0.3304}) is False
+    assert payloads.weights_differ(current, {"technicals": 0.40, "order_flow": 0.26}) is True

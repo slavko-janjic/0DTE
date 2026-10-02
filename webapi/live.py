@@ -307,6 +307,10 @@ def apply_weights(db_path: str, config: dict, ticker: str) -> dict:
     if suggested is None:
         return {"ok": False, "message": "No category has enough graded history to "
                                         "justify a weight change yet."}
+    if not payloads.weights_differ(storage.effective_weights(db_path, config, ticker), suggested):
+        # saving it would only pin the current weights as an "override"
+        return {"ok": False, "message": "The suggestion matches the current weights - "
+                                        "nothing to apply."}
     storage.set_weight_overrides(db_path, ticker, suggested)
     return {"ok": True, "weights": suggested}
 

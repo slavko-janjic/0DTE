@@ -160,6 +160,8 @@ td{padding:10px 12px;border-bottom:1px solid var(--border)}
 tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--surface-2)}
 td.num,th.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+/* numbers sit under their (right-aligned) headers; a first column stays left */
+td.num:not(:first-child){text-align:right}
 .tkcell{font-family:var(--mono);font-weight:600}
 
 .stat-row{display:flex;gap:26px;flex-wrap:wrap}
