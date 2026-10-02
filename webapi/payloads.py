@@ -963,6 +963,24 @@ def _event_detail(kind: str, detail: dict) -> str:
     return ""
 
 
+def weights_differ(current: dict, suggested: dict) -> bool:
+    """Whether a weight suggestion would actually change anything (beyond the
+    3-decimal rounding suggest_weights applies)."""
+    return any(abs(suggested.get(key, weight) - weight) > 0.001 for key, weight in current.items())
+
+
+def _no_change_note(rows: list[dict], min_graded: int) -> str:
+    """Why 'Suggested' equals 'Current' - so the card doesn't look broken."""
+    eligible = [row["name"] for row in rows if row["eligible"]]
+    waiting = [f"{row['name']} {row['independent']}" for row in rows if not row["eligible"]]
+    if len(eligible) == 1:
+        return (f"No change suggested yet: a signal is only reweighted once it has {min_graded}+ "
+                f"independent calls, and only {eligible[0]} does ({', '.join(waiting)} so far) - "
+                f"there is nothing to move weight between.")
+    return ("No change suggested: the signals with enough history score alike, so the "
+            "suggestion matches the current weights.")
+
+
 def calibration_payload(db_path: str, config: dict, ticker: str) -> dict:
     """Everything the Tuning page shows: what the nightly self-calibration has
     done, how well-calibrated the confidence numbers are, which individual
@@ -996,13 +1014,22 @@ def calibration_payload(db_path: str, config: dict, ticker: str) -> dict:
     suggested = accuracy.suggest_weights(categories, active, min_graded=min_graded) \
         if categories else None
     if suggested is not None:
+        rows = []
+        for key in active:
+            independent = (categories.get(key) or {}).get("independent_count") or 0
+            rows.append({
+                "key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0],
+                "current_pct": active.get(key, 0) * 100,
+                "suggested_pct": suggested.get(key, 0) * 100,
+                # a signal is only reweighted once it has min_graded independent calls
+                "independent": independent,
+                "eligible": independent >= min_graded,
+            })
+        changes = weights_differ(active, suggested)
         suggestion = {
-            "rows": [
-                {"key": key, "name": CATEGORY_INFO.get(key, (key, ""))[0],
-                 "current_pct": active.get(key, 0) * 100,
-                 "suggested_pct": suggested.get(key, 0) * 100}
-                for key in active
-            ],
+            "rows": rows,
+            "changes": changes,
+            "note": None if changes else _no_change_note(rows, min_graded),
             "applied_at": override[1] if override is not None else None,
             "source": "applied suggestion" if override is not None else "config defaults",
         }

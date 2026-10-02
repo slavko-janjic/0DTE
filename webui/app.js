@@ -1008,7 +1008,8 @@
     }).join('');
 
     var suggestion = payload.suggestion;
-    $('weights-apply').disabled = !suggestion;
+    // nothing to apply when the suggestion equals the current weights
+    $('weights-apply').disabled = !(suggestion && suggestion.changes);
     $('weights-revert').disabled = !(suggestion && suggestion.applied_at);
     if (!suggestion) {
       $('cal-weights').innerHTML = '<div class="empty">No category has ' + payload.min_graded +
@@ -1016,13 +1017,21 @@
       $('cal-weights-sub').textContent = '';
     } else {
       $('cal-weights').innerHTML =
-        '<table><thead><tr><th>Signal</th><th class="num">Current</th><th class="num">Suggested</th></tr></thead><tbody>' +
+        '<table><thead><tr><th>Signal</th><th class="num">Current</th><th class="num">Suggested</th>' +
+        '<th class="num">Independent calls</th></tr></thead><tbody>' +
         suggestion.rows.map(function (row) {
           var delta = row.suggested_pct - row.current_pct;
+          // a signal is only reweighted once it has min_graded independent calls
+          var calls = row.eligible ? String(row.independent)
+            : row.independent + ' of ' + payload.min_graded;
           return '<tr><td>' + A.escapeHtml(row.name) + '</td>' +
             '<td class="num">' + A.pct(row.current_pct) + '</td>' +
-            '<td class="num ' + A.tone(delta) + '">' + A.pct(row.suggested_pct) + '</td></tr>';
-        }).join('') + '</tbody></table>';
+            '<td class="num ' + A.tone(delta) + '">' + A.pct(row.suggested_pct) + '</td>' +
+            '<td class="num"' + (row.eligible ? '' : ' style="color:var(--muted)"') + '>' +
+              calls + '</td></tr>';
+        }).join('') + '</tbody></table>' +
+        (suggestion.note ? '<div class="banner info" style="margin:12px 17px 16px">' +
+          A.escapeHtml(suggestion.note) + '</div>' : '');
       $('cal-weights-sub').textContent = 'Applies to ' + payload.ticker + ' only — each ticker ' +
         'keeps its own weights. Currently: ' + suggestion.source +
         (suggestion.applied_at ? ' (' + suggestion.applied_at.slice(0, 16).replace('T', ' ') + ' UTC)' : '') +
