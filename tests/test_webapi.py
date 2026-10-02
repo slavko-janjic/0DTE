@@ -857,3 +857,54 @@ def test_weights_differ_ignores_rounding():
     current = {"technicals": 0.33, "order_flow": 0.33}
     assert payloads.weights_differ(current, {"technicals": 0.33, "order_flow": 0.3304}) is False
     assert payloads.weights_differ(current, {"technicals": 0.40, "order_flow": 0.26}) is True
+
+
+# --- the selected ticker as a page-wide filter -----------------------------------
+
+def _closed_trade(db, ticker, opened_by="manual", exit_price=1.80):
+    position_id = engine.buy(db, ticker, "call", 721.0, "2099-01-02", 1.40, 1, 0.4,
+                             opened_by=opened_by)
+    engine.close(db, position_id, exit_price, "manual")
+    return position_id
+
+
+def test_trade_history_can_be_narrowed_to_one_ticker(db, config):
+    _closed_trade(db, "QQQ")
+    _closed_trade(db, "SPY")
+    _closed_trade(db, "QQQ")
+    assert len(payloads.trade_history(db, config)["trades"]) == 3
+    only = payloads.trade_history(db, config, ticker="QQQ")["trades"]
+    assert [row["ticker"] for row in only] == ["QQQ", "QQQ"]
+    # the filter applies BEFORE the limit, so a ticker isn't crowded out
+    assert [row["ticker"] for row in
+            payloads.trade_history(db, config, limit=1, ticker="SPY")["trades"]] == ["SPY"]
+
+
+def test_autopilot_record_can_be_narrowed_to_one_ticker(db, config):
+    _closed_trade(db, "QQQ", opened_by="auto", exit_price=2.00)     # +60
+    _closed_trade(db, "SPY", opened_by="auto", exit_price=1.00)     # -40
+    everything = payloads.autopilot_payload(db, config)
+    assert everything["record"]["trades"] == 2 and everything["record_ticker"] is None
+    qqq = payloads.autopilot_payload(db, config, ticker="QQQ")
+    assert qqq["record"]["trades"] == 1 and qqq["record"]["total_pnl"] == pytest.approx(60.0)
+    assert qqq["traded_tickers"] == ["QQQ"]                         # the config's whitelist
+    assert payloads.autopilot_payload(db, config, ticker="SPY")["record"]["total_pnl"] == \
+        pytest.approx(-40.0)
+
+
+def test_lab_leaderboard_can_be_narrowed_to_one_ticker(db, config):
+    config["shadow_strategies"] = [
+        {"name": "baseline", "entry": {}},
+        {"name": "spy_only", "entry": {"only_tickers": ["SPY"]}},
+    ]
+    for ticker, exit_price in (("QQQ", 2.6), ("SPY", 1.0), ("SPY", 1.2)):
+        sid = storage.open_shadow_position(db, "baseline", ticker, "call", 500.0,
+                                           "2099-01-02", 2.0, {})
+        storage.close_shadow_position(db, sid, exit_price, "profit_target")
+    rows = {row["name"]: row for row in payloads.lab_payload(db, config)["rows"]}
+    assert rows["baseline"]["trades"] == 3
+    qqq = {row["name"]: row for row in payloads.lab_payload(db, config, ticker="QQQ")["rows"]}
+    assert qqq["baseline"]["trades"] == 1 and qqq["baseline"]["total_pnl"] == pytest.approx(60.0)
+    assert qqq["spy_only"]["verdict"] == "not run on QQQ"           # pinned elsewhere
+    spy = {row["name"]: row for row in payloads.lab_payload(db, config, ticker="SPY")["rows"]}
+    assert spy["baseline"]["trades"] == 2 and spy["spy_only"]["verdict"] == "no trades yet"

@@ -204,17 +204,18 @@ svg.chart{width:100%;height:auto;display:block}
   .nav a{position:relative}
   .nav a .badge{position:absolute;margin:0;top:2px;right:16px;padding:0 5px}
 
-  /* theme -> top-right, icon only */
-  .themebtn{position:fixed;left:auto;right:12px;bottom:auto;
-    top:calc(var(--safe-top) + 9px);width:auto;padding:7px;border-radius:8px}
-  .themebtn span{display:none}
+  /* no theme picker on a phone: the theme follows the system setting there
+     (app.js ignores a saved light/dark choice at this width) */
+  .themebtn{display:none}
   /* mobile shows the down-state as a red dot on the Signals / Autopilot tab instead */
   .sysdown{display:none}
   .nav a.alert .ndot{display:block;position:absolute;top:4px;left:calc(50% + 6px);
     width:7px;height:7px;border-radius:50%;background:var(--down)}
 
-  /* header: just the sentiment strip (worker/autopilot now sit above the signal card) */
-  .topbar{gap:8px 10px;padding-right:46px}
+  /* header: just the ticker strip - no market notice, no theme button (the
+     session rail at the very top still shows how far through the day it is) */
+  .topbar{gap:8px 10px}
+  .topbar .status,.topbar .spacer{display:none}
   .senti-strip{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;
     -webkit-overflow-scrolling:touch;scrollbar-width:none}
   .senti-strip::-webkit-scrollbar{display:none}
@@ -296,9 +297,8 @@ td .sub{color:var(--faint);font-size:11px}
 .notelist{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 
 @media(max-width:760px){
-  /* the strip keeps the full row (chips are the point); the clock wraps under it */
+  /* the strip keeps the full row (chips are the point) */
   .senti-strip{flex:1 1 100%;min-width:0}
-  .status{font-size:11.5px;margin:0 auto}
 }
 
 /* collapsible drawer (accuracy-by-day under the chart) */

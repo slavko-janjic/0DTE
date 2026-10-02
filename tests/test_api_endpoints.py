@@ -144,3 +144,11 @@ def test_push_key_and_subscription_lifecycle(client):
     response = client.post("/api/push/unsubscribe",
                            json={"endpoint": "https://push.example.test/device-1"})
     assert response.json()["devices"] == 0
+
+
+def test_ticker_filter_is_optional_and_validated(client):
+    for route in ("/api/history", "/api/lab", "/api/autopilot"):
+        assert client.get(route).status_code == 200                      # all tickers
+        assert client.get(route + "?ticker=qqq").status_code == 200      # case-insensitive
+        assert client.get(route + "?ticker=NOTATICKER").status_code == 404
+    assert client.get("/api/autopilot?ticker=QQQ").json()["record_ticker"] == "QQQ"

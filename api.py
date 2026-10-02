@@ -97,6 +97,12 @@ def _ticker(ticker: str) -> str:
     return ticker
 
 
+def _optional_ticker(ticker: str | None) -> str | None:
+    """A `?ticker=` filter: absent/empty = every ticker; otherwise it must be a
+    tracked one (404 like the per-ticker routes)."""
+    return _ticker(ticker) if ticker else None
+
+
 # --- reads ----------------------------------------------------------------
 
 @app.get("/api/overview")
@@ -130,8 +136,8 @@ def get_positions() -> dict:
 
 
 @app.get("/api/history")
-def get_history() -> dict:
-    return payloads.trade_history(db_path, config)
+def get_history(ticker: str | None = None) -> dict:
+    return payloads.trade_history(db_path, config, ticker=_optional_ticker(ticker))
 
 
 @app.get("/api/calendar")
@@ -142,8 +148,8 @@ def get_calendar(year: int | None = None, month: int | None = None) -> dict:
 
 
 @app.get("/api/lab")
-def get_lab() -> dict:
-    return payloads.lab_payload(db_path, config)
+def get_lab(ticker: str | None = None) -> dict:
+    return payloads.lab_payload(db_path, config, ticker=_optional_ticker(ticker))
 
 
 @app.get("/api/cost/{ticker}")
@@ -152,8 +158,8 @@ def get_cost(ticker: str) -> dict:
 
 
 @app.get("/api/autopilot")
-def get_autopilot() -> dict:
-    return payloads.autopilot_payload(db_path, config)
+def get_autopilot(ticker: str | None = None) -> dict:
+    return payloads.autopilot_payload(db_path, config, ticker=_optional_ticker(ticker))
 
 
 @app.get("/api/calibration/{ticker}")
