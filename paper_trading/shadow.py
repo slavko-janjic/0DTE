@@ -37,8 +37,10 @@ def should_shadow_enter(
       min_confidence_pct        - confidence floor
       confidence_basis          - which confidence the floor is checked
                                   against (read by the worker): 'calibrated'
-                                  point estimate (default) or 'gate', the
-                                  lower-bound value the real autopilot uses
+                                  point estimate (default); 'gate', whatever
+                                  the real autopilot currently gates on; or
+                                  'lower_bound', the band's 90% lower bound
+                                  regardless of the live gate
       positive_gamma_confidence_penalty
                                 - extra confidence required in a positive-gamma
                                   (rangebound) regime, as the autopilot does

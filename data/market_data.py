@@ -184,6 +184,10 @@ def get_option_chain(ticker: str, expiration: str | None = None) -> OptionChainS
         spot = get_current_price(ticker)
         if spot is None:
             return None
+        # Yahoo sometimes answers with one side missing. That's a failed fetch,
+        # not "no call volume" - callers read both frames unconditionally.
+        if chain.calls is None or chain.puts is None:
+            return None
         return OptionChainSnapshot(ticker=ticker, expiration=exp, spot=spot,
                                     calls=chain.calls, puts=chain.puts)
     except Exception:

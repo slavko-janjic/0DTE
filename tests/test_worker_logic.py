@@ -797,6 +797,35 @@ def test_shadow_mirrors_trade_the_old_and_new_gate_side_by_side(tmp_path, monkey
     assert _json.loads(rows[0]["entry_reason_json"])["confidence_basis"] == "calibrated"
 
 
+def test_lower_bound_shadow_keeps_the_strict_rule_when_the_live_gate_moves_off_it(
+        tmp_path, monkeypatch):
+    db_path = str(tmp_path / "lb.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=240.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0,
+                                          "bid": 1.9, "ask": 2.1})
+    entry = {"min_confidence_pct": 50, "confidence_basis": "lower_bound",
+             "window_start_minutes": 30, "window_end_minutes": 90,
+             "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "autopilot_lb", "entry": entry, "exit": exit_cfg}]}
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration="2099-01-02")
+
+    # live gate back on the point estimate (56.1), but the bound is still 43.4
+    signal = _gated_signal(56.1, 56.1)
+    signal.lower_bound_confidence_pct = 43.4
+    worker.process_shadow_strategies("QQQ", config, db_path, chain, signal, None)
+    assert storage.get_open_shadow_positions(db_path, "QQQ") == []
+
+    signal.lower_bound_confidence_pct = 52.0
+    worker.process_shadow_strategies("QQQ", config, db_path, chain, signal, None)
+    rows = storage.get_open_shadow_positions(db_path, "QQQ")
+    assert [row["strategy"] for row in rows] == ["autopilot_lb"]
+
+
 # --- poll cadence ----------------------------------------------------------------
 
 def test_worker_publishes_the_cadence_it_runs_at(tmp_path):
