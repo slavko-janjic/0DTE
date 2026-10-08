@@ -19,6 +19,8 @@ class CompositeSignal:
     raw_confidence_pct: float | None = None
     # what the autopilot gates on (accuracy.gate_confidence); defaults to raw
     gate_confidence_pct: float | None = None
+    # the calibrated band's 90% lower bound, whatever the live gate uses
+    lower_bound_confidence_pct: float | None = None
 
 
 def compute_composite_score(subscores: dict[str, float | None], weights: dict[str, float]) -> float | None:

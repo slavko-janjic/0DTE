@@ -222,6 +222,10 @@ def poll_ticker(
     bands = storage.get_confidence_bands(db_path, ticker)
     signal.raw_confidence_pct = raw_confidence
     signal.gate_confidence_pct = gate_confidence_for(config, raw_confidence, bands)
+    # the band's 90% lower bound whatever the live gate is set to, so a shadow
+    # strategy can keep testing that rule after the autopilot moves off it
+    signal.lower_bound_confidence_pct = accuracy.gate_confidence(
+        raw_confidence, bands, config.get("calibration", {}).get("band_min_count", 5))
     calibrated = accuracy.calibrated_confidence(
         raw_confidence, bands, config.get("calibration", {}).get("band_min_count", 5),
     )
@@ -620,6 +624,11 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         elif basis == "gate":
             # exactly what the real autopilot gates on
             entry_direction, entry_confidence = signal.direction, _gate(signal)
+        elif basis == "lower_bound":
+            # the band's 90% lower bound, independent of the live gate setting
+            lower = getattr(signal, "lower_bound_confidence_pct", None)
+            entry_direction = signal.direction
+            entry_confidence = lower if lower is not None else signal.confidence_pct
         else:
             # the calibrated point estimate (every strategy predating the gate)
             entry_direction, entry_confidence = signal.direction, signal.confidence_pct
