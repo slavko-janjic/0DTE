@@ -826,6 +826,39 @@ def test_lower_bound_shadow_keeps_the_strict_rule_when_the_live_gate_moves_off_i
     assert [row["strategy"] for row in rows] == ["autopilot_lb"]
 
 
+def test_null_controls_trade_their_rule_whatever_the_signal_says(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "null.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=31.0, to_close=359.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0,
+                                          "bid": 1.9, "ask": 2.1})
+    window = {"min_confidence_pct": 0, "window_start_minutes": 30,
+              "window_end_minutes": 90, "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "null_call", "entry": {**window, "direction_rule": "always_call"}, "exit": exit_cfg},
+        {"name": "null_put", "entry": {**window, "direction_rule": "always_put"}, "exit": exit_cfg},
+        {"name": "null_coin", "entry": {**window, "direction_rule": "coin_flip"}, "exit": exit_cfg},
+    ]}
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration="2099-01-02")
+    # a weak bearish signal: a signal follower would buy a put or stand down
+    signal = _gated_signal(3.0, 3.0, direction="bearish")
+    worker.process_shadow_strategies("QQQ", config, db_path, chain, signal, "positive")
+    rows = {row["strategy"]: row for row in storage.get_open_shadow_positions(db_path, "QQQ")}
+    assert rows["null_call"]["option_type"] == "call"
+    assert rows["null_put"]["option_type"] == "put"
+    assert rows["null_coin"]["option_type"] in ("call", "put")
+    import json as _json
+    reason = _json.loads(rows["null_call"]["entry_reason_json"])
+    assert reason["signal_source"] == "always_call" and reason["confidence_basis"] == "none"
+    # one entry per session: the next cycle adds nothing
+    monkeypatch.setattr(worker.market_data, "find_contract_price", lambda *args: 2.0)
+    worker.process_shadow_strategies("QQQ", config, db_path, chain, signal, "positive")
+    assert len(storage.get_open_shadow_positions(db_path, "QQQ")) == 3
+
+
 # --- poll cadence ----------------------------------------------------------------
 
 def test_worker_publishes_the_cadence_it_runs_at(tmp_path):

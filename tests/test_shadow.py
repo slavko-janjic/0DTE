@@ -1,7 +1,9 @@
 """Shadow strategy lab: entry rules and the per-strategy scorecard."""
 import pytest
 
-from paper_trading.shadow import should_shadow_enter, shadow_position_from_row, strategy_scorecard
+from paper_trading.shadow import (
+    null_direction, should_shadow_enter, shadow_position_from_row, strategy_scorecard,
+)
 
 
 BASE_ENTRY = {"min_confidence_pct": 55, "window_start_minutes": 30,
@@ -221,3 +223,23 @@ def test_shadow_positive_gamma_penalty_mirrors_the_autopilot():
     assert should_shadow_enter(entry, gamma_regime="positive", **args) is None   # needs 65
     assert should_shadow_enter({"min_confidence_pct": 55}, gamma_regime="positive",
                                **args) == "call"                                # off by default
+
+
+# --- null controls ---------------------------------------------------------------
+
+def test_null_direction_fixed_rules_ignore_everything():
+    assert null_direction("always_call", "null_call", "QQQ", "2026-10-12") == "bullish"
+    assert null_direction("always_put", "null_put", "QQQ", "2026-10-12") == "bearish"
+    with pytest.raises(ValueError):
+        null_direction("sometimes", "x", "QQQ", "2026-10-12")
+
+
+def test_coin_flip_is_stable_within_a_session_and_mixed_across_them():
+    first = null_direction("coin_flip", "null_coin", "QQQ", "2026-10-12")
+    # the same flip on every cycle of the session, and after a restart
+    assert all(null_direction("coin_flip", "null_coin", "QQQ", "2026-10-12") == first
+               for _ in range(5))
+    flips = [null_direction("coin_flip", "null_coin", ticker, f"2026-{month:02d}-{day:02d}")
+             for ticker in ("QQQ", "SPY", "IWM") for month in (10, 11) for day in range(1, 29)]
+    bullish = flips.count("bullish")
+    assert 0.35 < bullish / len(flips) < 0.65          # 168 flips: roughly even, never one-sided
