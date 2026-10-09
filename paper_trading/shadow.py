@@ -12,6 +12,7 @@ position per ticker and its entry cap applies per ticker), so this tests
 entry/exit RULES, not portfolio selection. All strategies see the same delayed
 data and the same honest bid/ask fill model as the real paper account.
 """
+import hashlib
 import math
 import statistics
 
@@ -41,6 +42,10 @@ def should_shadow_enter(
                                   the real autopilot currently gates on; or
                                   'lower_bound', the band's 90% lower bound
                                   regardless of the live gate
+      direction_rule            - (read by the worker) ignore the signal and
+                                  trade 'always_call', 'always_put' or a
+                                  'coin_flip': the null controls. Confidence
+                                  is not checked - there is none.
       positive_gamma_confidence_penalty
                                 - extra confidence required in a positive-gamma
                                   (rangebound) regime, as the autopilot does
@@ -111,6 +116,27 @@ def should_shadow_enter(
         return None
 
     return option_type
+
+
+NULL_DIRECTION_RULES = ("always_call", "always_put", "coin_flip")
+
+
+def null_direction(rule: str, strategy: str, ticker: str, session_date: str) -> str:
+    """The direction a signal-blind control strategy trades: 'bullish'/'bearish'.
+
+    The controls answer "what do these entries and exits pay with NO direction
+    call?" - the benchmark a signal has to beat before its P&L means anything.
+    coin_flip is hashed from strategy + ticker + date, so it is the same flip
+    on every cycle of a session and after a restart (random() and the salted
+    built-in hash() are neither), yet independent across tickers and days."""
+    if rule == "always_call":
+        return "bullish"
+    if rule == "always_put":
+        return "bearish"
+    if rule == "coin_flip":
+        digest = hashlib.sha256(f"{strategy}|{ticker}|{session_date}".encode()).digest()
+        return "bullish" if digest[0] % 2 == 0 else "bearish"
+    raise ValueError(f"unknown direction_rule {rule!r} (expected one of {NULL_DIRECTION_RULES})")
 
 
 def shadow_exit_score(entry_cfg: dict, composite_score: float | None) -> float | None:

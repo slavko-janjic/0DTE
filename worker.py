@@ -30,7 +30,9 @@ from paper_trading.engine import (
     settlement_price, should_auto_enter,
 )
 from paper_trading.models import Position
-from paper_trading.shadow import shadow_exit_score, shadow_position_from_row, should_shadow_enter
+from paper_trading.shadow import (
+    null_direction, shadow_exit_score, shadow_position_from_row, should_shadow_enter,
+)
 from signals import day_setup as day_setup_mod
 from signals import indicators
 from signals.composite import build_recommendation, compute_signal, direction_from_score
@@ -615,7 +617,12 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         # derives it: |score| * 100.
         source = entry_cfg.get("signal_source")
         basis = entry_cfg.get("confidence_basis", "calibrated")
-        if source:
+        rule = entry_cfg.get("direction_rule")
+        if rule:
+            # a null control: no signal, so no confidence to gate on either
+            entry_direction = null_direction(rule, name, ticker, today.isoformat())
+            entry_confidence = 100.0
+        elif source:
             score = signal.subscores_used.get(source)
             if score is None:
                 continue  # that signal had no data this cycle
@@ -656,8 +663,8 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         entry_reason = {
             # what this strategy actually acted on (differs from the composite
             # when signal_source pins it to a single subscore)
-            "signal_source": source or "composite",
-            "confidence_basis": "raw" if source else basis,
+            "signal_source": rule or source or "composite",
+            "confidence_basis": "none" if rule else "raw" if source else basis,
             "direction": entry_direction,
             "confidence_pct": entry_confidence,
             "composite_score": signal.composite_score,
