@@ -331,9 +331,16 @@ def explain_auto_decision(
     )
     if auto_entries_today >= autopilot_cfg.get("max_trades_per_day", 4):
         return _i(False, "daily auto-trade cap reached")
-    if (tactic == "opening_range"
-            and auto_entries_today >= autopilot_cfg.get("max_entries_per_session", 1)):
-        return _i(False, "already used this session's auto entries")
+    if tactic == "opening_range":
+        if auto_entries_today >= autopilot_cfg.get("max_entries_per_session", 1):
+            return _i(False, "already used this session's auto entries")
+        # one deliberate decision per ticker per session: a spare session slot
+        # must not become a second try on a ticker that already traded (on
+        # 2026-10-15 SPY re-entered 31 min after its first trade closed)
+        if any(row["opened_by"] == "auto" and row["ticker"] == ticker
+               and _is_today(row["entry_time"])
+               for row in list(open_rows) + list(closed_rows)):
+            return _i(False, f"already traded {ticker} this session")
 
     cooldown = timedelta(minutes=autopilot_cfg.get("cooldown_minutes", 30))
     for row in closed_rows:
