@@ -91,6 +91,24 @@ def test_session_cap_blocks_after_todays_entries():
     assert "session" in i.blocker
 
 
+def test_a_spare_session_slot_is_not_a_second_try_on_the_same_ticker():
+    # 2026-10-15: SPY traded and closed, QQQ never qualified, and the unused
+    # second slot went to SPY again once its cooldown ran out
+    first_spy = {"ticker": "SPY", "opened_by": "auto", "entry_time": "2026-09-21T10:00:00-04:00",
+                 "exit_time": "2026-09-21T10:09:00-04:00", "pnl": 99.0}
+    later = datetime(2026, 9, 21, 10, 40, tzinfo=ZoneInfo(TZ))   # cooldown over
+    i = _intent(closed_rows=[first_spy], now=later, minutes_since_open=70)
+    assert i.would_enter is False
+    assert "already traded SPY this session" in i.blocker
+    # ...but the other ticker still gets its decision
+    assert _intent(ticker="QQQ", closed_rows=[first_spy], now=later,
+                   minutes_since_open=70).would_enter is True
+    # and yesterday's SPY trade doesn't count
+    yesterday = {**first_spy, "entry_time": "2026-09-18T10:00:00-04:00",
+                 "exit_time": "2026-09-18T10:09:00-04:00"}
+    assert _intent(closed_rows=[yesterday], now=later, minutes_since_open=70).would_enter is True
+
+
 def test_already_holding_blocks():
     i = _intent(open_rows=[{"ticker": "SPY", "opened_by": "manual", "entry_time": NOW.isoformat()}])
     assert i.would_enter is False

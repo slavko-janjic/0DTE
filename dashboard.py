@@ -1910,7 +1910,7 @@ def _autopilot_config() -> None:
         ("Decision window", f"{ap.get('decision_start_minutes', 30):.0f}–{ap.get('decision_end_minutes', 90):.0f} min after open"),
         ("Confidence gate", f"≥ {ap.get('min_confidence_pct', 55):.0f}%"),
         ("Exits", f"+{ap.get('profit_target_pct', 50):.0f}% / {ap.get('stop_loss_pct', -35):.0f}%"),
-        ("Per session", f"{ap.get('max_entries_per_session', 1)} per ticker"),
+        ("Per session", f"1 per ticker, {ap.get('max_entries_per_session', 1)} total"),
         ("Daily loss limit", f"{ap.get('daily_loss_limit_pct', 10):.0f}% of start"),
     ]
     with st.container(border=True):

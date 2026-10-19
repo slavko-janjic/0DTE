@@ -895,7 +895,7 @@ def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> 
                          else "(band estimate)")},
             {"label": "Exits", "value": f"+{ap_cfg.get('profit_target_pct', 50):.0f}% / "
                                         f"{ap_cfg.get('stop_loss_pct', -35):.0f}%"},
-            {"label": "Per session", "value": f"{ap_cfg.get('max_entries_per_session', 1)} / ticker"},
+            {"label": "Per session", "value": f"1 / ticker, {ap_cfg.get('max_entries_per_session', 1)} total"},
             {"label": "Daily loss limit",
              "value": f"{ap_cfg.get('daily_loss_limit_pct', 10):.0f}% of opening equity "
                       f"(${today['loss_limit']:,.0f})"},
