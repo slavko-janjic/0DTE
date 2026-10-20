@@ -300,7 +300,9 @@ def record_quote_snapshot(ticker: str, config: dict, db_path: str,
     contract = market_data.find_atm_contract(chain.calls, chain.spot)
     if contract is None:
         return
-    bid, ask, mid, spread_pct = market_data.contract_quote(contract)
+    # raw, as Yahoo sent them: the log is also how the quote delay is measured
+    # (research.py calibrate), which a corrected price would hide
+    bid, ask, mid, spread_pct = market_data.contract_quote(contract, raw=True)
     storage.insert_quote_snapshot(
         db_path, ticker, "call", float(contract["strike"]), chain.spot,
         bid, ask, mid, spread_pct, minutes_since_market_open(config),

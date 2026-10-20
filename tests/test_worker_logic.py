@@ -980,3 +980,19 @@ def test_autopilot_logs_a_missing_quote_instead_of_skipping_silently(tmp_path, m
     maybe_auto_enter_best([("QQQ", _fake_signal(80.0), _fake_chain())], AUTO_CONFIG, db_path)
     assert storage.get_open_positions(db_path) == []
     assert "no usable ATM call quote this cycle" in capsys.readouterr().out
+
+
+def test_quote_log_keeps_the_raw_quotes_and_fills_use_corrected_ones(tmp_path, monkeypatch):
+    import pandas as _pd
+    db_path = str(tmp_path / "quotes.db")
+    storage.init_db(db_path)
+    monkeypatch.setattr(worker, "is_market_open", lambda config: True)
+    monkeypatch.setattr(worker, "minutes_since_market_open", lambda config: 45.0)
+    calls = _pd.DataFrame([{"strike": 500.0, "bid": 1.00, "ask": 1.02, "lastPrice": 1.01,
+                            "raw_bid": 0.80, "raw_ask": 0.82, "raw_lastPrice": 0.81}])
+    chain = SimpleNamespace(calls=calls, puts=calls, spot=500.2, expiration="2099-01-02")
+    worker.record_quote_snapshot("SPY", AUTO_CONFIG, db_path, chain)
+    logged = storage.get_latest_quote(db_path, "SPY")
+    assert (logged["bid"], logged["ask"]) == (0.80, 0.82)          # the delay stays measurable
+    _, entry = worker._atm_entry(chain, "bullish")
+    assert entry == 1.02                                            # the fill is the corrected ask
