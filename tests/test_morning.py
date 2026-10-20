@@ -60,11 +60,11 @@ def test_15_minute_bars_reproduce_the_research_scores_exactly():
     # at 10:00 today only the morning exists - the live worker never sees the rest
     live = morning.morning_scores(morning.sessions_from_15m(_to_15m(sessions, cut_today_at=29), ET),
                                   today)
-    for name in morning.SIGNALS:
+    for name in morning.SIGNALS_1000:
         assert research[name] is not None or live[name] is None
         assert live[name] == pytest.approx(research[name]) if research[name] is not None \
             else live[name] is None
-    assert any(live[name] is not None for name in morning.SIGNALS)
+    assert any(live[name] is not None for name in morning.SIGNALS_1000)
 
 
 def test_every_day_matches_not_just_the_last():
@@ -74,11 +74,33 @@ def test_every_day_matches_not_just_the_last():
     parsed = morning.sessions_from_15m(frame, ET)
     for s in sessions[21:]:
         live = morning.morning_scores(parsed, s.day)
-        for name in morning.SIGNALS:
+        for name in morning.SIGNALS_1000:
             expected = research[s.day][name]
             assert (live[name] is None) == (expected is None)
             if expected is not None:
                 assert live[name] == pytest.approx(expected)
+
+
+def test_the_1030_pair_matches_the_intraday_research_every_day():
+    from analytics import intraday_lab
+    sessions = _history(30)
+    research = intraday_lab.ticker_signals_at(sessions, 60)
+    parsed = morning.sessions_from_15m(_to_15m(sessions), ET)
+    for s in sessions[22:]:
+        live = morning.morning_scores(parsed, s.day)
+        for live_name, research_name in (("trail30_1030", "trail30"), ("orb15_1030", "orb15")):
+            expected = research[s.day][research_name]
+            assert (live[live_name] is None) == (expected is None)
+            if expected is not None:
+                assert live[live_name] == pytest.approx(expected)
+
+
+def test_the_1030_pair_waits_for_the_1015_bar():
+    sessions = _history(22)
+    live = morning.morning_scores(morning.sessions_from_15m(_to_15m(sessions, cut_today_at=44), ET),
+                                  sessions[-1].day)
+    assert live["gap_behaviour"] is not None or live["orb15"] is not None
+    assert live["trail30_1030"] is None and live["orb15_1030"] is None
 
 
 def test_nothing_before_the_0945_bar_has_closed():
@@ -93,7 +115,7 @@ def test_half_days_are_a_previous_close_but_not_a_normal_size():
     half.bars = {m: b for m, b in half.bars.items() if m < 210}
     research = lab.ticker_signals(sessions)[sessions[-1].day]
     live = morning.morning_scores(morning.sessions_from_15m(_to_15m(sessions), ET), sessions[-1].day)
-    for name in morning.SIGNALS:
+    for name in morning.SIGNALS_1000:
         assert (live[name] is None) == (research[name] is None)
         if research[name] is not None:
             assert live[name] == pytest.approx(research[name])

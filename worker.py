@@ -272,8 +272,8 @@ def poll_ticker(
     return signal, chain
 
 
-# ticker -> (date, scores): the morning signals are fixed once 10:00 has passed
-_morning_cache: dict[str, tuple[str, dict]] = {}
+# ticker -> (date, scores, final): fixed for the day once the 10:30 set is in
+_morning_cache: dict[str, tuple[str, dict, bool]] = {}
 
 
 def _morning_tickers(config: dict) -> set[str]:
@@ -289,19 +289,22 @@ def _morning_tickers(config: dict) -> set[str]:
 def morning_scores_for(ticker: str, config: dict) -> dict | None:
     """The pre-registered morning signals for today (signals/morning.py), from
     Yahoo's 15-minute bars. None before 10:01 ET - the 09:45 bar must have
-    closed - or when the bars can't be had; once computed they're cached for
-    the day, as the research's 10:00 decision is fixed."""
-    if ticker not in _morning_tickers(config) or minutes_since_market_open(config) < 31:
+    closed - or when the bars can't be had. The 10:00 pair is fixed from
+    10:01; the 10:30 pair joins from 10:31 (the 10:15 bar). Cached for the day
+    once both are in, as the research's decisions are fixed."""
+    since_open = minutes_since_market_open(config)
+    if ticker not in _morning_tickers(config) or since_open < 31:
         return None
     tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
     today = datetime.now(tz).date()
     cached = _morning_cache.get(ticker)
-    if cached is not None and cached[0] == today.isoformat():
+    if cached is not None and cached[0] == today.isoformat() and (cached[2] or since_open < 61):
         return cached[1]
     bars = market_data.get_intraday_bars(ticker, interval="15m", period="60d")
     scores = morning.morning_scores(morning.sessions_from_15m(bars, tz), today)
     if scores is not None:
-        _morning_cache[ticker] = (today.isoformat(), scores)
+        final = since_open >= 61 and all(name in scores for name in morning.SIGNALS_1030)
+        _morning_cache[ticker] = (today.isoformat(), scores, final)
         print(f"[{ticker}] morning signals: " + ", ".join(
             f"{name} {value:+.2f}" if value is not None else f"{name} -"
             for name, value in scores.items()))

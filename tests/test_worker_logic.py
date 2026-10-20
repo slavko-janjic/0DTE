@@ -1035,3 +1035,23 @@ def test_morning_scores_wait_for_1001_and_only_run_where_configured(monkeypatch)
     assert worker.morning_scores_for("SPY", config) is None and fetched == []   # not configured
     assert worker.morning_scores_for("QQQ", config) is None                      # no bars
     assert len(fetched) == 1
+
+
+def test_morning_scores_refresh_once_for_the_1030_pair(monkeypatch):
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "m", "entry": {"signal_source": "trail30_1030", "only_tickers": ["QQQ"]}}]}
+    calls = []
+    early = {"gap_behaviour": 0.4, "orb15": 0.0, "trail30_1030": None, "orb15_1030": None}
+    full = {**early, "trail30_1030": 0.6, "orb15_1030": 0.2}
+    monkeypatch.setattr(worker.market_data, "get_intraday_bars", lambda *a, **kw: "bars")
+    monkeypatch.setattr(worker.morning, "sessions_from_15m", lambda bars, tz: bars)
+    monkeypatch.setattr(worker.morning, "morning_scores",
+                        lambda s, d: calls.append(1) or (full if len(calls) > 1 else early))
+    worker._morning_cache.clear()
+    clock = {"m": 35.0}
+    monkeypatch.setattr(worker, "minutes_since_market_open", lambda config: clock["m"])
+    assert worker.morning_scores_for("QQQ", config)["trail30_1030"] is None
+    assert worker.morning_scores_for("QQQ", config) is early and len(calls) == 1   # cached
+    clock["m"] = 62.0
+    assert worker.morning_scores_for("QQQ", config)["trail30_1030"] == 0.6           # refreshed
+    assert worker.morning_scores_for("QQQ", config) is full and len(calls) == 2      # final

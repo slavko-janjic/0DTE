@@ -4,6 +4,7 @@
     python research.py validate-label     # does the simulated trade match real shadow trades?
     python research.py fetch              # download / update SPY+QQQ minute bars (Alpaca keys)
     python research.py run [--report SIGNAL_RESEARCH.md]
+    python research.py intraday [--report PATH]   # later decision times + weekday/event slices
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -18,7 +19,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from analytics import option_sim, session_lab
+from analytics import intraday_lab, option_sim, session_lab
 from config import database_path, load_settings
 from data import history
 
@@ -314,6 +315,122 @@ def cmd_run(config: dict, report: str | None) -> None:
         print(f"\nWrote {report}")
 
 
+def _read_dates(path: Path) -> set:
+    import csv
+    if not path.exists():
+        return set()
+    with open(path, newline="", encoding="utf-8") as fh:
+        return {date.fromisoformat(row["date"]) for row in csv.DictReader(fh) if row.get("date")}
+
+
+def _load_events(cache: Path) -> tuple[set, set, set, list, dict]:
+    """FOMC / CPI / jobs dates and mega-cap earnings from events_raw/, plus the
+    span each source covers (a slice is only judged inside its span)."""
+    import csv
+    raw = cache / "events_raw"
+    fomc, cpi, jobs = (_read_dates(raw / f"{n}.csv") for n in ("fomc", "cpi", "jobs"))
+    earnings, first_by_ticker, last = [], {}, None
+    path = raw / "earnings.csv"
+    if path.exists():
+        with open(path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                if not row.get("date"):
+                    continue
+                day = date.fromisoformat(row["date"])
+                earnings.append((day, (row.get("timing") or "amc").strip().lower()))
+                ticker = row.get("ticker", "?")
+                first_by_ticker[ticker] = min(first_by_ticker.get(ticker, day), day)
+                last = max(last or day, day)
+    covered = {}
+    for name, days in (("fomc", fomc), ("cpi", cpi), ("jobs", jobs)):
+        if days:
+            covered[name] = (min(days), max(days))
+    if earnings:
+        # only where all six names are covered - a missing ticker would read as "no event"
+        covered["after_megacap_earnings"] = (max(first_by_ticker.values()), last)
+    return fomc, cpi, jobs, earnings, covered
+
+
+def _slice_table(rows: list[dict]) -> list[str]:
+    lines = ["| Slice | Days | Excess in slice | Elsewhere | t (difference) | Verdict |",
+             "|---|---|---|---|---|---|"]
+    for r in rows:
+        lines.append(f"| {r['slice']} | {r['days']} | {_pct(r['mean_in'])} | {_pct(r['mean_out'])} | "
+                     f"{r['t_diff']:+.2f} | {r['verdict']} |")
+    return lines
+
+
+def cmd_intraday(config: dict, report: str | None) -> None:
+    _, cache = _paths(config)
+    calibration = _load_calibration(cache)
+    vix = history.load_vix(cache)
+    exit_cfg = next(s["exit"] for s in config["shadow_strategies"] if s["name"] == "autopilot_point")
+    sessions = {t: session_lab.sessions_from_bars(history.load_bars(cache, t)) for t in TICKERS}
+
+    def sigma_for(ticker, day):
+        return calibration["k"][ticker] * vix[day][0] / 100.0 if day in vix else None
+
+    signals_by_time, labels_by_time = {}, {}
+    for minute in intraday_lab.DECISIONS:
+        signals_by_time[minute] = intraday_lab.build_signals_at(sessions, minute)
+        labels_by_time[minute] = intraday_lab.build_labels_at(
+            sessions, minute, sigma_for, exit_cfg, calibration["half_spread"])
+    results = intraday_lab.run_main_tests(signals_by_time, labels_by_time)
+
+    fomc, cpi, jobs, earnings, covered = _load_events(cache)
+    trading_days = sorted({s.day for ss in sessions.values() for s in ss})
+    tags = intraday_lab.event_tags(trading_days, fomc, cpi, jobs, earnings)
+
+    # the 10:00 edge from the first study, for its slices
+    labels_10 = {}
+    for ticker, ss in sessions.items():
+        for s in ss:
+            sigma = sigma_for(ticker, s.day)
+            if s.complete() and sigma:
+                label = session_lab.label_session(s, sigma, exit_cfg,
+                                                  calibration["half_spread"][ticker])
+                if label:
+                    labels_10[(ticker, s.day)] = label
+    signals_10 = session_lab.build_signals(sessions, {d: c for d, (_, c) in vix.items()})
+
+    floor = session_lab.noise_floor(intraday_lab.MAIN_TESTS)
+    lines = [f"Event coverage: " + ", ".join(f"{k} {v[0]}..{v[1]}" for k, v in covered.items())
+             + f"; tagged days: " + ", ".join(
+                 f"{t} {sum(1 for d in tags.values() if t in d)}" for t in intraday_lab.EVENT_TAGS), "",
+             f"### Main tests: 32 (noise floor t = {floor:.2f})", "",
+             "| Time | " + _table(results)[0][2:]]
+    lines.append("|---|" + _table(results)[1][1:])
+    for r, row in zip(results, _table(results)[2:]):
+        lines.append(f"| {r['time']} " + row)
+
+    lines += ["", "### Slices", ""]
+    to_slice = [("gap_behaviour", 1, "10:00", signals_10, labels_10)]
+    to_slice += [(r["signal"], 1 if r["orientation"] == "follow" else -1, r["time"],
+                  signals_by_time[r["minute"]], labels_by_time[r["minute"]])
+                 for r in results if r["verdict"] == "PASS"]
+    for name, sign, clock, sigs, labs in to_slice:
+        side = "follow" if sign > 0 else "fade"
+        lines += [f"**{name} ({side}) at {clock}** — slice noise floor t = "
+                  f"{session_lab.noise_floor(len(intraday_lab.SLICES)):.2f}", ""]
+        lines += _slice_table(intraday_lab.slice_report(sigs, labs, name, sign, tags, covered))
+        lines.append("")
+
+    lines += ["### Blind trade by slice (descriptive only — net level not trustworthy)", "",
+              "| Slice | " + " | ".join(intraday_lab.DECISIONS.values()) + " |",
+              "|---|" + "---|" * len(intraday_lab.DECISIONS)]
+    profiles = {m: intraday_lab.blind_profile(labels_by_time[m], tags) for m in intraday_lab.DECISIONS}
+    for slice_name in ("all",) + intraday_lab.SLICES:
+        cells = [f"{profiles[m][slice_name]['coin']:+.1f}% ({profiles[m][slice_name]['n']})"
+                 if slice_name in profiles[m] else "-" for m in intraday_lab.DECISIONS]
+        lines.append(f"| {slice_name} | " + " | ".join(cells) + " |")
+
+    text = "\n".join(lines)
+    print(text)
+    if report:
+        Path(report).write_text(text + "\n", encoding="utf-8")
+        print(f"\nWrote {report}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -322,6 +439,8 @@ def main() -> None:
     sub.add_parser("fetch")
     run = sub.add_parser("run")
     run.add_argument("--report", default=None, help="also write the tables to this file")
+    intraday = sub.add_parser("intraday", help="later decision times + weekday/event slices")
+    intraday.add_argument("--report", default=None, help="also write the tables to this file")
     args = parser.parse_args()
     config = load_settings()
     if args.command == "calibrate":
@@ -330,6 +449,8 @@ def main() -> None:
         cmd_validate(config)
     elif args.command == "fetch":
         cmd_fetch(config)
+    elif args.command == "intraday":
+        cmd_intraday(config, args.report)
     else:
         cmd_run(config, args.report)
 

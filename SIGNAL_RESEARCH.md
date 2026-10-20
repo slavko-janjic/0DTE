@@ -175,3 +175,166 @@ Descriptive only - same tests restricted to |score| >= 0.5:
 | opening_drive | fade | 1726 | -2.5% | -2.44 | -2.1 (474) | -3.1 (487) | -4.3 (479) | +0.7 (286) | +0.7% | 42 | **FAIL** |
 | orb15 | fade | 793 | -4.0% | -2.61 | -3.9 (177) | -3.3 (228) | -4.4 (233) | -4.7 (155) | -1.2% | 42 | **FAIL** |
 | gap_behaviour | fade | 1010 | -4.0% | -2.92 | -5.0 (278) | -5.8 (278) | -4.1 (280) | +1.0 (174) | +1.1% | 41 | **FAIL** |
+
+---
+
+# Intraday + events — 2026-10-20
+
+Does a direction signal help **later in the session**, and do the edges hold or break **by
+weekday and on scheduled events**? Spec:
+`docs/superpowers/specs/2026-10-20-intraday-events-research-design.md`; tool:
+`python research.py intraday` (`analytics/intraday_lab.py`). Same label, data and verdict
+rules as above; 32 pre-declared main tests (noise floor t = 2.63).
+
+## Verdict
+
+- **The edge is a morning effect and is gone by midday.** Two passes, both at 10:30:
+  - `trail30` follow — trade the 10:00→10:30 move: **+2.1% per trade, t 3.01**, and the most
+    stable result so far (+2.3 / +1.8 / +2.4 / +2.0 across the four periods).
+  - `orb15` follow at 10:30 — the opening-range breakout: **+2.9%, t 3.19**, stronger since
+    2022 (+4.9 / +3.8).
+  - 11:30: nothing passes (best t 2.17). 13:00 and 14:00: every test within ±1.
+  - All of these — and the 10:00 `gap_behaviour` — are one idea, "the morning move
+    continues". They win and lose on the same days; one confirmation, not several.
+- **No weekday or event breaks any edge.** Slices (13 per edge, noise floor t = 2.26) for
+  `gap_behaviour`@10:00, `trail30`@10:30 and `orb15`@10:30: every slice holds or is
+  "weaker, not significant". Closest: `orb15`@10:30 on Fed days, −6.4% vs +3.1% elsewhere
+  (t −1.92, 62 days) — below the bar, so no stand-down rule.
+- **The blind trade gets worse through the day** (coin flip −0.8% at 10:30 → −6.0% at 13:00;
+  descriptive only). Trading the afternoon would add cost, not edge.
+- **Ignore** the blind trade's +25.9% for a 14:00 entry on Fed days: the simulation prices
+  options off the morning VIX, while real 0DTE options are far dearer just before a 2 pm Fed
+  statement. It is the case the spec flagged as untrustworthy.
+
+## Event calendar
+
+Compiled 2026-10-20 into `<data dir>/history/events_raw/` from primary sources, every row
+with its source URL: FOMC decisions (federalreserve.gov, 90 incl. the three 2020 emergency
+actions; the Sunday 2020-03-15 cut tags Monday), CPI and jobs releases (bls.gov archives,
+131 each; October 2025 not published during the shutdown), mega-cap earnings for NVDA,
+AAPL, MSFT, AMZN, GOOGL, META (company IR/newsroom archives, 262, all after the close,
+identical to Yahoo's dates). Spot-checked against 31 independently known dates: all present.
+Options expiry, quad witching and month/quarter ends are computed.
+
+## Next (done in the same change)
+
+`morning_trail_1030` and `morning_orb_1030` join `morning_gap` / `morning_orb` in the lab as
+pre-registered strategies (QQQ/SPY, autopilot exits, entered 10:31–10:40), computed live by
+`signals/morning.py` from Yahoo 15-minute bars — matching the research's values on
+Oct 12–16 to within ~0.01.
+
+## Full tables
+
+Event coverage: fomc 2016-01-27..2026-12-09, cpi 2016-01-20..2026-12-10, jobs 2016-01-08..2026-12-04, after_megacap_earnings 2016-02-17..2026-10-29; tagged days: fomc 88, cpi 129, jobs 129, opex 130, quad_witching 43, month_end 130, quarter_end 43, after_megacap_earnings 190
+
+### Main tests: 32 (noise floor t = 2.63)
+
+| Time | Signal | Side | Days | Excess/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 | Win % | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10:30 | orb15 | follow | 2038 | +2.9% | +3.19 | +0.4 (548) | +2.6 (588) | +4.9 (561) | +3.8 (341) | +5.5% | 47 | **PASS** |
+| 10:30 | trail30 | follow | 2689 | +2.1% | +3.01 | +2.3 (731) | +1.8 (756) | +2.4 (753) | +2.0 (449) | +3.3% | 46 | **PASS** |
+| 10:30 | session_move | follow | 2691 | +1.7% | +2.45 | +0.3 (733) | +0.6 (756) | +3.5 (753) | +2.9 (449) | +4.4% | 46 | **INCONCLUSIVE** |
+| 10:30 | vwap | follow | 2712 | +1.7% | +2.39 | +1.5 (754) | +0.8 (756) | +2.6 (753) | +2.0 (449) | +3.5% | 46 | **INCONCLUSIVE** |
+| 11:30 | session_move | follow | 2692 | +1.5% | +2.17 | -0.1 (734) | +1.9 (756) | +1.7 (753) | +3.1 (449) | +0.2% | 42 | **FAIL** |
+| 11:30 | vwap | follow | 2712 | +1.3% | +1.88 | +1.0 (754) | +1.8 (756) | +2.2 (753) | -0.6 (449) | -0.8% | 41 | **FAIL** |
+| 11:30 | orb15 | follow | 2221 | +1.5% | +1.87 | -0.2 (616) | +1.8 (606) | +2.0 (620) | +2.9 (379) | +0.2% | 42 | **FAIL** |
+| 11:30 | trail30 | follow | 2691 | +0.9% | +1.33 | +0.2 (733) | +1.6 (756) | +1.5 (753) | -0.1 (449) | -1.1% | 41 | **FAIL** |
+| 13:00 | trail30 | follow | 2691 | +0.7% | +0.98 | +1.4 (733) | -0.4 (756) | +1.5 (753) | +0.0 (449) | -1.9% | 37 | **FAIL** |
+| 13:00 | vwap | follow | 2712 | +0.6% | +0.82 | +1.5 (754) | +0.2 (756) | -0.7 (753) | +1.7 (449) | -2.6% | 37 | **FAIL** |
+| 13:00 | orb15 | follow | 2337 | +0.5% | +0.59 | +1.2 (639) | +0.9 (648) | -0.8 (661) | +0.6 (389) | -3.0% | 38 | **FAIL** |
+| 14:00 | vwap | follow | 2712 | +0.3% | +0.44 | +1.0 (754) | -0.2 (756) | +0.9 (753) | -0.6 (449) | -1.7% | 35 | **FAIL** |
+| 14:00 | trail30 | fade | 2692 | +0.3% | +0.36 | -0.8 (734) | +1.3 (756) | +0.4 (753) | -0.0 (449) | -1.7% | 35 | **FAIL** |
+| 14:00 | session_move | fade | 2691 | +0.2% | +0.28 | +0.0 (733) | +0.9 (756) | +1.8 (753) | -3.3 (449) | -2.1% | 34 | **FAIL** |
+| 13:00 | session_move | follow | 2692 | +0.2% | +0.25 | +1.0 (734) | -0.4 (756) | -1.0 (753) | +1.7 (449) | -2.8% | 37 | **FAIL** |
+| 14:00 | orb15 | follow | 2355 | +0.2% | +0.22 | +0.6 (653) | -0.9 (658) | +0.1 (655) | +1.5 (389) | -2.2% | 35 | **FAIL** |
+| 14:00 | orb15 | fade | 2355 | -0.2% | -0.22 | -0.6 (653) | +0.9 (658) | -0.1 (655) | -1.5 (389) | -3.4% | 34 | **FAIL** |
+| 13:00 | session_move | fade | 2692 | -0.2% | -0.25 | -1.0 (734) | +0.4 (756) | +1.0 (753) | -1.7 (449) | -2.8% | 36 | **FAIL** |
+| 14:00 | session_move | follow | 2691 | -0.2% | -0.28 | -0.0 (733) | -0.9 (756) | -1.8 (753) | +3.3 (449) | -1.9% | 35 | **FAIL** |
+| 14:00 | trail30 | follow | 2692 | -0.3% | -0.36 | +0.8 (734) | -1.3 (756) | -0.4 (753) | +0.0 (449) | -2.2% | 34 | **FAIL** |
+| 14:00 | vwap | fade | 2712 | -0.3% | -0.44 | -1.0 (754) | +0.2 (756) | -0.9 (753) | +0.6 (449) | -2.3% | 34 | **FAIL** |
+| 13:00 | orb15 | fade | 2337 | -0.5% | -0.59 | -1.2 (639) | -0.9 (648) | +0.8 (661) | -0.6 (389) | -2.5% | 36 | **FAIL** |
+| 13:00 | vwap | fade | 2712 | -0.6% | -0.82 | -1.5 (754) | -0.2 (756) | +0.7 (753) | -1.7 (449) | -3.0% | 36 | **FAIL** |
+| 13:00 | trail30 | fade | 2691 | -0.7% | -0.98 | -1.4 (733) | +0.4 (756) | -1.5 (753) | -0.0 (449) | -3.8% | 36 | **FAIL** |
+| 11:30 | trail30 | fade | 2691 | -0.9% | -1.33 | -0.2 (733) | -1.6 (756) | -1.5 (753) | +0.1 (449) | -2.9% | 39 | **FAIL** |
+| 11:30 | orb15 | fade | 2221 | -1.5% | -1.87 | +0.2 (616) | -1.8 (606) | -2.0 (620) | -2.9 (379) | -4.6% | 39 | **FAIL** |
+| 11:30 | vwap | fade | 2712 | -1.3% | -1.88 | -1.0 (754) | -1.8 (756) | -2.2 (753) | +0.6 (449) | -3.1% | 39 | **FAIL** |
+| 11:30 | session_move | fade | 2692 | -1.5% | -2.17 | +0.1 (734) | -1.9 (756) | -1.7 (753) | -3.1 (449) | -4.2% | 39 | **FAIL** |
+| 10:30 | vwap | fade | 2712 | -1.7% | -2.39 | -1.5 (754) | -0.8 (756) | -2.6 (753) | -2.0 (449) | -1.4% | 41 | **FAIL** |
+| 10:30 | session_move | fade | 2691 | -1.7% | -2.45 | -0.3 (733) | -0.6 (756) | -3.5 (753) | -2.9 (449) | -2.2% | 41 | **FAIL** |
+| 10:30 | trail30 | fade | 2689 | -2.1% | -3.01 | -2.3 (731) | -1.8 (756) | -2.4 (753) | -2.0 (449) | -1.2% | 41 | **FAIL** |
+| 10:30 | orb15 | fade | 2038 | -2.9% | -3.19 | -0.4 (548) | -2.6 (588) | -4.9 (561) | -3.8 (341) | -3.5% | 40 | **FAIL** |
+
+### Slices
+
+**gap_behaviour (follow) at 10:00** — slice noise floor t = 2.26
+
+| Slice | Days | Excess in slice | Elsewhere | t (difference) | Verdict |
+|---|---|---|---|---|---|
+| Mon | 294 | +5.0% | +2.5% | +1.03 | holds |
+| Tue | 314 | +3.5% | +2.8% | +0.26 | holds |
+| Wed | 298 | +0.8% | +3.5% | -1.05 | holds |
+| Thu | 315 | +3.7% | +2.8% | +0.39 | holds |
+| Fri | 338 | +1.8% | +3.3% | -0.55 | holds |
+| fomc | 38 | +5.0% | +2.9% | +0.35 | holds |
+| cpi | 84 | +4.2% | +2.9% | +0.31 | holds |
+| jobs | 92 | -0.4% | +3.2% | -0.79 | weaker, not significant |
+| opex | 72 | +5.9% | +2.8% | +0.57 | holds |
+| quad_witching | 22 | +2.2% | +3.0% | -0.09 | too few days |
+| month_end | 70 | +2.7% | +3.0% | -0.07 | holds |
+| quarter_end | 23 | +0.6% | +3.0% | -0.31 | too few days |
+| after_megacap_earnings | 134 | +8.0% | +2.5% | +1.55 | holds |
+
+**orb15 (follow) at 10:30** — slice noise floor t = 2.26
+
+| Slice | Days | Excess in slice | Elsewhere | t (difference) | Verdict |
+|---|---|---|---|---|---|
+| Mon | 379 | +4.6% | +2.5% | +0.97 | holds |
+| Tue | 430 | +2.7% | +2.9% | -0.11 | holds |
+| Wed | 421 | +2.2% | +3.0% | -0.36 | holds |
+| Thu | 413 | -0.0% | +3.6% | -1.61 | weaker, not significant |
+| Fri | 395 | +5.1% | +2.3% | +1.21 | holds |
+| fomc | 62 | -6.4% | +3.1% | -1.92 | weaker, not significant |
+| cpi | 99 | +6.8% | +2.7% | +0.99 | holds |
+| jobs | 91 | +7.7% | +2.7% | +1.11 | holds |
+| opex | 92 | +10.2% | +2.5% | +1.93 | holds |
+| quad_witching | 29 | +17.6% | +2.6% | +2.23 | too few days |
+| month_end | 91 | -0.6% | +3.0% | -0.78 | weaker, not significant |
+| quarter_end | 26 | +6.6% | +2.8% | +0.49 | too few days |
+| after_megacap_earnings | 142 | +1.6% | +2.9% | -0.35 | holds |
+
+**trail30 (follow) at 10:30** — slice noise floor t = 2.26
+
+| Slice | Days | Excess in slice | Elsewhere | t (difference) | Verdict |
+|---|---|---|---|---|---|
+| Mon | 502 | +0.8% | +2.5% | -0.97 | holds |
+| Tue | 554 | +3.0% | +1.9% | +0.58 | holds |
+| Wed | 551 | +2.7% | +2.0% | +0.37 | holds |
+| Thu | 543 | +1.4% | +2.3% | -0.54 | holds |
+| Fri | 539 | +2.9% | +2.0% | +0.49 | holds |
+| fomc | 87 | +2.5% | +2.1% | +0.11 | holds |
+| cpi | 128 | +3.6% | +2.1% | +0.46 | holds |
+| jobs | 127 | +6.3% | +1.9% | +1.25 | holds |
+| opex | 129 | +2.9% | +2.1% | +0.25 | holds |
+| quad_witching | 43 | +9.0% | +2.0% | +1.22 | holds |
+| month_end | 129 | +1.0% | +2.2% | -0.36 | holds |
+| quarter_end | 43 | +3.4% | +2.1% | +0.26 | holds |
+| after_megacap_earnings | 185 | +2.1% | +2.2% | -0.04 | holds |
+
+### Blind trade by slice (descriptive only — net level not trustworthy)
+
+| Slice | 10:30 | 11:30 | 13:00 | 14:00 |
+|---|---|---|---|---|
+| all | -0.8% (5412) | -3.7% (5412) | -6.0% (5412) | -5.4% (5412) |
+| Mon | -2.4% (1011) | -5.5% (1011) | -9.0% (1011) | -8.8% (1011) |
+| Tue | -0.0% (1115) | -3.6% (1115) | -6.4% (1115) | -5.9% (1115) |
+| Wed | -0.8% (1110) | -4.5% (1110) | -5.8% (1110) | -0.3% (1110) |
+| Thu | -0.0% (1092) | -2.3% (1092) | -3.3% (1092) | -5.1% (1092) |
+| Fri | -0.7% (1084) | -3.0% (1084) | -5.7% (1084) | -7.1% (1084) |
+| fomc | -3.6% (175) | -4.3% (175) | -6.7% (175) | +25.9% (175) |
+| cpi | +1.0% (258) | -3.1% (258) | -8.6% (258) | -3.8% (258) |
+| jobs | +0.4% (258) | -3.1% (258) | -2.5% (258) | -5.5% (258) |
+| opex | -3.3% (260) | -3.8% (260) | -3.6% (260) | -8.0% (260) |
+| quad_witching | -2.0% (86) | -1.4% (86) | -0.0% (86) | -7.3% (86) |
+| month_end | +1.0% (259) | -3.6% (259) | -6.0% (259) | -6.1% (259) |
+| quarter_end | -3.4% (86) | -5.5% (86) | -9.2% (86) | -8.1% (86) |
+| after_megacap_earnings | +0.8% (379) | -1.5% (379) | -4.0% (379) | -2.4% (379) |
