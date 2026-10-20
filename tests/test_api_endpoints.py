@@ -152,3 +152,9 @@ def test_ticker_filter_is_optional_and_validated(client):
         assert client.get(route + "?ticker=qqq").status_code == 200      # case-insensitive
         assert client.get(route + "?ticker=NOTATICKER").status_code == 404
     assert client.get("/api/autopilot?ticker=QQQ").json()["record_ticker"] == "QQQ"
+
+
+def test_lab_era_is_validated(client):
+    assert client.get("/api/lab?era=honest").json()["era"] in ("honest", "all")
+    assert client.get("/api/lab?era=delayed&ticker=QQQ").status_code == 200
+    assert client.get("/api/lab?era=yesterday").status_code == 404

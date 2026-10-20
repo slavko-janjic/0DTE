@@ -200,6 +200,13 @@ autopilot:
 # this tests entry/exit RULES, not portfolio selection. Stats need ~20-30
 # trades before they mean anything (multiple-testing: with several strategies
 # running, one will look great by luck early on).
+# The day lab fills became honest. Until then every option price came from
+# Yahoo quotes 15 minutes behind the share price (PR #27, SIGNAL_RESEARCH.md),
+# which flattered follow-the-signal strategies by ~$32 a trade. The lab
+# leaderboard scores trades from this date by default; older ones stay
+# viewable as "before", never mixed in.
+lab_fills_honest_from: "2026-10-20"
+
 shadow_strategies:
   # --- the autopilot's confidence gate, old vs new (added 2026-09-25) --------
   # Both mirror the real autopilot: QQQ/SPY, the 30-90 min window, the

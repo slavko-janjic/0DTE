@@ -17,6 +17,7 @@
     // Lab / Trades / Autopilot follow the selected ticker ('ticker') or show
     // every ticker ('all'). Signals, Cost and Tuning are always per-ticker.
     scope: 'ticker',
+    labEra: 'honest',     // 'honest' (since the fill fix) | 'delayed' (before it)
     range: 'session',
     calendar: { year: null, month: null },
     autopilotMode: null,
@@ -598,8 +599,26 @@
 
   /* ---- strategy lab ---------------------------------------------------- */
 
+  function renderLabEra(payload) {
+    var pills = $('lab-era');
+    if (!payload.cutover) { pills.hidden = true; $('lab-era-note').textContent = ''; return; }
+    var since = new Date(payload.cutover + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    pills.hidden = false;
+    pills.innerHTML =
+      '<button data-era="honest" class="' + (payload.era === 'honest' ? 'on' : '') + '">Since ' +
+        A.escapeHtml(since) + '</button>' +
+      '<button data-era="delayed" class="' + (payload.era === 'delayed' ? 'on' : '') + '">Before</button>';
+    $('lab-era-note').textContent = payload.era === 'delayed'
+      ? 'Before ' + since + ' every fill used option quotes 15 minutes behind the share price, ' +
+        'which flattered strategies that follow the signal. Kept for reference, not for verdicts.'
+      : 'Fills priced at the current share price (since ' + since + '). Older trades are under "Before".';
+  }
+
   function loadLab() {
-    return A.get('/api/lab' + scopeQuery()).then(function (payload) {
+    var query = scopeQuery();
+    query += (query ? '&' : '?') + 'era=' + encodeURIComponent(state.labEra);
+    return A.get('/api/lab' + query).then(function (payload) {
+      renderLabEra(payload);
       var rows = payload.rows || [];
       if (!rows.length) {
         $('lab-table').innerHTML = '<div class="empty">' + A.escapeHtml(payload.message || 'No strategies yet.') + '</div>';
@@ -1237,6 +1256,13 @@
     document.addEventListener('click', function (event) {
       var button = event.target.closest('button[data-scope]');
       if (button) { setScope(button.dataset.scope); }
+    });
+
+    $('lab-era').addEventListener('click', function (event) {
+      var button = event.target.closest('button[data-era]');
+      if (!button) { return; }
+      state.labEra = button.dataset.era === 'delayed' ? 'delayed' : 'honest';
+      loadLab();
     });
 
     $('range-pills').addEventListener('click', function (event) {

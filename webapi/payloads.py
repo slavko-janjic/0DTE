@@ -607,19 +607,48 @@ def calendar_payload(db_path: str, config: dict, year: int | None = None,
 MIN_LAB_TRADES = 20
 
 
-def lab_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
+LAB_ERAS = ("honest", "delayed", "all")
+
+
+def lab_cutover(config: dict) -> date | None:
+    """The first market date whose lab fills were honest (config
+    lab_fills_honest_from); None when not configured."""
+    raw = config.get("lab_fills_honest_from")
+    return date.fromisoformat(str(raw)) if raw else None
+
+
+def lab_payload(db_path: str, config: dict, ticker: str | None = None,
+                era: str = "honest") -> dict:
     """The strategy leaderboard - across every ticker, or for one. Each
     strategy trades each ticker on its own book, so a per-ticker view is just
-    that ticker's trades; a strategy pinned to other tickers says so."""
+    that ticker's trades; a strategy pinned to other tickers says so.
+
+    era: 'honest' (default) scores only trades entered on/after the cutover
+    date, 'delayed' only those before it (filled on 15-minute-stale quotes),
+    'all' both. Never mixed by default: the two eras measure different things.
+    Without a configured cutover there is one era and everything shows."""
     strategies = config.get("shadow_strategies", [])
     if not strategies:
         return {"rows": [], "message": "No shadow strategies configured "
                                        "(settings.yaml -> shadow_strategies)."}
+    cutover = lab_cutover(config)
+    era = era if era in LAB_ERAS else "honest"
+    if cutover is None:
+        era = "all"
+    tz = _tz(config)
+
+    def in_era(row) -> bool:
+        if era == "all":
+            return True
+        day = datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+        return day >= cutover if era == "honest" else day < cutover
+
     closed = [row for row in storage.get_closed_shadow_positions(db_path)
-              if ticker is None or row["ticker"] == ticker]
+              if (ticker is None or row["ticker"] == ticker) and in_era(row)]
     open_counts: dict[str, int] = {}
     for row in storage.get_open_shadow_positions(db_path, ticker):
-        open_counts[row["strategy"]] = open_counts.get(row["strategy"], 0) + 1
+        if in_era(row):
+            open_counts[row["strategy"]] = open_counts.get(row["strategy"], 0) + 1
 
     cards = strategy_scorecard(closed)
     edges = strategy_edge(closed, min_trades=MIN_LAB_TRADES)
@@ -649,7 +678,8 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
         })
     # strongest first among those with data; warming-up rows keep config order
     rows.sort(key=lambda row: (row["trades"] == 0, -(row["total_pnl"] or 0.0)))
-    return {"rows": rows, "min_trades": MIN_LAB_TRADES, "ticker": ticker}
+    return {"rows": rows, "min_trades": MIN_LAB_TRADES, "ticker": ticker,
+            "era": era, "cutover": _iso(cutover)}
 
 
 # --- cost of trading ------------------------------------------------------
