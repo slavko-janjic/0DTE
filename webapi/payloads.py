@@ -608,6 +608,53 @@ MIN_LAB_TRADES = 20
 
 
 LAB_ERAS = ("honest", "delayed", "all")
+NULL_STRATEGY = "null_coin"                     # the blind benchmark every strategy is read against
+MORNING_SIGNALS = ("gap_behaviour", "orb15", "trail30_1030", "orb15_1030")
+VS_NULL_MIN_DAYS = 5
+
+
+def vs_null(closed: list, tz, groups: dict | None = None) -> dict:
+    """How each strategy did against the coin flip, on the same ticker and day.
+
+    For every (ticker, day) both traded: the strategy's mean return on premium
+    minus null_coin's. Those differences are averaged per day (SPY and QQQ move
+    together - one observation per day, as in the research), then summarised
+    as {mean_pct, t, days}. None until VS_NULL_MIN_DAYS paired days exist.
+    `groups` maps a label to several strategy names pooled as one (the morning
+    family, which is one bet seen four ways); without it, each strategy alone."""
+    def key(row):
+        return row["ticker"], datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+
+    null: dict = {}
+    by_name: dict = {}
+    for row in closed:
+        if row["pnl_pct"] is None:
+            continue
+        bucket = null if row["strategy"] == NULL_STRATEGY else by_name.setdefault(row["strategy"], {})
+        bucket.setdefault(key(row), []).append(row["pnl_pct"])
+    if groups is None:
+        groups = {name: [name] for name in by_name}
+    out = {}
+    for label, members in groups.items():
+        per_day: dict = {}
+        pooled: dict = {}
+        for name in members:
+            for k, values in by_name.get(name, {}).items():
+                pooled.setdefault(k, []).extend(values)
+        for (ticker, day), values in pooled.items():
+            if (ticker, day) in null:
+                diff = (sum(values) / len(values)
+                        - sum(null[(ticker, day)]) / len(null[(ticker, day)]))
+                per_day.setdefault(day, []).append(diff)
+        daily = [sum(v) / len(v) for v in per_day.values()]
+        if len(daily) < VS_NULL_MIN_DAYS:
+            out[label] = {"mean_pct": None, "t": None, "days": len(daily)}
+            continue
+        mean = sum(daily) / len(daily)
+        sd = (sum((d - mean) ** 2 for d in daily) / (len(daily) - 1)) ** 0.5
+        out[label] = {"mean_pct": _num(mean), "days": len(daily),
+                      "t": _num(mean / (sd / math.sqrt(len(daily)))) if sd else None}
+    return out
 
 
 def lab_cutover(config: dict) -> date | None:
@@ -627,7 +674,7 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None,
     date, 'delayed' only those before it (filled on 15-minute-stale quotes),
     'all' both. Never mixed by default: the two eras measure different things.
     Without a configured cutover there is one era and everything shows."""
-    strategies = config.get("shadow_strategies", [])
+    strategies = list(config.get("shadow_strategies", []))
     if not strategies:
         return {"rows": [], "message": "No shadow strategies configured "
                                        "(settings.yaml -> shadow_strategies)."}
@@ -635,6 +682,9 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None,
     era = era if era in LAB_ERAS else "honest"
     if cutover is None:
         era = "all"
+    if era != "honest":
+        # retired strategies have no honest-era trades; their history is here
+        strategies += [dict(s, retired=True) for s in config.get("retired_shadow_strategies", [])]
     tz = _tz(config)
 
     def in_era(row) -> bool:
@@ -652,6 +702,9 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None,
 
     cards = strategy_scorecard(closed)
     edges = strategy_edge(closed, min_trades=MIN_LAB_TRADES)
+    versus = vs_null(closed, tz)
+    family = [s.get("name") for s in strategies
+              if s.get("entry", {}).get("signal_source") in MORNING_SIGNALS]
     rows = []
     for strategy in strategies:
         name = strategy.get("name", "?")
@@ -675,11 +728,16 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None,
             "verdict": verdict,
             "verdict_tone": ("up" if verdict == "EDGE (+)" else
                              "down" if verdict == "EDGE (-)" else "mut"),
+            "vs_null": versus.get(name),
+            "retired": bool(strategy.get("retired")),
         })
     # strongest first among those with data; warming-up rows keep config order
     rows.sort(key=lambda row: (row["trades"] == 0, -(row["total_pnl"] or 0.0)))
     return {"rows": rows, "min_trades": MIN_LAB_TRADES, "ticker": ticker,
-            "era": era, "cutover": _iso(cutover)}
+            "era": era, "cutover": _iso(cutover), "null": NULL_STRATEGY,
+            "family": vs_null(closed, tz, groups={"morning family": family}).get("morning family")
+                      if family else None,
+            "family_members": family}
 
 
 # --- cost of trading ------------------------------------------------------

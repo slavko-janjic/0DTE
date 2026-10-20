@@ -939,3 +939,54 @@ def test_lab_without_a_cutover_shows_everything(db, config):
     payload = payloads.lab_payload(db, config)
     assert payload["era"] == "all" and payload["cutover"] is None
     assert payload["rows"][0]["trades"] == 1
+
+
+def _shadow(db, strategy, ticker, entered, exit_price, entry_price=2.0):
+    sid = storage.open_shadow_position(db, strategy, ticker, "call", 500.0, "2099-01-02",
+                                       entry_price, {})
+    storage.close_shadow_position(db, sid, exit_price, "profit_target")
+    with storage.connect(db) as conn:
+        conn.execute("UPDATE shadow_positions SET entry_time = ? WHERE id = ?", (entered, sid))
+
+
+def test_lab_reads_each_strategy_against_the_coin_flip(db, config):
+    config["lab_fills_honest_from"] = "2026-10-20"
+    config["shadow_strategies"] = [
+        {"name": "null_coin", "entry": {}},
+        {"name": "morning_gap", "entry": {"signal_source": "gap_behaviour"}},
+        {"name": "morning_orb", "entry": {"signal_source": "orb15"}},
+    ]
+    for i in range(6):
+        day = f"2026-10-{21 + i}T14:00:00+00:00"
+        _shadow(db, "null_coin", "QQQ", day, 1.8)           # -10% every day
+        _shadow(db, "morning_gap", "QQQ", day, 2.4)         # +20% -> +30 vs the coin
+        _shadow(db, "morning_orb", "QQQ", day, 2.0)         # 0%   -> +10 vs the coin
+    payload = payloads.lab_payload(db, config)
+    rows = {r["name"]: r for r in payload["rows"]}
+    assert rows["morning_gap"]["vs_null"]["mean_pct"] == pytest.approx(30.0)
+    assert rows["morning_gap"]["vs_null"]["days"] == 6
+    assert payload["family"]["mean_pct"] == pytest.approx(20.0)     # one bet: pooled per day
+    assert payload["family_members"] == ["morning_gap", "morning_orb"]
+
+
+def test_vs_coin_needs_five_paired_days(db, config):
+    config["lab_fills_honest_from"] = "2026-10-20"
+    config["shadow_strategies"] = [{"name": "null_coin", "entry": {}}, {"name": "x", "entry": {}}]
+    for i in range(3):
+        day = f"2026-10-{21 + i}T14:00:00+00:00"
+        _shadow(db, "null_coin", "SPY", day, 2.0)
+        _shadow(db, "x", "SPY", day, 3.0)
+    _shadow(db, "x", "QQQ", "2026-10-24T14:00:00+00:00", 3.0)      # no coin flip that day/ticker
+    vs = {r["name"]: r for r in payloads.lab_payload(db, config)["rows"]}["x"]["vs_null"]
+    assert vs == {"mean_pct": None, "t": None, "days": 3}
+
+
+def test_retired_strategies_only_show_under_before(db, config):
+    config["lab_fills_honest_from"] = "2026-10-20"
+    config["shadow_strategies"] = [{"name": "baseline", "entry": {}}]
+    config["retired_shadow_strategies"] = [{"name": "contrarian", "entry": {}}]
+    _shadow(db, "contrarian", "QQQ", "2026-10-01T14:00:00+00:00", 1.0)
+    assert [r["name"] for r in payloads.lab_payload(db, config)["rows"]] == ["baseline"]
+    before = {r["name"]: r for r in payloads.lab_payload(db, config, era="delayed")["rows"]}
+    assert before["contrarian"]["retired"] and before["contrarian"]["trades"] == 1
+    assert not before["baseline"]["retired"]

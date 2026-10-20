@@ -599,7 +599,9 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
     whose expiration has passed settle at intrinsic value (0.00 when OTM or
     when no final spot was recorded) - an unmanaged 0DTE isn't sold at a
     quote, and the shadow book stays honest about that."""
-    strategies = config.get("shadow_strategies", [])
+    # retired strategies only see their open positions out - no new entries
+    strategies = list(config.get("shadow_strategies", [])) + [
+        dict(s, retired=True) for s in config.get("retired_shadow_strategies", [])]
     if not strategies:
         return
 
@@ -645,7 +647,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
                           f"@ ${current_price:.2f} (P&L ${pnl:+,.2f})")
 
         # --- one possible entry per strategy per cycle -----------------------
-        if chain is None or not is_market_open(config):
+        if strategy.get("retired") or chain is None or not is_market_open(config):
             continue
 
         # a strategy may be pinned to specific tickers (exits above still run for
