@@ -132,7 +132,10 @@
 
   function renderStrip(tickers) {
     var strip = $('senti');
-    if (!state.ticker && tickers.length) { selectTicker(tickers[0].ticker, true); }
+    // a remembered ticker that's no longer tracked (e.g. NVDA, dropped 2026-10-20)
+    // falls back to the first one instead of asking the API for it
+    var tracked = tickers.some(function (row) { return row.ticker === state.ticker; });
+    if ((!state.ticker || !tracked) && tickers.length) { selectTicker(tickers[0].ticker, !state.ticker); }
     strip.innerHTML = tickers.map(function (row) {
       var tone = row.tone === 'up' ? 'up' : (row.tone === 'down' ? 'down' : '');
       return '<button class="senti ' + tone + (row.ticker === state.ticker ? ' sel' : '') +

@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import single_instance
@@ -591,7 +592,7 @@ def _catalyst_imminent(config: dict, now: datetime | None = None) -> bool:
 def process_shadow_strategies(ticker: str, config: dict, db_path: str,
                               chain: market_data.OptionChainSnapshot | None,
                               signal, gamma_regime: str | None,
-                              direction_streak: int = 1) -> None:
+                              direction_streak: int = 1, entries: bool = True) -> None:
     """Runs every configured shadow strategy against this ticker's fresh signal:
     manages exits on their open virtual positions (same evaluate_exit machinery
     and honest bid-side fills as the real book), then considers one entry per
@@ -647,7 +648,8 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
                           f"@ ${current_price:.2f} (P&L ${pnl:+,.2f})")
 
         # --- one possible entry per strategy per cycle -----------------------
-        if strategy.get("retired") or chain is None or not is_market_open(config):
+        if (not entries or strategy.get("retired") or chain is None
+                or not is_market_open(config)):
             continue
 
         # a strategy may be pinned to specific tickers (exits above still run for
@@ -730,6 +732,23 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
               f"{contract['strike']:g} @ ${entry_price:.2f}")
 
 
+def manage_untracked_shadow_positions(config: dict, db_path: str) -> None:
+    """Exits for shadow positions on a ticker that's no longer tracked (dropped
+    from config['tickers'] while they were open) - priced from its own chain,
+    by the same rules, until they close. Never opens anything there. Without
+    this they'd sit 'open' forever, since nothing polls that ticker any more."""
+    tracked = set(config["tickers"])
+    for ticker in sorted({row["ticker"] for row in storage.get_open_shadow_positions(db_path)}
+                         - tracked):
+        try:
+            chain = market_data.get_option_chain(ticker)
+            # no live signal for it: reversal exits can't fire (score None)
+            process_shadow_strategies(ticker, config, db_path, chain,
+                                      SimpleNamespace(composite_score=None), None, entries=False)
+        except Exception as exc:
+            print(f"[{ticker}] untracked shadow exits failed: {exc}")
+
+
 def run_once(config: dict, db_path: str) -> None:
     # The VIX complex, market-wide, once per cycle - this is what lets
     # volatility_regime be scored against its own normal instead of a guess.
@@ -760,6 +779,7 @@ def run_once(config: dict, db_path: str) -> None:
             signal, chain = result
             candidates.append((ticker, signal, chain))
     maybe_auto_enter_best(candidates, config, db_path)
+    manage_untracked_shadow_positions(config, db_path)
 
 
 def run_premarket_setup(config: dict, db_path: str) -> None:
