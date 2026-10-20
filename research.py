@@ -5,7 +5,7 @@
     python research.py fetch              # download / update SPY+QQQ minute bars (Alpaca keys)
     python research.py run [--report SIGNAL_RESEARCH.md]
     python research.py intraday [--report PATH]   # later decision times + weekday/event slices
-    python research.py oos [--since DATE] [--no-fetch]   # the passed signals on new data only
+    python research.py oos [--since DATE] [--no-fetch] [--push]   # the passed signals on new data only
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -439,7 +439,33 @@ OOS_TESTS = (("gap_behaviour", 30, "10:00"), ("orb15", 30, "10:00"),
 OOS_SINCE = "2026-10-21"
 
 
-def cmd_oos(config: dict, since: str, fetch: bool) -> None:
+def oos_summary(results: list[dict], since: str) -> str:
+    """One push-sized line per signal."""
+    parts = []
+    for r in results:
+        if r["excess"] is None:
+            parts.append(f"{r['name']} {r['time']}: {r['days']}d, too early")
+        else:
+            parts.append(f"{r['name']} {r['time']}: {r['excess']:+.1f}%/day over {r['days']}d "
+                         f"(t {r['t']:+.1f}) - {r['read']}")
+    return f"Since {since}: " + "; ".join(parts)
+
+
+def _push_summary(config: dict, body: str) -> None:
+    """Sends the summary to every device with notifications on (same keys and
+    subscriptions as the app's alerts). Quietly skipped when there are none."""
+    from webapi import push
+    db, _ = _paths(config)
+    if not push.AVAILABLE or not push.subscriptions(db):
+        print("push: no devices subscribed - skipped")
+        return
+    result = push.send(db, push.load_or_create_key(db), None, {
+        "title": "Monthly re-test: morning signals", "body": body,
+        "tag": "oos", "url": "/#lab"})
+    print(f"push: {result}")
+
+
+def cmd_oos(config: dict, since: str, fetch: bool, push_result: bool = False) -> None:
     """The pre-registered signals (follow) on sessions from `since` on: the
     same label and excess as the research, no re-fitting. History before
     `since` is used only for the 20-session medians."""
@@ -470,18 +496,26 @@ def cmd_oos(config: dict, since: str, fetch: bool) -> None:
           f"minus the coin flip, % of premium, one observation per day.\n")
     print("| Signal | Time | Days | Excess/day | t | Net/day | Read |")
     print("|---|---|---|---|---|---|---|")
+    results = []
     for name, minute, clock in OOS_TESTS:
         days = session_lab.daily_outcomes(signals[minute], labels[minute], name, 1)
         excess = [v["excess"] for v in days.values()]
         net = [v["net"] for v in days.values()]
         if len(excess) < 3:
             print(f"| {name} | {clock} | {len(excess)} | - | - | - | too early |")
+            results.append({"name": name, "time": clock, "days": len(excess), "excess": None})
             continue
         t = session_lab._t(excess)
         read = ("too early (< 20 days)" if len(excess) < 20 else
                 "holding up" if statistics.fmean(excess) > 0 else "not holding up")
         print(f"| {name} | {clock} | {len(excess)} | {_pct(statistics.fmean(excess))} | {t:+.2f} | "
               f"{_pct(statistics.fmean(net))} | {read} |")
+        results.append({"name": name, "time": clock, "days": len(excess),
+                        "excess": statistics.fmean(excess), "t": t, "read": read})
+    summary = oos_summary(results, since)
+    print("\n" + summary)
+    if push_result:
+        _push_summary(config, summary)
 
 
 def main() -> None:
@@ -497,6 +531,7 @@ def main() -> None:
     oos = sub.add_parser("oos", help="the passed signals on new data only")
     oos.add_argument("--since", default=OOS_SINCE, help="first session to score (YYYY-MM-DD)")
     oos.add_argument("--no-fetch", action="store_true", help="use the cached bars as they are")
+    oos.add_argument("--push", action="store_true", help="also push the summary to subscribed devices")
     args = parser.parse_args()
     config = load_settings()
     if args.command == "calibrate":
@@ -508,7 +543,7 @@ def main() -> None:
     elif args.command == "intraday":
         cmd_intraday(config, args.report)
     elif args.command == "oos":
-        cmd_oos(config, args.since, not args.no_fetch)
+        cmd_oos(config, args.since, not args.no_fetch, args.push)
     else:
         cmd_run(config, args.report)
 

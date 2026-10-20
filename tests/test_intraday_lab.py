@@ -120,3 +120,14 @@ def test_coverage_limits_a_slice_to_the_years_its_source_covers():
 def test_thirty_two_main_tests():
     assert il.MAIN_TESTS == 32
     assert lab.noise_floor(il.MAIN_TESTS) == pytest.approx(2.63, abs=0.01)
+
+
+def test_oos_summary_reads_in_one_line():
+    import research
+    line = research.oos_summary([
+        {"name": "trail30", "time": "10:30", "days": 25, "excess": 1.84, "t": 1.2,
+         "read": "holding up"},
+        {"name": "gap_behaviour", "time": "10:00", "days": 2, "excess": None},
+    ], "2026-10-21")
+    assert line == ("Since 2026-10-21: trail30 10:30: +1.8%/day over 25d (t +1.2) - holding up; "
+                    "gap_behaviour 10:00: 2d, too early")
