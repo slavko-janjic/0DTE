@@ -278,7 +278,11 @@
             A.escapeHtml(signal.gamma.label) + '</span>' : '') +
           (signal.streak ? '<span class="chip">' + A.escapeHtml(signal.streak.label) + '</span>' : '') +
           '<span class="chip' + (signal.stale ? ' stale' : '') + '">' + A.escapeHtml(signal.age_text) + '</span>' +
-        '</div>';
+          '<span class="chip" title="The 2026-10 research found the composite adds nothing over a coin flip ' +
+            '(SIGNAL_RESEARCH.md). Shown as a reading, not a trade call.">no proven edge</span>' +
+        '</div>' +
+        '<div class="sub" style="margin-top:10px">A reading, not a trade call. What is being tested ' +
+          'is the morning signals in the pre-market card.</div>';
 
       $('subscores').innerHTML = signal.subscores.map(function (score) {
         var tip = score.name + ' · weight ' + A.pct(score.weight_pct) + ' · reading ' +

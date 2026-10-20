@@ -556,12 +556,14 @@ def render_status_banners(selected_ticker: str) -> None:
             banner_icon = DIRECTION_ICON.get(direction, "trending_flat")
             # short action line, derived from the full recommendation phrasing
             rec = snap["recommendation"].lower()
-            if "stay out" in rec or "no clear edge" in rec:
-                action = "Stay out"
+            # older rows say "stay out" / "consider buying"; current ones are
+            # a lean with no proven edge (SIGNAL_RESEARCH.md)
+            if "stay out" in rec or "no clear edge" in rec or "no clear lean" in rec:
+                action = "No lean"
             elif "calls" in rec:
-                action = "Consider buying calls"
+                action = "Leans calls (no proven edge)"
             elif "puts" in rec:
-                action = "Consider buying puts"
+                action = "Leans puts (no proven edge)"
             else:
                 action = ""
             # the selected ticker's banner reads as "active" via a heavier border
