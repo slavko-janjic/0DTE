@@ -292,6 +292,82 @@ shadow_strategies:
     exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
             reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
             late_session_minutes: 90, late_session_stop_pct: -20 }
+  # --- PRE-REGISTERED morning signals (declared 2026-10-20) -------------------
+  # From the signal research lab (SIGNAL_RESEARCH.md: 2016-2026 minute bars, 20
+  # pre-declared tests against the autopilot's 10:00 trade). gap_behaviour
+  # (follow) was the only pass: on days that gap a normal amount or more, trade
+  # the direction of the 09:30-10:00 move - +3.0% of premium per trade over the
+  # coin flip, t 2.93, positive in all four periods but fading (+0.3% since
+  # 2025). orb15 (follow) was the runner-up (+2.3%, t 2.18). Computed at 10:00
+  # by signals/morning.py with the research's own scoring functions; the
+  # autopilot's exits. Read them against null_coin on honest fills only
+  # (lab_fills_honest_from) - and don't tune them after seeing results.
+  - name: morning_gap
+    entry: { signal_source: gap_behaviour, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb
+    entry: { signal_source: orb15, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  # The intraday study (2026-10-20, 32 pre-declared tests at 10:30 / 11:30 /
+  # 13:00 / 14:00) passed exactly two, both at 10:30: following the 10:00-10:30
+  # move (+2.1%/trade, t 3.01, near-identical in every period) and the
+  # opening-range breakout (+2.9%, t 3.19, stronger since 2022). Nothing passed
+  # from 11:30 on. No weekday or event (Fed, CPI, jobs, expiry, month end,
+  # mega-cap earnings) significantly breaks them. All four morning strategies
+  # bet the same thing - the morning move continues - so they win and lose
+  # together: read them as one confirmation, not four.
+  - name: morning_trail_1030
+    entry: { signal_source: trail30_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb_1030
+    entry: { signal_source: orb15_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
+  # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
+  # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure
+  # noise across 18 tests would typically produce a best z of ~+2.40. So 55.9%
+  # is IN-SAMPLE data mining, not an edge.
+  # Declaring it here converts it into a real out-of-sample test: if it still
+  # holds after ~22 more trading days (n~384 needed to prove a 55% edge, SPY had
+  # 92), that means something. If it regresses to 50%, that also means something.
+  # Either way we learn - which is the entire point of writing it down first.
+  # nvda_technicals is the control: the same rule on the cheap-spread ticker
+  # (NVDA ~0.5% vs SPY ~15.4% round trip), where a real edge could survive costs.
+  - name: spy_technicals
+    entry: { signal_source: technicals, only_tickers: [SPY], min_confidence_pct: 20,
+             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
+             max_entries_per_day: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  - name: nvda_technicals
+    entry: { signal_source: technicals, only_tickers: [NVDA], min_confidence_pct: 20,
+             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
+             max_entries_per_day: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+
+# Retired 2026-10-20: settled, so they no longer take new trades (the worker
+# still manages any position they hold until it closes). Their records stay in
+# the database and on the Lab page under "Before". Why they were retired:
+#  - the fades (contrarian, fade_conviction, inv_*) lose in every test we ran,
+#    on paper and in the 2016-2026 research;
+#  - the composite variants' paper edge was the 15-minute quote delay
+#    (SIGNAL_RESEARCH.md: re-priced in real time they're ~zero);
+#  - every extra live strategy makes a lucky "EDGE" more likely.
+# To bring one back, move its entry up into shadow_strategies.
+retired_shadow_strategies:
   - name: baseline            # the autopilot's opening-range setup (predates the lower-bound gate)
     entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
              no_entry_last_minutes: 60 }
@@ -393,71 +469,6 @@ shadow_strategies:
   - name: inv_fresh_flip
     entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 180,
              no_entry_last_minutes: 60, max_direction_streak: 2, invert: true }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35,
-            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
-  # --- PRE-REGISTERED morning signals (declared 2026-10-20) -------------------
-  # From the signal research lab (SIGNAL_RESEARCH.md: 2016-2026 minute bars, 20
-  # pre-declared tests against the autopilot's 10:00 trade). gap_behaviour
-  # (follow) was the only pass: on days that gap a normal amount or more, trade
-  # the direction of the 09:30-10:00 move - +3.0% of premium per trade over the
-  # coin flip, t 2.93, positive in all four periods but fading (+0.3% since
-  # 2025). orb15 (follow) was the runner-up (+2.3%, t 2.18). Computed at 10:00
-  # by signals/morning.py with the research's own scoring functions; the
-  # autopilot's exits. Read them against null_coin on honest fills only
-  # (lab_fills_honest_from) - and don't tune them after seeing results.
-  - name: morning_gap
-    entry: { signal_source: gap_behaviour, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
-             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
-            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
-            late_session_minutes: 90, late_session_stop_pct: -20 }
-  - name: morning_orb
-    entry: { signal_source: orb15, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
-             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
-            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
-            late_session_minutes: 90, late_session_stop_pct: -20 }
-  # The intraday study (2026-10-20, 32 pre-declared tests at 10:30 / 11:30 /
-  # 13:00 / 14:00) passed exactly two, both at 10:30: following the 10:00-10:30
-  # move (+2.1%/trade, t 3.01, near-identical in every period) and the
-  # opening-range breakout (+2.9%, t 3.19, stronger since 2022). Nothing passed
-  # from 11:30 on. No weekday or event (Fed, CPI, jobs, expiry, month end,
-  # mega-cap earnings) significantly breaks them. All four morning strategies
-  # bet the same thing - the morning move continues - so they win and lose
-  # together: read them as one confirmation, not four.
-  - name: morning_trail_1030
-    entry: { signal_source: trail30_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
-             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
-            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
-            late_session_minutes: 90, late_session_stop_pct: -20 }
-  - name: morning_orb_1030
-    entry: { signal_source: orb15_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
-             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
-            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
-            late_session_minutes: 90, late_session_stop_pct: -20 }
-  # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
-  # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
-  # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure
-  # noise across 18 tests would typically produce a best z of ~+2.40. So 55.9%
-  # is IN-SAMPLE data mining, not an edge.
-  # Declaring it here converts it into a real out-of-sample test: if it still
-  # holds after ~22 more trading days (n~384 needed to prove a 55% edge, SPY had
-  # 92), that means something. If it regresses to 50%, that also means something.
-  # Either way we learn - which is the entire point of writing it down first.
-  # nvda_technicals is the control: the same rule on the cheap-spread ticker
-  # (NVDA ~0.5% vs SPY ~15.4% round trip), where a real edge could survive costs.
-  - name: spy_technicals
-    entry: { signal_source: technicals, only_tickers: [SPY], min_confidence_pct: 20,
-             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
-             max_entries_per_day: 2 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35,
-            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
-  - name: nvda_technicals
-    entry: { signal_source: technicals, only_tickers: [NVDA], min_confidence_pct: 20,
-             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
-             max_entries_per_day: 2 }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
             time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
 

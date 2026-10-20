@@ -1055,3 +1055,29 @@ def test_morning_scores_refresh_once_for_the_1030_pair(monkeypatch):
     clock["m"] = 62.0
     assert worker.morning_scores_for("QQQ", config)["trail30_1030"] == 0.6           # refreshed
     assert worker.morning_scores_for("QQQ", config) is full and len(calls) == 2      # final
+
+
+def test_retired_strategies_see_their_positions_out_but_take_no_new_ones(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "retired.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=60.0, to_close=300.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0, "bid": 1.9, "ask": 2.1})
+    entry = {"min_confidence_pct": 0, "window_start_minutes": 30, "window_end_minutes": 90,
+             "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    held = storage.open_shadow_position(db_path, "contrarian", "QQQ", "call", 500.0,
+                                        "2099-01-02", 2.0, {})
+    config = {**AUTO_CONFIG, "shadow_strategies": [],
+              "retired_shadow_strategies": [{"name": "contrarian", "entry": entry, "exit": exit_cfg}]}
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration="2099-01-02")
+    monkeypatch.setattr(worker.market_data, "find_contract_price", lambda *a: 3.2)   # +60%
+    worker.process_shadow_strategies("QQQ", config, db_path, chain,
+                                     _gated_signal(80.0, 80.0), None)
+    assert storage.get_open_shadow_positions(db_path, "QQQ") == []         # closed at target...
+    closed = [r for r in storage.get_closed_shadow_positions(db_path) if r["id"] == held]
+    assert closed and closed[0]["exit_reason"] == "profit_target"
+    worker.process_shadow_strategies("QQQ", config, db_path, chain,
+                                     _gated_signal(80.0, 80.0), None)
+    assert storage.get_open_shadow_positions(db_path, "QQQ") == []         # ...and nothing new

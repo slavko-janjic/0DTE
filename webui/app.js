@@ -614,6 +614,32 @@
       : 'Fills priced at the current share price (since ' + since + '). Older trades are under "Before".';
   }
 
+  /* "vs coin": a strategy's edge over the blind trade on the same days -
+     what the null test is actually asking. */
+  function vsNullCell(v) {
+    if (!v) { return '<td class="num">—</td>'; }
+    if (!A.isNum(v.mean_pct)) {
+      return '<td class="num" title="Needs 5 days traded alongside the coin flip">' +
+        (v.days ? v.days + 'd' : '—') + '</td>';
+    }
+    var tip = v.days + ' days paired with the coin flip' +
+      (A.isNum(v.t) ? ' · t ' + A.signedNum(v.t) : '');
+    return '<td class="num ' + A.tone(v.mean_pct) + '" title="' + A.escapeHtml(tip) + '">' +
+      A.signedPct(v.mean_pct, 1) + '</td>';
+  }
+
+  function familyNote(payload) {
+    var f = payload.family;
+    if (!f) { return ''; }
+    var members = (payload.family_members || []).join(', ');
+    var body = A.isNum(f.mean_pct)
+      ? '<b class="' + A.tone(f.mean_pct) + '">' + A.signedPct(f.mean_pct, 1) + '</b> per day vs the coin flip over ' +
+        f.days + ' days' + (A.isNum(f.t) ? ' (t ' + A.signedNum(f.t) + (Math.abs(f.t) >= 2 ? '' : ', not yet significant') + ')' : '')
+      : 'needs 5 days traded alongside the coin flip (' + (f.days || 0) + ' so far)';
+    return '<div class="sub" style="padding:10px 17px 14px">Morning family, read as one bet (' +
+      A.escapeHtml(members) + '): ' + body + '.</div>';
+  }
+
   function loadLab() {
     var query = scopeQuery();
     query += (query ? '&' : '?') + 'era=' + encodeURIComponent(state.labEra);
@@ -627,18 +653,23 @@
       $('lab-table').innerHTML =
         '<table><thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Win</th>' +
         '<th class="num">Total P&amp;L</th><th class="num">Profit factor</th><th class="num">t</th>' +
-        '<th class="num">Need</th><th>Verdict</th></tr></thead><tbody>' +
+        '<th class="num">Need</th><th class="num" title="Average return per day minus ' +
+        'the coin flip (null_coin) on the same ticker and day">vs coin</th><th>Verdict</th></tr></thead><tbody>' +
         rows.map(function (row) {
-          return '<tr><td class="tkcell">' + A.escapeHtml(row.name) +
-              (row.open ? '<div class="sub">' + row.open + ' open</div>' : '') + '</td>' +
+          var sub = [];
+          if (row.open) { sub.push(row.open + ' open'); }
+          if (row.retired) { sub.push('retired'); }
+          return '<tr' + (row.retired ? ' class="retired"' : '') + '><td class="tkcell">' + A.escapeHtml(row.name) +
+              (sub.length ? '<div class="sub">' + sub.join(' · ') + '</div>' : '') + '</td>' +
             '<td class="num">' + row.trades + '</td>' +
             '<td class="num">' + (A.isNum(row.win_rate_pct) ? A.pct(row.win_rate_pct) : '—') + '</td>' +
             '<td class="num ' + A.tone(row.total_pnl) + '">' + A.signedMoney(row.total_pnl) + '</td>' +
             '<td class="num">' + (A.isNum(row.profit_factor) ? row.profit_factor.toFixed(2) : '—') + '</td>' +
             '<td class="num">' + (A.isNum(row.t_stat) ? A.signedNum(row.t_stat) : '—') + '</td>' +
             '<td class="num">' + (row.trades_needed ? row.trades_needed.toLocaleString('en-US') : '—') + '</td>' +
+            vsNullCell(row.name === payload.null ? null : row.vs_null) +
             '<td><span class="badge b-' + row.verdict_tone + '">' + A.escapeHtml(row.verdict) + '</span></td></tr>';
-        }).join('') + '</tbody></table>';
+        }).join('') + '</tbody></table>' + familyNote(payload);
     }).catch(function (error) { fail($('lab-table'), error); });
   }
 
