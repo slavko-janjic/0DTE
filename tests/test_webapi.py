@@ -908,3 +908,34 @@ def test_lab_leaderboard_can_be_narrowed_to_one_ticker(db, config):
     assert qqq["spy_only"]["verdict"] == "not run on QQQ"           # pinned elsewhere
     spy = {row["name"]: row for row in payloads.lab_payload(db, config, ticker="SPY")["rows"]}
     assert spy["baseline"]["trades"] == 2 and spy["spy_only"]["verdict"] == "no trades yet"
+
+
+def test_lab_scores_each_fill_era_separately(db, config):
+    """Trades before the fill fix were priced on 15-minute-stale quotes; the
+    leaderboard must not mix them with honest ones."""
+    config["lab_fills_honest_from"] = "2026-10-20"
+    for exit_price, entered in ((3.0, "2026-10-19T14:00:00+00:00"),      # +100, delayed era
+                                (1.0, "2026-10-20T14:00:00+00:00"),      # -100, honest era
+                                (1.5, "2026-10-21T14:00:00+00:00")):     # -50, honest era
+        sid = storage.open_shadow_position(db, "baseline", "QQQ", "call", 500.0,
+                                           "2099-01-02", 2.0, {})
+        storage.close_shadow_position(db, sid, exit_price, "profit_target")
+        with storage.connect(db) as conn:
+            conn.execute("UPDATE shadow_positions SET entry_time = ? WHERE id = ?", (entered, sid))
+
+    honest = payloads.lab_payload(db, config)
+    assert honest["era"] == "honest" and honest["cutover"] == "2026-10-20"
+    assert honest["rows"][0]["trades"] == 2
+    assert honest["rows"][0]["total_pnl"] == pytest.approx(-150.0)
+    delayed = payloads.lab_payload(db, config, era="delayed")["rows"][0]
+    assert delayed["trades"] == 1 and delayed["total_pnl"] == pytest.approx(100.0)
+    assert payloads.lab_payload(db, config, era="all")["rows"][0]["trades"] == 3
+
+
+def test_lab_without_a_cutover_shows_everything(db, config):
+    config.pop("lab_fills_honest_from", None)
+    sid = storage.open_shadow_position(db, "baseline", "QQQ", "call", 500.0, "2099-01-02", 2.0, {})
+    storage.close_shadow_position(db, sid, 2.5, "profit_target")
+    payload = payloads.lab_payload(db, config)
+    assert payload["era"] == "all" and payload["cutover"] is None
+    assert payload["rows"][0]["trades"] == 1

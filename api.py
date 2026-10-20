@@ -148,8 +148,10 @@ def get_calendar(year: int | None = None, month: int | None = None) -> dict:
 
 
 @app.get("/api/lab")
-def get_lab(ticker: str | None = None) -> dict:
-    return payloads.lab_payload(db_path, config, ticker=_optional_ticker(ticker))
+def get_lab(ticker: str | None = None, era: str = "honest") -> dict:
+    if era not in payloads.LAB_ERAS:
+        raise HTTPException(status_code=404, detail=f"Unknown era {era!r}")
+    return payloads.lab_payload(db_path, config, ticker=_optional_ticker(ticker), era=era)
 
 
 @app.get("/api/cost/{ticker}")

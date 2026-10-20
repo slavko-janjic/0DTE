@@ -7,7 +7,7 @@
 <title>0DTE Console</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233a5bd9'/><text x='16' y='22' font-size='16' font-family='monospace' font-weight='600' fill='white' text-anchor='middle'>0&#916;</text></svg>">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="theme-color" content="#3a5bd9">
@@ -122,8 +122,8 @@
     <!-- STRATEGY LAB -->
     <section class="page" data-page="lab" hidden>
       <div class="card" style="margin-top:16px">
-        <div class="hd"><div><h3><span class="eyebrow">Strategy lab</span> · <span class="scopename">—</span></h3><div class="sub">Virtual strategies, honest fills, zero wallet impact. Verdict tests whether avg P&amp;L/trade ≠ 0 (|t| ≥ 2). With ~10 running, treat one winner as a hypothesis, not a result.</div></div>
-          <div class="pills scope"></div></div>
+        <div class="hd"><div><h3><span class="eyebrow">Strategy lab</span> · <span class="scopename">—</span></h3><div class="sub">Virtual strategies, zero wallet impact. Verdict tests whether avg P&amp;L/trade ≠ 0 (|t| ≥ 2). With ~20 running, treat one winner as a hypothesis, not a result.</div><div class="sub" id="lab-era-note"></div></div>
+          <div class="hdctl"><div class="pills" id="lab-era" hidden></div><div class="pills scope"></div></div></div>
         <div style="overflow-x:auto" id="lab-table"><div class="loading">Loading</div></div>
       </div>
     </section>
@@ -286,7 +286,7 @@
 
 <!-- bump ?v= with any change: phones cache these hard, and a stale app.js
      against new markup breaks the page -->
-<script src="api.js?v=4"></script>
-<script src="app.js?v=4"></script>
+<script src="api.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
