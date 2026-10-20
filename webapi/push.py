@@ -215,7 +215,14 @@ def alert_state(db_path: str, config: dict) -> dict:
                           "strike": row["strike"]}
               for row in storage.get_open_positions(db_path) if row["opened_by"] == "auto"}
     worker, age = worker_state(db_path, config)
-    return {"armed": armed, "open": opened, "worker": worker, "worker_age_seconds": age}
+    family = {s["name"] for s in config.get("shadow_strategies", [])
+              if s.get("entry", {}).get("signal_source") in payloads.MORNING_SIGNALS}
+    morning = {row["id"]: {"ticker": row["ticker"], "option_type": row["option_type"],
+                           "strike": row["strike"], "strategy": row["strategy"]}
+               for row in storage.get_open_shadow_positions(db_path)
+               if row["strategy"] in family}
+    return {"armed": armed, "open": opened, "worker": worker, "worker_age_seconds": age,
+            "morning": morning}
 
 
 def new_events(previous: dict, current: dict, config: dict) -> list[dict]:
@@ -245,6 +252,22 @@ def new_events(previous: dict, current: dict, config: dict) -> list[dict]:
                 "tag": f"opened-{position_id}",
                 "url": "/#trades",
             })
+
+    # the lab's morning family entering: one alert per ticker and side per tick
+    # (the 10:00 pair often enters together), so it can be mirrored by hand
+    fresh: dict = {}
+    for position_id, row in current.get("morning", {}).items():
+        if position_id not in previous.get("morning", {}):
+            fresh.setdefault((row["ticker"], row["option_type"]), []).append(row)
+    for (ticker, option_type), rows in fresh.items():
+        names = ", ".join(sorted(r["strategy"] for r in rows))
+        events.append({
+            "title": f"{ticker} morning {option_type.upper()}",
+            "body": f"{names}: {option_type} {rows[0]['strike']:g} - lab signal, not the autopilot. "
+                    f"Mirror ATM 0DTE {option_type}, +{target:.0f}% / {stop:.0f}%.",
+            "tag": f"morning-{ticker}-{option_type}",
+            "url": "/#lab",
+        })
 
     # worker liveness: alert on going down, and on coming back from down only -
     # not on down -> idle (the session ending isn't a recovery)

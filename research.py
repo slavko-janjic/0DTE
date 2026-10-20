@@ -5,6 +5,7 @@
     python research.py fetch              # download / update SPY+QQQ minute bars (Alpaca keys)
     python research.py run [--report SIGNAL_RESEARCH.md]
     python research.py intraday [--report PATH]   # later decision times + weekday/event slices
+    python research.py oos [--since DATE] [--no-fetch]   # the passed signals on new data only
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -431,6 +432,58 @@ def cmd_intraday(config: dict, report: str | None) -> None:
         print(f"\nWrote {report}")
 
 
+# What passed before 2026-10-20 and is now forward-tested. Out-of-sample means
+# only sessions after the pre-registration date - nothing here gets re-fitted.
+OOS_TESTS = (("gap_behaviour", 30, "10:00"), ("orb15", 30, "10:00"),
+             ("trail30", 60, "10:30"), ("orb15", 60, "10:30"))
+OOS_SINCE = "2026-10-21"
+
+
+def cmd_oos(config: dict, since: str, fetch: bool) -> None:
+    """The pre-registered signals (follow) on sessions from `since` on: the
+    same label and excess as the research, no re-fitting. History before
+    `since` is used only for the 20-session medians."""
+    db, cache = _paths(config)
+    if fetch:
+        keys = history.load_keys(Path(db).parent)
+        for ticker in TICKERS:
+            history.update_cache(cache, ticker, keys, date.today() - timedelta(days=1),
+                                 first_year=date.today().year)
+        history.update_vix(cache)
+    calibration = _load_calibration(cache)
+    vix = history.load_vix(cache)
+    exit_cfg = next(s["exit"] for s in config["shadow_strategies"] if s["name"] == "autopilot_point")
+    sessions = {t: session_lab.sessions_from_bars(history.load_bars(cache, t)) for t in TICKERS}
+    start = date.fromisoformat(since)
+    # only recent sessions need labels; signals need the full history for their medians
+    recent = {t: [s for s in ss if s.day >= start] for t, ss in sessions.items()}
+
+    def sigma_for(ticker, day):
+        return calibration["k"][ticker] * vix[day][0] / 100.0 if day in vix else None
+
+    signals = {30: session_lab.build_signals(sessions, {d: c for d, (_, c) in vix.items()}),
+               60: intraday_lab.build_signals_at(sessions, 60)}
+    labels = {m: intraday_lab.build_labels_at(recent, m, sigma_for, exit_cfg,
+                                              calibration["half_spread"]) for m in (30, 60)}
+    last = max((s.day for ss in recent.values() for s in ss), default=None)
+    print(f"Out-of-sample since {since} (data through {last}); follow side; excess = return "
+          f"minus the coin flip, % of premium, one observation per day.\n")
+    print("| Signal | Time | Days | Excess/day | t | Net/day | Read |")
+    print("|---|---|---|---|---|---|---|")
+    for name, minute, clock in OOS_TESTS:
+        days = session_lab.daily_outcomes(signals[minute], labels[minute], name, 1)
+        excess = [v["excess"] for v in days.values()]
+        net = [v["net"] for v in days.values()]
+        if len(excess) < 3:
+            print(f"| {name} | {clock} | {len(excess)} | - | - | - | too early |")
+            continue
+        t = session_lab._t(excess)
+        read = ("too early (< 20 days)" if len(excess) < 20 else
+                "holding up" if statistics.fmean(excess) > 0 else "not holding up")
+        print(f"| {name} | {clock} | {len(excess)} | {_pct(statistics.fmean(excess))} | {t:+.2f} | "
+              f"{_pct(statistics.fmean(net))} | {read} |")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -441,6 +494,9 @@ def main() -> None:
     run.add_argument("--report", default=None, help="also write the tables to this file")
     intraday = sub.add_parser("intraday", help="later decision times + weekday/event slices")
     intraday.add_argument("--report", default=None, help="also write the tables to this file")
+    oos = sub.add_parser("oos", help="the passed signals on new data only")
+    oos.add_argument("--since", default=OOS_SINCE, help="first session to score (YYYY-MM-DD)")
+    oos.add_argument("--no-fetch", action="store_true", help="use the cached bars as they are")
     args = parser.parse_args()
     config = load_settings()
     if args.command == "calibrate":
@@ -451,6 +507,8 @@ def main() -> None:
         cmd_fetch(config)
     elif args.command == "intraday":
         cmd_intraday(config, args.report)
+    elif args.command == "oos":
+        cmd_oos(config, args.since, not args.no_fetch)
     else:
         cmd_run(config, args.report)
 
