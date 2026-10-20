@@ -26,18 +26,19 @@ def test_direction_from_score():
     assert composite.direction_from_score(0.001) == "neutral"
 
 
-def test_build_recommendation_below_floor_says_stay_out():
+def test_build_recommendation_below_floor_says_no_lean():
     rec = composite.build_recommendation("QQQ", "bullish", confidence_pct=20, confidence_floor_pct=40)
-    assert "stay out" in rec.lower()
+    assert "no clear lean" in rec.lower()
 
 
-def test_build_recommendation_above_floor_suggests_direction():
+def test_build_recommendation_reads_as_a_lean_not_advice():
+    # the research found no edge in the composite: it must not tell anyone to buy
     rec = composite.build_recommendation("QQQ", "bullish", confidence_pct=90, confidence_floor_pct=40)
-    assert "calls" in rec.lower()
-    assert "90" in rec
+    assert "calls" in rec.lower() and "90" in rec
+    assert "no proven edge" in rec and "consider buying" not in rec.lower()
 
     rec_bear = composite.build_recommendation("SPY", "bearish", confidence_pct=75, confidence_floor_pct=40)
-    assert "puts" in rec_bear.lower()
+    assert "puts" in rec_bear.lower() and "leans down" in rec_bear
 
 
 def test_compute_signal_end_to_end():

@@ -44,13 +44,16 @@ def direction_from_score(score: float, neutral_epsilon: float = 0.02) -> str:
 def build_recommendation(
     ticker: str, direction: str, confidence_pct: float, confidence_floor_pct: float
 ) -> str:
+    """The composite's one-line reading. Deliberately not a trade call: the
+    2026-10 research (SIGNAL_RESEARCH.md) found the composite adds nothing over
+    a coin flip, so it reads as a lean, not as advice to buy."""
     if confidence_pct < confidence_floor_pct or direction == "neutral":
-        return f"No clear edge on {ticker} - stay out."
+        return f"No clear lean on {ticker}."
     option_type = "calls" if direction == "bullish" else "puts"
     move = "up" if direction == "bullish" else "down"
     return (
-        f"{confidence_pct:.0f}% confidence {ticker} moves {move} - "
-        f"consider buying 0DTE {option_type}."
+        f"{ticker} composite leans {move} ({confidence_pct:.0f}%, the {option_type} side) - "
+        f"a reading, not a trade call: no proven edge."
     )
 
 
