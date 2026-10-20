@@ -6,9 +6,9 @@
 tickers:
   - QQQ
   - SPY
-  - IWM
-  - TSLA  # mega-cap with daily (0DTE) options
-  - NVDA  # mega-cap with daily (0DTE) options
+# IWM, TSLA and NVDA were dropped 2026-10-20: the autopilot and all the
+# research cover only QQQ/SPY, and each extra ticker cost ~5 Yahoo requests a
+# poll. Their history stays in the database; re-add a line here to bring one back.
 
 # How often the worker polls every ticker, in seconds (15-600). The worker
 # reads this at startup and records it in the database, where the web UI's
@@ -351,13 +351,6 @@ shadow_strategies:
              max_entries_per_day: 2 }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
             time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
-  - name: nvda_technicals
-    entry: { signal_source: technicals, only_tickers: [NVDA], min_confidence_pct: 20,
-             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
-             max_entries_per_day: 2 }
-    exit: { profit_target_pct: 50, stop_loss_pct: -35,
-            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
-
 # Retired 2026-10-20: settled, so they no longer take new trades (the worker
 # still manages any position they hold until it closes). Their records stay in
 # the database and on the Lab page under "Before". Why they were retired:
@@ -368,6 +361,14 @@ shadow_strategies:
 #  - every extra live strategy makes a lucky "EDGE" more likely.
 # To bring one back, move its entry up into shadow_strategies.
 retired_shadow_strategies:
+  # retired 2026-10-20 with the NVDA ticker
+  - name: nvda_technicals
+    entry: { signal_source: technicals, only_tickers: [NVDA], min_confidence_pct: 20,
+             window_start_minutes: 30, window_end_minutes: 240, no_entry_last_minutes: 60,
+             max_entries_per_day: 2 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35,
+            time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+
   - name: baseline            # the autopilot's opening-range setup (predates the lower-bound gate)
     entry: { min_confidence_pct: 55, window_start_minutes: 30, window_end_minutes: 90,
              no_entry_last_minutes: 60 }

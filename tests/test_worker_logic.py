@@ -1081,3 +1081,34 @@ def test_retired_strategies_see_their_positions_out_but_take_no_new_ones(tmp_pat
     worker.process_shadow_strategies("QQQ", config, db_path, chain,
                                      _gated_signal(80.0, 80.0), None)
     assert storage.get_open_shadow_positions(db_path, "QQQ") == []         # ...and nothing new
+
+
+def test_a_dropped_ticker_s_open_shadow_positions_still_get_their_exits(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "dropped.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=200.0, to_close=190.0)
+    entry = {"min_confidence_pct": 0, "window_start_minutes": 30, "window_end_minutes": 390,
+             "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    config = {**AUTO_CONFIG, "tickers": ["QQQ", "SPY"],
+              "shadow_strategies": [{"name": "null_coin", "entry": {**entry, "direction_rule": "coin_flip"},
+                                     "exit": exit_cfg}]}
+    held = storage.open_shadow_position(db_path, "null_coin", "TSLA", "call", 400.0,
+                                        "2099-01-02", 2.0, {})
+    fetched = []
+    monkeypatch.setattr(worker.market_data, "get_option_chain",
+                        lambda t: fetched.append(t) or SimpleNamespace(calls="C", puts="P", spot=400.0,
+                                                                      expiration="2099-01-02"))
+    monkeypatch.setattr(worker.market_data, "find_contract_price", lambda *a: 2.1)  # +5%: holds
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 400.0, "bid": 1.9, "ask": 2.1})
+    worker.manage_untracked_shadow_positions(config, db_path)
+    assert fetched == ["TSLA"]                                       # only the untracked one
+    assert [r["id"] for r in storage.get_open_shadow_positions(db_path, "TSLA")] == [held]  # no new entry
+    monkeypatch.setattr(worker.market_data, "find_contract_price", lambda *a: 0.9)  # -55%: stop
+    worker.manage_untracked_shadow_positions(config, db_path)
+    assert storage.get_open_shadow_positions(db_path, "TSLA") == []
+    fetched.clear()
+    worker.manage_untracked_shadow_positions(config, db_path)
+    assert fetched == []                                             # nothing left to manage
