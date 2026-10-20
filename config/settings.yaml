@@ -125,16 +125,17 @@ premarket:
 #           confirmed at the meeting before it.
 #   CPI   - bls.gov/schedule/news_release/cpi.htm (8:30am ET)
 #   Jobs  - bls.gov/schedule/news_release/empsit.htm (8:30am ET)
-# BLS publishes each year's schedule late in the year before - add the 2027
-# CPI and jobs dates when they appear, then move market_catalysts_through.
-# Past dates are ignored.
+# BLS publishes each year's schedule late in the year before - add the next
+# year's CPI and jobs dates when they appear, then move market_catalysts_through.
+# Past dates are ignored. (2027 CPI + jobs added 2026-10-20 from the BLS
+# schedule pages above.)
 #
 # market_catalysts_through: the last date this list is known complete for (all
 # three sources published). From 30 days before it the web UI warns; after it
 # the autopilot stands down until the list is extended - an incomplete list
-# would let it trade straight through a CPI or jobs morning. The 2027 FOMC
-# dates below don't extend it: January's CPI and jobs dates are still unknown.
-market_catalysts_through: "2026-12-31"
+# would let it trade straight through a CPI or jobs morning. The 2028 FOMC date
+# below doesn't extend it: 2028's CPI and jobs dates aren't published yet.
+market_catalysts_through: "2027-12-31"
 market_catalysts:
   - { date: "2026-07-29", time: "14:00", label: "FOMC",        impact: "high" }
   - { date: "2026-08-07", time: "08:30", label: "Jobs report", impact: "high" }
@@ -150,15 +151,39 @@ market_catalysts:
   - { date: "2026-12-04", time: "08:30", label: "Jobs report", impact: "high" }
   - { date: "2026-12-09", time: "14:00", label: "FOMC",        impact: "high" }
   - { date: "2026-12-10", time: "08:30", label: "CPI",         impact: "high" }
-  # 2027 - FOMC only so far (BLS hasn't published its 2027 schedules)
+  # 2027 - FOMC (tentative until each prior meeting confirms it), CPI, jobs
+  - { date: "2027-01-08", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-01-13", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-01-27", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-02-05", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-02-11", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2027-03-05", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-03-10", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-03-17", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-04-02", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-04-13", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-04-28", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-05-07", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-05-12", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2027-06-04", time: "08:30", label: "Jobs report", impact: "high" }
   - { date: "2027-06-09", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-06-10", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2027-07-02", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-07-14", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-07-28", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-08-06", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-08-11", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2027-09-03", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-09-14", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-09-15", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-10-08", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-10-14", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2027-10-27", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-11-05", time: "08:30", label: "Jobs report", impact: "high" }
+  - { date: "2027-11-10", time: "08:30", label: "CPI",         impact: "high" }
+  - { date: "2027-12-03", time: "08:30", label: "Jobs report", impact: "high" }
   - { date: "2027-12-08", time: "14:00", label: "FOMC",        impact: "high" }
+  - { date: "2027-12-10", time: "08:30", label: "CPI",         impact: "high" }
   - { date: "2028-01-26", time: "14:00", label: "FOMC",        impact: "high" }
 
 weights:
