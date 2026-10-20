@@ -347,11 +347,43 @@ def get_option_chain(ticker: str, expiration: str | None = None,
 
 
 def _years_to_expiration(expiration: str) -> float:
+    """Time to the 16:00 ET close on the expiration date, in years (floored at a
+    minute). Was a fixed 21:00 UTC, an hour late in daylight-saving time - which
+    understated a 0DTE option's implied vol by ~7% at 10:00."""
+    from zoneinfo import ZoneInfo
     exp_date = datetime.strptime(expiration, "%Y-%m-%d").replace(
-        hour=21, minute=0, tzinfo=timezone.utc  # approx 4pm ET market close
-    )
+        hour=16, minute=0, tzinfo=ZoneInfo("America/New_York"))
     seconds = (exp_date - datetime.now(timezone.utc)).total_seconds()
     return max(seconds, 60.0) / (365.0 * 24 * 3600)
+
+
+def contract_iv(chain: "OptionChainSnapshot | None", row, option_type: str) -> float | None:
+    """Implied volatility of a chain row's mid (lastPrice when there's no
+    two-sided quote) at the chain's share price - the number that says how much
+    movement the option was pricing when it was traded."""
+    if chain is None or row is None:
+        return None
+    price = _mid(row) or _quote(row, "lastPrice")
+    strike = _num_or_none(row.get("strike")) if hasattr(row, "get") else None
+    if price is None or strike is None:
+        return None
+    return implied_vol(price, chain.spot, strike, _years_to_expiration(chain.expiration),
+                       option_type)
+
+
+def implied_move_pct(chain: "OptionChainSnapshot | None", strike: float) -> float | None:
+    """The straddle at `strike` (call mid + put mid) as % of the share price -
+    the market's expected move for the rest of the day."""
+    if chain is None:
+        return None
+    call_row = find_contract_row(chain, "call", strike)
+    put_row = find_contract_row(chain, "put", strike)
+    if call_row is None or put_row is None:
+        return None
+    call_mid, put_mid = _mid(call_row), _mid(put_row)
+    if call_mid is None or put_mid is None or not chain.spot:
+        return None
+    return (call_mid + put_mid) / chain.spot * 100.0
 
 
 def enrich_with_greeks(snapshot: OptionChainSnapshot) -> OptionChainSnapshot:

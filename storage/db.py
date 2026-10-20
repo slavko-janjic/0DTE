@@ -5,6 +5,8 @@ position with status='closed' - no separate trade table, since a closed
 position already carries entry/exit price and realized P&L.
 """
 import json
+
+from paper_trading.costs import round_trip_fees
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -206,6 +208,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE positions ADD COLUMN stop_loss_pct REAL")
     if "opened_by" not in position_columns:
         conn.execute("ALTER TABLE positions ADD COLUMN opened_by TEXT NOT NULL DEFAULT 'manual'")
+    if "fees" not in position_columns:
+        conn.execute("ALTER TABLE positions ADD COLUMN fees REAL")   # commission + exchange, round trip
+    shadow_columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_positions)")}
+    if shadow_columns and "fees" not in shadow_columns:
+        conn.execute("ALTER TABLE shadow_positions ADD COLUMN fees REAL")
+    if shadow_columns and "exit_detail_json" not in shadow_columns:
+        # what the market looked like at the exit (spot, implied vol) - for the
+        # P&L breakdown in research.py labstats
+        conn.execute("ALTER TABLE shadow_positions ADD COLUMN exit_detail_json TEXT")
     if "max_price" not in position_columns:
         # high-water mark of the premium since entry, for the trailing stop.
         # Backfill existing open rows to their entry_price so an in-flight
@@ -743,9 +754,12 @@ def update_shadow_price(db_path: str | Path, position_id: int, current_price: fl
 
 def close_shadow_position(
     db_path: str | Path, position_id: int, exit_price: float, reason: str,
+    costs: dict | None = None, exit_detail: dict | None = None,
 ) -> float | None:
-    """Books the virtual exit. Returns realized pnl dollars, or None if the row
-    was already closed (same status-guard idempotency as the real close)."""
+    """Books the virtual exit, net of commission and fees (config `costs`; an
+    expired option pays the buy side only). pnl_pct is net too, as % of the
+    premium paid. Returns realized pnl dollars, or None if the row was already
+    closed (same status-guard idempotency as the real close)."""
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT entry_price, contracts FROM shadow_positions WHERE id = ? AND status = 'open'",
@@ -753,15 +767,17 @@ def close_shadow_position(
         ).fetchone()
         if row is None:
             return None
-        pnl = (exit_price - row["entry_price"]) * row["contracts"] * 100
-        pnl_pct = ((exit_price - row["entry_price"]) / row["entry_price"] * 100.0
-                   if row["entry_price"] else 0.0)
+        fees = round_trip_fees(row["contracts"], costs, sold=reason != "expired")
+        paid = row["entry_price"] * row["contracts"] * 100
+        pnl = (exit_price - row["entry_price"]) * row["contracts"] * 100 - fees
+        pnl_pct = pnl / paid * 100.0 if paid else 0.0
         cur = conn.execute(
             """UPDATE shadow_positions
                SET status = 'closed', exit_price = ?, exit_time = ?, exit_reason = ?,
-                   pnl = ?, pnl_pct = ?
+                   pnl = ?, pnl_pct = ?, fees = ?, exit_detail_json = ?
                WHERE id = ? AND status = 'open'""",
-            (exit_price, _now(), reason, pnl, pnl_pct, position_id),
+            (exit_price, _now(), reason, pnl, pnl_pct, fees,
+             json.dumps(exit_detail) if exit_detail else None, position_id),
         )
         return pnl if cur.rowcount else None
 
@@ -1001,7 +1017,7 @@ def set_position_exit_targets(
 
 def close_position(
     db_path: str | Path, position_id: int, exit_price: float, exit_reason: str,
-    credit_balance: bool = False,
+    credit_balance: bool = False, costs: dict | None = None,
 ) -> float | None:
     """Closes an OPEN position, realizes P&L, and returns the P&L. With
     credit_balance, the proceeds (cost_basis + pnl) go back to the account in the
@@ -1015,13 +1031,16 @@ def close_position(
         if pos is None:
             return None
         proceeds = exit_price * pos["contracts"] * 100
-        pnl = proceeds - pos["cost_basis"]
+        # commission + exchange fees for the round trip (config `costs`), taken
+        # at the close; an expired option was never sold, so buy side only
+        fees = round_trip_fees(pos["contracts"], costs, sold=exit_reason != "expired")
+        pnl = proceeds - pos["cost_basis"] - fees
         cur = conn.execute(
             """UPDATE positions
                SET status = 'closed', exit_price = ?, exit_time = ?,
-                   exit_reason = ?, pnl = ?, suggested_exit_reason = NULL
+                   exit_reason = ?, pnl = ?, suggested_exit_reason = NULL, fees = ?
                WHERE id = ? AND status = 'open'""",
-            (exit_price, _now(), exit_reason, pnl, position_id),
+            (exit_price, _now(), exit_reason, pnl, fees, position_id),
         )
         if cur.rowcount != 1:
             return None

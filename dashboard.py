@@ -1672,7 +1672,8 @@ def section_positions() -> None:
                 if live_price is not None:
                     reason = price_target_exit(Position.from_row(pos), live_price)
                     if reason is not None:
-                        if close_position(db_path, pos["id"], live_price, reason) is not None:
+                        if close_position(db_path, pos["id"], live_price, reason,
+                                          config.get("costs")) is not None:
                             st.toast(f"Auto-closed {pos['ticker']} {pos['option_type']} "
                                      f"({reason.replace('_', ' ')})", icon=":material/gavel:")
                             st.rerun(scope="app")
@@ -1736,7 +1737,7 @@ def section_positions() -> None:
                     if st.button("Close position", key=f"close_{pos['id']}"):
                         exit_price = current_price if current_price is not None else pos["entry_price"]
                         reason = pos["suggested_exit_reason"] or "manual"
-                        close_position(db_path, pos["id"], exit_price, reason)
+                        close_position(db_path, pos["id"], exit_price, reason, config.get("costs"))
                         st.rerun(scope="app")  # balance and P&L metrics outside this fragment changed
 
             st.caption(f"Refreshes automatically every 15s &middot; updated {datetime.now().strftime('%H:%M:%S')}")

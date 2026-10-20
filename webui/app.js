@@ -850,7 +850,8 @@
         (ok ? 'up' : '') + '">' + value + '</b></div>';
     }
     var tText = A.isNum(p.t) ? A.signedNum(p.t) : '—';
-    var edge = A.isNum(p.edge_pct) ? ' (' + A.signedPct(p.edge_pct, 1) + '/day)' : '';
+    var edge = A.isNum(p.edge_pct) ? ' (' + A.signedPct(p.edge_pct, 1) +
+      (A.isNum(p.se_pct) ? ' ± ' + p.se_pct.toFixed(1) + '%' : '') + '/day)' : '';
     box.innerHTML =
       '<div class="sub" style="margin-bottom:10px">The autopilot switches to <b>' + A.escapeHtml(p.candidate) +
         '</b> once the morning family has beaten the coin flip on honest fills (since ' + A.escapeHtml(p.since || '—') +
@@ -863,7 +864,10 @@
       '</div>' +
       '<div class="banner ' + (p.met ? 'good' : 'info') + '" style="margin-top:12px">' +
         (p.met ? 'Rule met — the evidence supports switching the autopilot to ' + A.escapeHtml(p.candidate) + '.'
-               : 'Not met yet — the autopilot stays on its current rule.') + '</div>';
+               : 'Not met yet — the autopilot stays on its current rule.') + '</div>' +
+      '<div class="sub" style="margin-top:10px">Read this as a loss detector. At the simulated edge ' +
+        '(+2–3% a trade) 40 days pass this rule only about 1 time in 20 even if the edge is real; ' +
+        'a replay on real historical quotes is the test that can confirm one.</div>';
   }
 
   function loadAutopilot() {

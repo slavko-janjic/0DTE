@@ -81,7 +81,7 @@ def build_signals_at(sessions_by_ticker: dict, minute: int) -> dict:
 
 
 def build_labels_at(sessions_by_ticker: dict, minute: int, sigma_for, exit_cfg: dict,
-                    half_spread: dict) -> dict:
+                    half_spread: dict, fees: float = 0.0) -> dict:
     """{(ticker, day): label} entering at `minute`. sigma_for(ticker, day) gives
     the volatility (None skips the session)."""
     labels = {}
@@ -93,7 +93,8 @@ def build_labels_at(sessions_by_ticker: dict, minute: int, sigma_for, exit_cfg: 
             if sigma is None:
                 continue
             label = session_lab.label_session(session, sigma, exit_cfg,
-                                              half_spread.get(ticker, 0.0), decision_minute=minute)
+                                              half_spread.get(ticker, 0.0), decision_minute=minute,
+                                              fees=fees)
             if label is not None:
                 labels[(ticker, session.day)] = label
     return labels

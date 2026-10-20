@@ -964,10 +964,13 @@ def promotion_status(db_path: str, config: dict) -> dict | None:
         "t": edge["t"] is not None and edge["t"] >= min_t,
         "net": (not rule.get("candidate_net_positive", True)) or (net is not None and net > 0),
     }
+    se = (abs(edge["mean_pct"] / edge["t"]) if edge["mean_pct"] is not None and edge["t"]
+          else None)
     return {
         "candidate": candidate, "family": family,
         "days": edge["days"], "min_days": min_days,
         "t": edge["t"], "min_t": min_t, "edge_pct": edge["mean_pct"],
+        "se_pct": _num(se),
         "candidate_trades": card["trades"] if card else 0,
         "candidate_avg_pnl": _num(net),
         "checks": checks, "met": all(checks.values()),

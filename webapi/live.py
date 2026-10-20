@@ -102,7 +102,8 @@ def refresh_open_positions(db_path: str, config: dict) -> tuple[dict, list[dict]
         live[pos["id"]] = {"price": price, "spread_pct": spread}
 
         reason = engine.price_target_exit(Position.from_row(pos), price)
-        if reason is not None and engine.close(db_path, pos["id"], price, reason) is not None:
+        if reason is not None and engine.close(db_path, pos["id"], price, reason,
+                                               config.get("costs")) is not None:
             live.pop(pos["id"], None)
             closed.append({"id": pos["id"], "ticker": ticker,
                            "option_type": pos["option_type"],
@@ -218,7 +219,7 @@ def close_position(db_path: str, config: dict, position_id: int) -> dict:
                                             "try again in a moment."}
         reason = position["suggested_exit_reason"] or "manual"
 
-    pnl = engine.close(db_path, position_id, exit_price, reason)
+    pnl = engine.close(db_path, position_id, exit_price, reason, config.get("costs"))
     if pnl is None:
         return {"ok": False, "message": "That position was already closed."}
     return {"ok": True, "pnl": pnl,

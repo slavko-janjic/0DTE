@@ -533,7 +533,7 @@ def check_open_positions(ticker: str, config: dict, db_path: str,
             elif not reason:
                 reason = "catalyst"
         if force_close:
-            pnl = close_position(db_path, position.id, current_price, reason)
+            pnl = close_position(db_path, position.id, current_price, reason, config.get("costs"))
             if pnl is not None:  # None = the dashboard already closed it this instant
                 print(f"[{ticker}] AUTO-CLOSED position {position.id}: {reason} "
                       f"@ ${current_price:.2f} (P&L ${pnl:+,.2f})")
@@ -573,7 +573,7 @@ def settle_expired_positions(config: dict, db_path: str, now: datetime | None = 
             continue
         price = expiry_settlement_price(config, db_path, row["ticker"], row["option_type"],
                                         row["strike"], row["expiration"])
-        pnl = close_position(db_path, row["id"], price, "expired")
+        pnl = close_position(db_path, row["id"], price, "expired", config.get("costs"))
         if pnl is not None:
             print(f"[{row['ticker']}] EXPIRED position {row['id']}: settled "
                   f"@ ${price:.2f} (P&L ${pnl:+,.2f})")
@@ -632,7 +632,8 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             if is_expired(config, row["expiration"]):
                 price = expiry_settlement_price(config, db_path, ticker, row["option_type"],
                                                 row["strike"], row["expiration"])
-                storage.close_shadow_position(db_path, row["id"], price, "expired")
+                storage.close_shadow_position(db_path, row["id"], price, "expired",
+                                              config.get("costs"))
                 print(f"[{ticker}] SHADOW {name}: position {row['id']} expired "
                       f"@ ${price:.2f}")
                 continue
@@ -647,7 +648,9 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
                                    shadow_exit_score(entry_cfg, signal.composite_score),
                                    minutes_to_close, exit_cfg)
             if reason:
-                pnl = storage.close_shadow_position(db_path, row["id"], current_price, reason)
+                pnl = storage.close_shadow_position(
+                    db_path, row["id"], current_price, reason, config.get("costs"),
+                    exit_context(chain, row, minutes_since_open))
                 if pnl is not None:
                     print(f"[{ticker}] SHADOW {name}: closed {row['id']} {reason} "
                           f"@ ${current_price:.2f} (P&L ${pnl:+,.2f})")
@@ -728,6 +731,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             "direction_streak": direction_streak,
             "minutes_since_open": round(minutes_since_open, 1),
             "subscores": signal.subscores_used,
+            **entry_context(config, ticker, chain, contract, option_type, today),
         }
         sid = storage.open_shadow_position(
             db_path, name, ticker, option_type, float(contract["strike"]),
@@ -735,6 +739,63 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         )
         print(f"[{ticker}] SHADOW {name}: opened {sid} {option_type} "
               f"{contract['strike']:g} @ ${entry_price:.2f}")
+
+
+# ticker -> (date, today's open), for the morning realized/implied ratio
+_day_open_cache: dict[str, tuple[str, float]] = {}
+
+
+def _day_open(ticker: str, today) -> float | None:
+    cached = _day_open_cache.get(ticker)
+    if cached is not None and cached[0] == today.isoformat():
+        return cached[1]
+    daily = market_data.get_daily_bars(ticker, period="1d")
+    if daily is None or daily.empty or daily.index[-1].date() != today:
+        return None
+    value = float(daily["Open"].iloc[-1])
+    _day_open_cache[ticker] = (today.isoformat(), value)
+    return value
+
+
+def entry_context(config: dict, ticker: str, chain, contract, option_type: str, today) -> dict:
+    """What the market priced at a lab entry, logged with the trade so its
+    result can be decomposed later (research.py labstats): the share price, the
+    option's implied vol, the expected move for the rest of the day (ATM
+    straddle), how far the morning had already moved against that expected
+    move, and whether it's a Fed day. Best effort - a field it can't get is
+    left out, and nothing here can block an entry."""
+    out: dict = {}
+    try:
+        out["spot"] = chain.spot
+        iv = market_data.contract_iv(chain, contract, option_type)
+        if iv is not None:
+            out["iv"] = round(iv, 4)
+        move = market_data.implied_move_pct(chain, float(contract["strike"]))
+        if move is not None:
+            out["implied_move_pct"] = round(move, 4)
+        day_open = _day_open(ticker, today)
+        if day_open:
+            out["morning_move_pct"] = round((chain.spot - day_open) / day_open * 100.0, 4)
+            if move:
+                out["morning_vs_implied"] = round(abs(out["morning_move_pct"]) / move, 3)
+        tz_name = config["market_hours"].get("timezone", "America/New_York")
+        out["fomc"] = any(c.get("label") == "FOMC" for c in day_setup_mod.catalysts_for_date(
+            config.get("market_catalysts", []), today, tz_name))
+    except Exception as exc:  # noqa: BLE001 - logging must never block a trade
+        out["context_error"] = str(exc)[:120]
+    return out
+
+
+def exit_context(chain, row, minutes_since_open: float) -> dict | None:
+    """The share price and the held contract's implied vol at a lab exit."""
+    try:
+        held = market_data.find_contract_row(chain, row["option_type"], row["strike"],
+                                             row["expiration"])
+        iv = market_data.contract_iv(chain, held, row["option_type"]) if held is not None else None
+        return {"spot": chain.spot, "iv": round(iv, 4) if iv is not None else None,
+                "minutes_since_open": round(minutes_since_open, 1)}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def manage_untracked_shadow_positions(config: dict, db_path: str) -> None:
