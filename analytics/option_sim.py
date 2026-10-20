@@ -47,6 +47,25 @@ def spot_at(path: dict, minute: int, max_gap: int = 5) -> float | None:
     return None
 
 
+def pnl_breakdown(strike: float, option_type: str, entry_price: float, exit_price: float,
+                  spot_in: float, spot_out: float, iv_in: float, iv_out: float | None,
+                  minute_in: float, minute_out: float, fees: float = 0.0) -> dict:
+    """Splits a trade's result (per share, $) into what moved it: the share's
+    move, time passing, the change in implied vol, and the rest (spread paid and
+    model error), then fees per share. Sequential Black-Scholes repricing at the
+    entry vol; the parts sum exactly to (exit - entry) - fees/100."""
+    iv_out = iv_out if iv_out else iv_in
+    t_in, t_out = years_to_close(minute_in), years_to_close(minute_out)
+    v0 = bs_price(spot_in, strike, iv_in, t_in, option_type)
+    moved = bs_price(spot_out, strike, iv_in, t_in, option_type)
+    aged = bs_price(spot_out, strike, iv_in, t_out, option_type)
+    revalued = bs_price(spot_out, strike, iv_out, t_out, option_type)
+    parts = {"share_move": moved - v0, "time": aged - moved, "implied_vol": revalued - aged}
+    parts["spread_and_other"] = (exit_price - entry_price) - sum(parts.values())
+    parts["fees"] = -fees / 100.0
+    return parts
+
+
 @dataclass
 class TradeResult:
     option_type: str
@@ -61,7 +80,7 @@ class TradeResult:
 def simulate_trade(
     path: dict, entry_minute: int, strike: float, option_type: str, sigma: float,
     exit_cfg: dict, half_spread: float = 0.0, lag_minutes: int = 0,
-    close_minute: int = SESSION_MINUTES,
+    close_minute: int = SESSION_MINUTES, fees: float = 0.0,
 ) -> TradeResult | None:
     """Buys one same-day option at `entry_minute` and runs it to an exit.
 
@@ -89,8 +108,11 @@ def simulate_trade(
     )
 
     def result(mark: float, reason: str, minute: int) -> TradeResult:
+        # exits fire on the option's price; commission and fees (dollars per
+        # contract, round trip) come off the result, as % of the premium paid
         return TradeResult(option_type, strike, entry, mark,
-                           (mark - entry) / entry * 100.0, reason, minute)
+                           (mark - entry) / entry * 100.0 - fees / (entry * 100.0) * 100.0,
+                           reason, minute)
 
     mark = None
     for minute in range(entry_minute + 1, close_minute + 1):

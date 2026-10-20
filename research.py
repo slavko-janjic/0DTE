@@ -6,6 +6,7 @@
     python research.py run [--report SIGNAL_RESEARCH.md]
     python research.py intraday [--report PATH]   # later decision times + weekday/event slices
     python research.py oos [--since DATE] [--no-fetch] [--push]   # the passed signals on new data only
+    python research.py labstats [--since DATE]   # what moved the lab's trades: share, time, vol, costs
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -21,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from analytics import intraday_lab, option_sim, session_lab
+from paper_trading.costs import round_trip_fees
 from config import database_path, load_settings
 from data import history
 
@@ -125,7 +127,9 @@ def cmd_calibrate(config: dict) -> None:
             continue
         quartiles = statistics.quantiles(ratios, n=4)
         result["k"][ticker] = statistics.median(ratios)
-        result["half_spread"][ticker] = statistics.median(spreads) / 2 if spreads else 0.0
+        # mean, not median: QQQ is 1 cent 82% of the time but the mean is ~1.35c,
+        # and costs are paid on average (deep-dive report, 2026-10-20)
+        result["half_spread"][ticker] = statistics.fmean(spreads) / 2 if spreads else 0.0
         result["samples"][ticker] = len(ratios)
         print(f"  {ticker}: 0DTE implied vol at 10:00 = {result['k'][ticker]:.2f} x VIX "
               f"(middle half {quartiles[0]:.2f}-{quartiles[2]:.2f}, {len(ratios)} quotes); "
@@ -256,7 +260,8 @@ def _labels_and_signals(config: dict, cache: Path) -> tuple[dict, dict, dict]:
                 counts["no VIX"] += 1
                 continue
             label = session_lab.label_session(session, k * vix[session.day][0] / 100.0,
-                                              exit_cfg, half_spread=half)
+                                              exit_cfg, half_spread=half,
+                                              fees=round_trip_fees(1, config.get("costs")))
             if label is None:
                 counts["unpriceable"] += 1
                 continue
@@ -375,7 +380,8 @@ def cmd_intraday(config: dict, report: str | None) -> None:
     for minute in intraday_lab.DECISIONS:
         signals_by_time[minute] = intraday_lab.build_signals_at(sessions, minute)
         labels_by_time[minute] = intraday_lab.build_labels_at(
-            sessions, minute, sigma_for, exit_cfg, calibration["half_spread"])
+            sessions, minute, sigma_for, exit_cfg, calibration["half_spread"],
+            fees=round_trip_fees(1, config.get("costs")))
     results = intraday_lab.run_main_tests(signals_by_time, labels_by_time)
 
     fomc, cpi, jobs, earnings, covered = _load_events(cache)
@@ -389,7 +395,8 @@ def cmd_intraday(config: dict, report: str | None) -> None:
             sigma = sigma_for(ticker, s.day)
             if s.complete() and sigma:
                 label = session_lab.label_session(s, sigma, exit_cfg,
-                                                  calibration["half_spread"][ticker])
+                                                  calibration["half_spread"][ticker],
+                                                  fees=round_trip_fees(1, config.get("costs")))
                 if label:
                     labels_10[(ticker, s.day)] = label
     signals_10 = session_lab.build_signals(sessions, {d: c for d, (_, c) in vix.items()})
@@ -490,7 +497,9 @@ def cmd_oos(config: dict, since: str, fetch: bool, push_result: bool = False) ->
     signals = {30: session_lab.build_signals(sessions, {d: c for d, (_, c) in vix.items()}),
                60: intraday_lab.build_signals_at(sessions, 60)}
     labels = {m: intraday_lab.build_labels_at(recent, m, sigma_for, exit_cfg,
-                                              calibration["half_spread"]) for m in (30, 60)}
+                                              calibration["half_spread"],
+                                              fees=round_trip_fees(1, config.get("costs")))
+              for m in (30, 60)}
     last = max((s.day for ss in recent.values() for s in ss), default=None)
     print(f"Out-of-sample since {since} (data through {last}); follow side; excess = return "
           f"minus the coin flip, % of premium, one observation per day.\n")
@@ -518,6 +527,66 @@ def cmd_oos(config: dict, since: str, fetch: bool, push_result: bool = False) ->
         _push_summary(config, summary)
 
 
+def lab_breakdown(rows: list, since: date, tz) -> dict:
+    """Per strategy: trade count and mean net return, the mean P&L breakdown
+    (share move, time, implied vol, spread/other, fees - % of premium), and the
+    calls / puts / Fed-day splits. Only trades that logged entry and exit
+    context (from 2026-10-20) get a breakdown."""
+    out: dict = {}
+    for row in rows:
+        day = datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+        if day < since or row["pnl_pct"] is None:
+            continue
+        info = json.loads(row["entry_reason_json"] or "{}")
+        detail = json.loads(row["exit_detail_json"]) if row["exit_detail_json"] else {}
+        s = out.setdefault(row["strategy"], {"n": 0, "net": [], "parts": [], "call": [], "put": [],
+                                             "fomc": [], "other_days": []})
+        s["n"] += 1
+        s["net"].append(row["pnl_pct"])
+        s[row["option_type"]].append(row["pnl_pct"])
+        s["fomc" if info.get("fomc") else "other_days"].append(row["pnl_pct"])
+        if info.get("spot") and info.get("iv") and detail.get("spot") and "minutes_since_open" in detail:
+            parts = option_sim.pnl_breakdown(
+                row["strike"], row["option_type"], row["entry_price"], row["exit_price"],
+                info["spot"], detail["spot"], info["iv"], detail.get("iv"),
+                info.get("minutes_since_open", 30.0), detail["minutes_since_open"],
+                row["fees"] or 0.0)
+            s["parts"].append({k: v / row["entry_price"] * 100.0 for k, v in parts.items()})
+    return out
+
+
+def cmd_labstats(config: dict, since: str | None) -> None:
+    db, _ = _paths(config)
+    con = _connect_ro(db)
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    start = date.fromisoformat(since or str(config.get("lab_fills_honest_from", "2026-10-20")))
+    columns = {r[1] for r in con.execute("PRAGMA table_info(shadow_positions)")}
+    if "exit_detail_json" not in columns:
+        raise SystemExit("The database hasn't been migrated yet - restart the worker first.")
+    rows = con.execute("SELECT * FROM shadow_positions WHERE status = 'closed'").fetchall()
+    stats = lab_breakdown(rows, start, tz)
+    mean = lambda xs: statistics.fmean(xs) if xs else None  # noqa: E731
+    print(f"Lab trades closed since {start}; % of premium per trade, net of fees.\n")
+    print("| Strategy | Trades | Net | Share move | Time | Implied vol | Spread/other | Fees | (broken down) |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for name in sorted(stats, key=lambda n: -stats[n]["n"]):
+        s = stats[name]
+        parts = {k: mean([p[k] for p in s["parts"]]) for k in
+                 ("share_move", "time", "implied_vol", "spread_and_other", "fees")}
+        print(f"| {name} | {s['n']} | {_pct(mean(s['net']))} | " +
+              " | ".join(_pct(parts[k]) for k in ("share_move", "time", "implied_vol",
+                                                    "spread_and_other", "fees")) +
+              f" | {len(s['parts'])} |")
+    print("\n| Strategy | Calls | Puts | Fed days | Other days |")
+    print("|---|---|---|---|---|")
+    for name in sorted(stats, key=lambda n: -stats[n]["n"]):
+        s = stats[name]
+        cell = lambda xs: f"{_pct(mean(xs))} ({len(xs)})" if xs else "-"  # noqa: E731
+        print(f"| {name} | {cell(s['call'])} | {cell(s['put'])} | {cell(s['fomc'])} | "
+              f"{cell(s['other_days'])} |")
+    print("\nDescriptive only: these splits are not tests (see the 2026-10-20 deep-dive report).")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -532,6 +601,8 @@ def main() -> None:
     oos.add_argument("--since", default=OOS_SINCE, help="first session to score (YYYY-MM-DD)")
     oos.add_argument("--no-fetch", action="store_true", help="use the cached bars as they are")
     oos.add_argument("--push", action="store_true", help="also push the summary to subscribed devices")
+    labstats = sub.add_parser("labstats", help="what moved the lab's trades")
+    labstats.add_argument("--since", default=None, help="first entry date (default: honest-fill cutover)")
     args = parser.parse_args()
     config = load_settings()
     if args.command == "calibrate":
@@ -542,6 +613,8 @@ def main() -> None:
         cmd_fetch(config)
     elif args.command == "intraday":
         cmd_intraday(config, args.report)
+    elif args.command == "labstats":
+        cmd_labstats(config, args.since)
     elif args.command == "oos":
         cmd_oos(config, args.since, not args.no_fetch, args.push)
     else:

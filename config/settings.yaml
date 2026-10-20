@@ -225,11 +225,29 @@ autopilot:
 # this tests entry/exit RULES, not portfolio selection. Stats need ~20-30
 # trades before they mean anything (multiple-testing: with several strategies
 # running, one will look great by luck early on).
+# What a round trip costs beyond the bid-ask spread, charged on every paper
+# close (real and lab) and in the research simulator. IBKR Pro tiered: about
+# $0.65 a contract with a $1.00 minimum per order, plus exchange/regulatory
+# fees (~$0.05 a contract per side, approximate). On one contract that is about
+# $2.10 a round trip, more than the 1-cent spread. Verify against the first
+# real statement and adjust. (Added 2026-10-20; earlier trades have no fees.)
+costs:
+  commission_per_contract: 0.65
+  min_per_order: 1.00
+  exchange_fee_per_contract: 0.05
+
 # PRE-REGISTERED 2026-10-20: when the real autopilot should switch from the
 # composite confidence gate (which the research found adds nothing) to the
 # morning rule. Written down before the evidence arrives so it can't be bent to
 # fit it. Meeting it switches nothing by itself - the Autopilot page says it's
 # met, and the switch is a deliberate config change.
+#
+# NOTE 2026-10-20 (added after the deep-dive report, before any data; the rule
+# itself is unchanged): at the simulated edge (+2-3% of premium a trade, about
+# 40% standard deviation) 40 days give a standard error of ~6%, so the rule
+# passes only ~5% of the time even if the edge is real (~2% if there is none).
+# Read it as a LOSS DETECTOR and a cost-measurement window, not as proof of a
+# profitable strategy; the real-quote replay is the test that can confirm one.
 autopilot_promotion:
   candidate: morning_trail_1030   # the rule the autopilot would trade (the steadiest 2016-2026 pass)
   min_days: 40                    # days the morning family traded alongside the coin flip

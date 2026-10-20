@@ -470,14 +470,16 @@ def buy(
     )
 
 
-def close(db_path: str, position_id: int, exit_price: float, exit_reason: str) -> float | None:
+def close(db_path: str, position_id: int, exit_price: float, exit_reason: str,
+          costs: dict | None = None) -> float | None:
     """Closes a position and credits proceeds (cost_basis + pnl) back to the
-    balance, since cost_basis was already deducted at buy time. Returns None (and
+    balance, since cost_basis was already deducted at buy time. pnl is net of
+    the round trip's commission and fees (config `costs`). Returns None (and
     touches nothing) if the position was already closed - so two racing closers
     (worker + dashboard) can't double-credit the balance. The close and the
     credit are one transaction, so they can't be separated or lost either."""
     return storage.close_position(db_path, position_id, exit_price, exit_reason,
-                                  credit_balance=True)
+                                  credit_balance=True, costs=costs)
 
 
 def settlement_price(option_type: str, strike: float, spot: float | None) -> float:
