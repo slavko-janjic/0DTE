@@ -243,18 +243,18 @@ def build_signals(sessions_by_ticker: dict, vix_close: dict | None = None) -> di
 # --- the label ---------------------------------------------------------------------
 
 def label_session(session: Session, sigma: float, exit_cfg: dict,
-                  half_spread: float = 0.0) -> dict | None:
-    """What the 10:00 ATM call and put would have returned: {'call': ret%,
-    'put': ret%, 'call_exit': reason, 'put_exit': reason}. None when either
-    side can't be simulated."""
+                  half_spread: float = 0.0, decision_minute: int = DECISION_MINUTE) -> dict | None:
+    """What the ATM call and put bought at `decision_minute` (default 10:00)
+    would have returned: {'call': ret%, 'put': ret%, 'call_exit': reason,
+    'put_exit': reason}. None when either side can't be simulated."""
     path = session.path()
-    spot = option_sim.spot_at(path, DECISION_MINUTE)
+    spot = option_sim.spot_at(path, decision_minute)
     if spot is None or sigma is None or sigma <= 0:
         return None
     strike = float(round(spot))
     out = {}
     for side in ("call", "put"):
-        trade = option_sim.simulate_trade(path, DECISION_MINUTE, strike, side, sigma,
+        trade = option_sim.simulate_trade(path, decision_minute, strike, side, sigma,
                                           exit_cfg, half_spread=half_spread)
         if trade is None:
             return None

@@ -392,6 +392,26 @@ shadow_strategies:
     exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
             reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
             late_session_minutes: 90, late_session_stop_pct: -20 }
+  # The intraday study (2026-10-20, 32 pre-declared tests at 10:30 / 11:30 /
+  # 13:00 / 14:00) passed exactly two, both at 10:30: following the 10:00-10:30
+  # move (+2.1%/trade, t 3.01, near-identical in every period) and the
+  # opening-range breakout (+2.9%, t 3.19, stronger since 2022). Nothing passed
+  # from 11:30 on. No weekday or event (Fed, CPI, jobs, expiry, month end,
+  # mega-cap earnings) significantly breaks them. All four morning strategies
+  # bet the same thing - the morning move continues - so they win and lose
+  # together: read them as one confirmation, not four.
+  - name: morning_trail_1030
+    entry: { signal_source: trail30_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb_1030
+    entry: { signal_source: orb15_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
   # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
   # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
   # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure
