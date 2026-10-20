@@ -370,6 +370,28 @@ shadow_strategies:
              no_entry_last_minutes: 60, max_direction_streak: 2, invert: true }
     exit: { profit_target_pct: 50, stop_loss_pct: -35,
             time_cutoff_minutes_before_close: 30, reversal_confidence_pct: 60 }
+  # --- PRE-REGISTERED morning signals (declared 2026-10-20) -------------------
+  # From the signal research lab (SIGNAL_RESEARCH.md: 2016-2026 minute bars, 20
+  # pre-declared tests against the autopilot's 10:00 trade). gap_behaviour
+  # (follow) was the only pass: on days that gap a normal amount or more, trade
+  # the direction of the 09:30-10:00 move - +3.0% of premium per trade over the
+  # coin flip, t 2.93, positive in all four periods but fading (+0.3% since
+  # 2025). orb15 (follow) was the runner-up (+2.3%, t 2.18). Computed at 10:00
+  # by signals/morning.py with the research's own scoring functions; the
+  # autopilot's exits. Read them against null_coin on honest fills only
+  # (lab_fills_honest_from) - and don't tune them after seeing results.
+  - name: morning_gap
+    entry: { signal_source: gap_behaviour, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb
+    entry: { signal_source: orb15, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
   # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
   # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
   # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure

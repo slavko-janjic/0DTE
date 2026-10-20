@@ -96,11 +96,40 @@ def sessions_from_bars(rows, tz: ZoneInfo = ET) -> list[Session]:
 
 # --- signals -----------------------------------------------------------------------
 
-def _median_abs(history: list) -> float | None:
+def median_abs(history: list) -> float | None:
+    """The normal size of a move: median |x| over the last LOOKBACK values.
+    None until there are that many (or when they're all zero)."""
     if len(history) < LOOKBACK:
         return None
     middle = statistics.median(abs(x) for x in history[-LOOKBACK:])
     return middle or None
+
+
+# The scoring rules shared with the live worker (signals/morning.py), so the
+# lab's forward test runs the exact definitions that were tested here.
+
+def opening_drive_score(r30: float, med_r30: float | None) -> float | None:
+    """The first half hour's move in units of its normal size."""
+    return _clip(r30 / (2 * med_r30)) if med_r30 else None
+
+
+def gap_behaviour_score(r30: float, gap: float | None, med_r30: float | None,
+                        med_gap: float | None) -> float | None:
+    """On days that gap at least a normal amount: the opening drive - whatever
+    the first 30 minutes did with the gap, extend or fill. None otherwise."""
+    if gap is None or not med_gap or abs(gap) < med_gap:
+        return None
+    return opening_drive_score(r30, med_r30)
+
+
+def orb15_score(price: float, high15: float, low15: float) -> float:
+    """Where the 09:59 price sits against the 09:30-09:44 range: past the
+    high (+), past the low (-), inside (0)."""
+    if price > high15:
+        return _clip((price - high15) / high15 * 100.0 / 0.2)
+    if price < low15:
+        return _clip((price - low15) / low15 * 100.0 / 0.2)
+    return 0.0
 
 
 def _resample_5m(bars: dict, last_minute: int) -> tuple[list, list, list, list]:
@@ -148,25 +177,19 @@ def ticker_signals(sessions: list[Session], vix_close: dict | None = None) -> di
         returns = [(b - a) / a for a, b in zip(closes, closes[1:]) if a]
         rv = statistics.stdev(returns) if len(returns) > 2 else None
 
-        med_r30, med_gap, med_rv = _median_abs(r30_hist), _median_abs(gap_hist), _median_abs(rv_hist)
+        med_r30, med_gap, med_rv = median_abs(r30_hist), median_abs(gap_hist), median_abs(rv_hist)
         scores: dict = dict.fromkeys(SIGNALS)
 
+        scores["opening_drive"] = opening_drive_score(r30, med_r30)
         if med_r30:
-            scores["opening_drive"] = _clip(r30 / (2 * med_r30))
             scores["_z"] = r30 / med_r30
         if gap is not None and med_gap:
             scores["gap_direction"] = _clip(gap / (2 * med_gap))
-            scores["gap_behaviour"] = (scores["opening_drive"]
-                                       if abs(gap) >= med_gap else None)
+        scores["gap_behaviour"] = gap_behaviour_score(r30, gap, med_r30, med_gap)
 
         first15 = [bars[m] for m in range(15) if m in bars]
-        hi, lo = max(b.high for b in first15), min(b.low for b in first15)
-        if price > hi:
-            scores["orb15"] = _clip((price - hi) / hi * 100.0 / 0.2)
-        elif price < lo:
-            scores["orb15"] = _clip((price - lo) / lo * 100.0 / 0.2)
-        else:
-            scores["orb15"] = 0.0
+        scores["orb15"] = orb15_score(price, max(b.high for b in first15),
+                                      min(b.low for b in first15))
 
         # exactly what the live worker computes at 10:00 from 5-minute bars
         c5, v5, h5, l5 = _resample_5m(bars, decision)
