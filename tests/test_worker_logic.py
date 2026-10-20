@@ -996,3 +996,42 @@ def test_quote_log_keeps_the_raw_quotes_and_fills_use_corrected_ones(tmp_path, m
     assert (logged["bid"], logged["ask"]) == (0.80, 0.82)          # the delay stays measurable
     _, entry = worker._atm_entry(chain, "bullish")
     assert entry == 1.02                                            # the fill is the corrected ask
+
+
+def test_morning_strategies_trade_the_research_scores(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "morning.db")
+    storage.init_db(db_path)
+    _patch_market_clock(monkeypatch, since_open=32.0, to_close=358.0)
+    monkeypatch.setattr(worker.market_data, "find_atm_contract",
+                        lambda df, spot: {"lastPrice": 2.0, "strike": 500.0, "bid": 1.9, "ask": 2.1})
+    window = {"only_tickers": ["QQQ"], "min_confidence_pct": 0, "window_start_minutes": 31,
+              "window_end_minutes": 40, "no_entry_last_minutes": 60}
+    exit_cfg = {"profit_target_pct": 50, "stop_loss_pct": -35,
+                "time_cutoff_minutes_before_close": 30, "reversal_confidence_pct": 101}
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "morning_gap", "entry": {**window, "signal_source": "gap_behaviour"}, "exit": exit_cfg},
+        {"name": "morning_orb", "entry": {**window, "signal_source": "orb15"}, "exit": exit_cfg},
+    ]}
+    chain = SimpleNamespace(calls="C", puts="P", spot=500.0, expiration="2099-01-02")
+    signal = _gated_signal(60.0, 60.0, direction="bullish")       # the composite says up...
+    signal.research_scores = {"gap_behaviour": -0.7, "orb15": 0.0}  # ...the gap signal says down
+    worker.process_shadow_strategies("QQQ", config, db_path, chain, signal, None)
+    rows = storage.get_open_shadow_positions(db_path, "QQQ")
+    assert [(r["strategy"], r["option_type"]) for r in rows] == [("morning_gap", "put")]
+    import json as _json
+    assert _json.loads(rows[0]["entry_reason_json"])["signal_source"] == "gap_behaviour"
+
+
+def test_morning_scores_wait_for_1001_and_only_run_where_configured(monkeypatch):
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "morning_gap", "entry": {"signal_source": "gap_behaviour", "only_tickers": ["QQQ"]}}]}
+    fetched = []
+    monkeypatch.setattr(worker.market_data, "get_intraday_bars",
+                        lambda *a, **kw: fetched.append(a) or None)
+    worker._morning_cache.clear()
+    monkeypatch.setattr(worker, "minutes_since_market_open", lambda config: 20.0)
+    assert worker.morning_scores_for("QQQ", config) is None and fetched == []   # before 10:01
+    monkeypatch.setattr(worker, "minutes_since_market_open", lambda config: 45.0)
+    assert worker.morning_scores_for("SPY", config) is None and fetched == []   # not configured
+    assert worker.morning_scores_for("QQQ", config) is None                      # no bars
+    assert len(fetched) == 1

@@ -35,6 +35,7 @@ from paper_trading.shadow import (
 )
 from signals import day_setup as day_setup_mod
 from signals import indicators
+from signals import morning
 from signals.composite import build_recommendation, compute_signal, direction_from_score
 from storage import db as storage
 
@@ -263,11 +264,48 @@ def poll_ticker(
         print(f"[{ticker}] quote snapshot failed: {exc}")
     # shadow lab is bookkeeping only - a bug there must never break the real loop
     try:
+        signal.research_scores = morning_scores_for(ticker, config)
         process_shadow_strategies(ticker, config, db_path, chain, signal,
                                   gamma_regime, direction_streak)
     except Exception as exc:
         print(f"[{ticker}] shadow lab failed: {exc}")
     return signal, chain
+
+
+# ticker -> (date, scores): the morning signals are fixed once 10:00 has passed
+_morning_cache: dict[str, tuple[str, dict]] = {}
+
+
+def _morning_tickers(config: dict) -> set[str]:
+    """Tickers some shadow strategy trades a morning signal on."""
+    tickers: set[str] = set()
+    for strategy in config.get("shadow_strategies", []):
+        entry = strategy.get("entry", {})
+        if entry.get("signal_source") in morning.SIGNALS:
+            tickers.update(entry.get("only_tickers") or config["tickers"])
+    return tickers
+
+
+def morning_scores_for(ticker: str, config: dict) -> dict | None:
+    """The pre-registered morning signals for today (signals/morning.py), from
+    Yahoo's 15-minute bars. None before 10:01 ET - the 09:45 bar must have
+    closed - or when the bars can't be had; once computed they're cached for
+    the day, as the research's 10:00 decision is fixed."""
+    if ticker not in _morning_tickers(config) or minutes_since_market_open(config) < 31:
+        return None
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    today = datetime.now(tz).date()
+    cached = _morning_cache.get(ticker)
+    if cached is not None and cached[0] == today.isoformat():
+        return cached[1]
+    bars = market_data.get_intraday_bars(ticker, interval="15m", period="60d")
+    scores = morning.morning_scores(morning.sessions_from_15m(bars, tz), today)
+    if scores is not None:
+        _morning_cache[ticker] = (today.isoformat(), scores)
+        print(f"[{ticker}] morning signals: " + ", ".join(
+            f"{name} {value:+.2f}" if value is not None else f"{name} -"
+            for name, value in scores.items()))
+    return scores
 
 
 def gate_confidence_for(config: dict, raw_confidence: float, bands: list[dict] | None) -> float:
@@ -625,7 +663,10 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             entry_direction = null_direction(rule, name, ticker, today.isoformat())
             entry_confidence = 100.0
         elif source:
+            # a composite subscore, or one of the pre-registered morning signals
             score = signal.subscores_used.get(source)
+            if score is None:
+                score = (getattr(signal, "research_scores", None) or {}).get(source)
             if score is None:
                 continue  # that signal had no data this cycle
             entry_direction = direction_from_score(score)
