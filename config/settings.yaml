@@ -225,6 +225,17 @@ autopilot:
 # this tests entry/exit RULES, not portfolio selection. Stats need ~20-30
 # trades before they mean anything (multiple-testing: with several strategies
 # running, one will look great by luck early on).
+# PRE-REGISTERED 2026-10-20: when the real autopilot should switch from the
+# composite confidence gate (which the research found adds nothing) to the
+# morning rule. Written down before the evidence arrives so it can't be bent to
+# fit it. Meeting it switches nothing by itself - the Autopilot page says it's
+# met, and the switch is a deliberate config change.
+autopilot_promotion:
+  candidate: morning_trail_1030   # the rule the autopilot would trade (the steadiest 2016-2026 pass)
+  min_days: 40                    # days the morning family traded alongside the coin flip
+  min_t: 2.0                      # the family's edge over the coin flip, per day
+  candidate_net_positive: true    # and the candidate's own average P&L per trade > 0 (beats costs)
+
 # The day lab fills became honest. Until then every option price came from
 # Yahoo quotes 15 minutes behind the share price (PR #27, SIGNAL_RESEARCH.md),
 # which flattered follow-the-signal strategies by ~$32 a trade. The lab

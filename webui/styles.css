@@ -242,6 +242,7 @@ svg.chart{width:100%;height:auto;display:block}
 .banner b{font-weight:600}
 .banner.bad{border-color:var(--down);background:var(--down-soft);color:var(--down)}
 .banner.warn{border-color:var(--amber);background:var(--amber-soft);color:var(--amber)}
+.banner.good{border-color:var(--up);background:var(--up-soft);color:var(--up)}
 .banner.info{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .banner[hidden]{display:none!important}
 

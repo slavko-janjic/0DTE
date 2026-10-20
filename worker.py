@@ -265,7 +265,7 @@ def poll_ticker(
         print(f"[{ticker}] quote snapshot failed: {exc}")
     # shadow lab is bookkeeping only - a bug there must never break the real loop
     try:
-        signal.research_scores = morning_scores_for(ticker, config)
+        signal.research_scores = morning_scores_for(ticker, config, db_path)
         process_shadow_strategies(ticker, config, db_path, chain, signal,
                                   gamma_regime, direction_streak)
     except Exception as exc:
@@ -287,7 +287,7 @@ def _morning_tickers(config: dict) -> set[str]:
     return tickers
 
 
-def morning_scores_for(ticker: str, config: dict) -> dict | None:
+def morning_scores_for(ticker: str, config: dict, db_path: str | None = None) -> dict | None:
     """The pre-registered morning signals for today (signals/morning.py), from
     Yahoo's 15-minute bars. None before 10:01 ET - the 09:45 bar must have
     closed - or when the bars can't be had. The 10:00 pair is fixed from
@@ -306,6 +306,11 @@ def morning_scores_for(ticker: str, config: dict) -> dict | None:
     if scores is not None:
         final = since_open >= 61 and all(name in scores for name in morning.SIGNALS_1030)
         _morning_cache[ticker] = (today.isoformat(), scores, final)
+        if db_path is not None:
+            # alongside the pre-market setup, so the Signals page can show them
+            setup = storage.get_day_setup(db_path, ticker, today.isoformat()) or {}
+            setup["morning"] = scores
+            storage.set_day_setup(db_path, ticker, today.isoformat(), setup)
         print(f"[{ticker}] morning signals: " + ", ".join(
             f"{name} {value:+.2f}" if value is not None else f"{name} -"
             for name, value in scores.items()))

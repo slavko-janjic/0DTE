@@ -1112,3 +1112,22 @@ def test_a_dropped_ticker_s_open_shadow_positions_still_get_their_exits(tmp_path
     fetched.clear()
     worker.manage_untracked_shadow_positions(config, db_path)
     assert fetched == []                                             # nothing left to manage
+
+
+def test_morning_scores_are_saved_with_the_day_setup(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "morning_setup.db")
+    storage.init_db(db_path)
+    config = {**AUTO_CONFIG, "shadow_strategies": [
+        {"name": "m", "entry": {"signal_source": "orb15", "only_tickers": ["QQQ"]}}]}
+    scores = {"gap_behaviour": None, "orb15": 0.4, "trail30_1030": None, "orb15_1030": None}
+    monkeypatch.setattr(worker.market_data, "get_intraday_bars", lambda *a, **kw: "bars")
+    monkeypatch.setattr(worker.morning, "sessions_from_15m", lambda bars, tz: bars)
+    monkeypatch.setattr(worker.morning, "morning_scores", lambda s, d: scores)
+    monkeypatch.setattr(worker, "minutes_since_market_open", lambda config: 35.0)
+    worker._morning_cache.clear()
+    tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
+    today = datetime.now(tz).date().isoformat()
+    storage.set_day_setup(db_path, "QQQ", today, {"gap_pct": 0.3, "catalysts": []})
+    worker.morning_scores_for("QQQ", config, db_path)
+    setup = storage.get_day_setup(db_path, "QQQ", today)
+    assert setup["gap_pct"] == 0.3 and setup["morning"]["orb15"] == 0.4      # merged, not replaced

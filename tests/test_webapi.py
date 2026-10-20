@@ -990,3 +990,57 @@ def test_retired_strategies_only_show_under_before(db, config):
     before = {r["name"]: r for r in payloads.lab_payload(db, config, era="delayed")["rows"]}
     assert before["contrarian"]["retired"] and before["contrarian"]["trades"] == 1
     assert not before["baseline"]["retired"]
+
+
+def _promotion_config(config):
+    config["lab_fills_honest_from"] = "2026-10-20"
+    config["autopilot"]["tickers"] = ["QQQ"]
+    config["shadow_strategies"] = [
+        {"name": "null_coin", "entry": {}},
+        {"name": "morning_trail_1030", "entry": {"signal_source": "trail30_1030"}},
+    ]
+    config["autopilot_promotion"] = {"candidate": "morning_trail_1030", "min_days": 5,
+                                     "min_t": 2.0, "candidate_net_positive": True}
+    return config
+
+
+def test_promotion_rule_reports_progress_and_is_met_only_on_all_three(db, config):
+    _promotion_config(config)
+    for i, gain in enumerate((2.6, 2.5, 2.7, 2.6, 2.55)):          # +25..35% vs a -10% coin
+        day = f"2026-10-{21 + i}T14:30:00+00:00"
+        _shadow(db, "null_coin", "QQQ", day, 1.8)
+        _shadow(db, "morning_trail_1030", "QQQ", day, gain)
+    status = payloads.promotion_status(db, config)
+    assert status["days"] == 5 and status["t"] > 2.0
+    assert status["checks"] == {"days": True, "t": True, "net": True} and status["met"]
+    config["autopilot_promotion"]["min_days"] = 40
+    status = payloads.promotion_status(db, config)
+    assert not status["met"] and not status["checks"]["days"]
+    assert payloads.autopilot_payload(db, config)["promotion"]["min_days"] == 40
+
+
+def test_promotion_ignores_delayed_fills_and_other_tickers(db, config):
+    _promotion_config(config)
+    for i in range(6):
+        _shadow(db, "null_coin", "QQQ", f"2026-10-0{1 + i}T14:30:00+00:00", 1.8)       # before cutover
+        _shadow(db, "morning_trail_1030", "QQQ", f"2026-10-0{1 + i}T14:30:00+00:00", 3.0)
+        _shadow(db, "null_coin", "SPY", f"2026-10-2{1 + i}T14:30:00+00:00", 1.8)       # not traded
+        _shadow(db, "morning_trail_1030", "SPY", f"2026-10-2{1 + i}T14:30:00+00:00", 3.0)
+    assert payloads.promotion_status(db, config)["days"] == 0
+
+
+def test_no_promotion_rule_means_none(db, config):
+    config.pop("autopilot_promotion", None)
+    assert payloads.promotion_status(db, config) is None
+
+
+def test_morning_readings_show_on_the_day_setup(db, config):
+    today = datetime.now(payloads._tz(config)).date().isoformat()
+    storage.set_day_setup(db, "QQQ", today, {"gap_pct": 0.4, "catalysts": [], "morning": {
+        "gap_behaviour": None, "orb15": 0.38, "trail30_1030": -1.0, "orb15_1030": 0.0}})
+    rows = {r["name"]: r for r in payloads._day_setup_payload(db, config, "QQQ")["morning"]}
+    assert rows["gap_behaviour"]["side"] == "stand aside"
+    assert rows["orb15"]["side"] == "call" and rows["orb15"]["time"] == "10:00"
+    assert rows["trail30_1030"]["side"] == "put" and rows["orb15_1030"]["side"] == "stand aside"
+    storage.set_day_setup(db, "QQQ", today, {"gap_pct": 0.4, "catalysts": []})
+    assert payloads._day_setup_payload(db, config, "QQQ")["morning"] is None      # before 10:01

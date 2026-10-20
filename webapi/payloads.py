@@ -275,7 +275,33 @@ def _day_setup_payload(db_path: str, config: dict, ticker: str, on_date: date | 
         "overnight_low": _num(setup.get("overnight_low")),
         "catalysts": [{"label": c.get("label"), "time": c.get("time"),
                        "impact": c.get("impact")} for c in catalysts],
+        "morning": _morning_readings(setup.get("morning")),
     }
+
+
+MORNING_LABELS = (
+    ("gap_behaviour", "10:00", "Gap day: follow the first 30 min"),
+    ("orb15", "10:00", "Opening-range breakout"),
+    ("trail30_1030", "10:30", "Follow the 10:00-10:30 move"),
+    ("orb15_1030", "10:30", "Opening-range breakout"),
+)
+
+
+def _morning_readings(scores: dict | None) -> list[dict] | None:
+    """Today's pre-registered morning signals as the page shows them. None
+    before 10:01 (nothing computed yet); per signal, 'call' / 'put' / 'stand
+    aside' (a score of None or ~0 means no trade - e.g. not a gap day)."""
+    if not scores:
+        return None
+    out = []
+    for name, time, label in MORNING_LABELS:
+        if name not in scores:
+            continue
+        score = scores.get(name)
+        side = ("call" if score is not None and score > 0.02 else
+                "put" if score is not None and score < -0.02 else "stand aside")
+        out.append({"name": name, "time": time, "label": label, "score": _num(score), "side": side})
+    return out
 
 
 def signal_payload(db_path: str, config: dict, ticker: str) -> dict:
@@ -910,6 +936,45 @@ def autopilot_intents(db_path: str, config: dict, mode: str | None = None,
     return intents
 
 
+def promotion_status(db_path: str, config: dict) -> dict | None:
+    """Progress toward the pre-registered switch (config autopilot_promotion):
+    the morning family's per-day edge over null_coin, on honest-fill trades on
+    the autopilot's tickers, plus the candidate's own net P&L. None when no
+    rule is configured. 'met' only says the evidence is in - switching is a
+    deliberate config change, never automatic."""
+    rule = config.get("autopilot_promotion")
+    if not rule:
+        return None
+    tz = _tz(config)
+    cutover = lab_cutover(config)
+    tickers = set(config.get("autopilot", {}).get("tickers") or config["tickers"])
+    closed = [row for row in storage.get_closed_shadow_positions(db_path)
+              if row["ticker"] in tickers and (cutover is None or datetime.fromisoformat(
+                  row["entry_time"]).astimezone(tz).date() >= cutover)]
+    family = [s["name"] for s in config.get("shadow_strategies", [])
+              if s.get("entry", {}).get("signal_source") in MORNING_SIGNALS]
+    edge = vs_null(closed, tz, groups={"family": family})["family"] if family else \
+        {"mean_pct": None, "t": None, "days": 0}
+    candidate = rule.get("candidate")
+    card = strategy_scorecard(closed).get(candidate)
+    min_days, min_t = rule.get("min_days", 40), rule.get("min_t", 2.0)
+    net = card["avg_pnl"] if card else None
+    checks = {
+        "days": edge["days"] >= min_days,
+        "t": edge["t"] is not None and edge["t"] >= min_t,
+        "net": (not rule.get("candidate_net_positive", True)) or (net is not None and net > 0),
+    }
+    return {
+        "candidate": candidate, "family": family,
+        "days": edge["days"], "min_days": min_days,
+        "t": edge["t"], "min_t": min_t, "edge_pct": edge["mean_pct"],
+        "candidate_trades": card["trades"] if card else 0,
+        "candidate_avg_pnl": _num(net),
+        "checks": checks, "met": all(checks.values()),
+        "since": _iso(cutover),
+    }
+
+
 def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
     """Mode, per-ticker intent (the bot's own dry-run decision), record, config.
 
@@ -964,6 +1029,7 @@ def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> 
             "label": f"{start // 60:02d}:{start % 60:02d}–{end // 60:02d}:{end % 60:02d} ET",
         },
         "intents": intents,
+        "promotion": promotion_status(db_path, config),
         "traded_tickers": list(tickers),     # the autopilot's whitelist
         "record_ticker": ticker,
         "record": record,

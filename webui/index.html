@@ -7,7 +7,7 @@
 <title>0DTE Console</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233a5bd9'/><text x='16' y='22' font-size='16' font-family='monospace' font-weight='600' fill='white' text-anchor='middle'>0&#916;</text></svg>">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="styles.css?v=7">
+<link rel="stylesheet" href="styles.css?v=8">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="theme-color" content="#3a5bd9">
@@ -229,6 +229,10 @@
           <div class="stat-row" style="margin-top:12px;gap:20px" id="ap-record"></div>
           <p class="sub" style="margin-top:12px" id="ap-record-sub"></p>
         </div>
+        <div class="card" style="grid-column:span 2">
+          <div class="eyebrow">Switch rule · pre-registered</div>
+          <div id="ap-promotion" style="margin-top:12px"><div class="loading">Loading</div></div>
+        </div>
       </div>
     </section>
 
@@ -286,7 +290,7 @@
 
 <!-- bump ?v= with any change: phones cache these hard, and a stale app.js
      against new markup breaks the page -->
-<script src="api.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="api.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

@@ -239,6 +239,22 @@
     }).join('');
   }
 
+  /* Today's pre-registered morning signals (the lab's morning family) - what
+     to mirror by hand at 10:00 / 10:30, with the autopilot's exits. */
+  function morningReadings(rows) {
+    if (!rows || !rows.length) {
+      return '<div class="sub" style="margin-top:12px">Morning signals appear just after 10:00 ET.</div>';
+    }
+    return '<div style="margin-top:12px;display:flex;flex-direction:column;gap:7px;font-size:13px">' +
+      '<div class="eyebrow">Morning signals · lab</div>' +
+      rows.map(function (r) {
+        var tone = r.side === 'call' ? 'up' : (r.side === 'put' ? 'down' : '');
+        return '<div class="cfg"><span>' + A.escapeHtml(r.time + ' · ' + r.label) + '</span><b class="num ' + tone + '">' +
+          (r.side === 'stand aside' ? 'stand aside' : r.side.toUpperCase() + (A.isNum(r.score) ? ' ' + A.signedNum(r.score) : '')) +
+          '</b></div>';
+      }).join('') + '</div>';
+  }
+
   function renderSignal(signal) {
     state.exitOptions = signal.exit_pct_options || state.exitOptions;
     var body = $('sig-body');
@@ -293,6 +309,7 @@
           '<div class="stat"><div class="n num">' + A.num(setup.prior_close, 1) + '</div><div class="l">Prior close</div></div>' +
         '</div>' +
         '<div class="sub" style="margin-top:12px">' + A.escapeHtml(levels.join(' · ')) + '</div>' +
+        morningReadings(setup.morning) +
         (setup.catalysts.length ? '<div class="banner warn" style="margin-top:12px">Autopilot stands down near today\'s catalyst.</div>' : '');
     }
 
@@ -821,8 +838,33 @@
     }
   }
 
+  function renderPromotion(p) {
+    var box = $('ap-promotion');
+    if (!p) { box.innerHTML = '<div class="empty">No switch rule configured.</div>'; return; }
+    function check(ok, label, value) {
+      return '<div class="cfg"><span>' + (ok ? '✓ ' : '○ ') + A.escapeHtml(label) + '</span><b class="num ' +
+        (ok ? 'up' : '') + '">' + value + '</b></div>';
+    }
+    var tText = A.isNum(p.t) ? A.signedNum(p.t) : '—';
+    var edge = A.isNum(p.edge_pct) ? ' (' + A.signedPct(p.edge_pct, 1) + '/day)' : '';
+    box.innerHTML =
+      '<div class="sub" style="margin-bottom:10px">The autopilot switches to <b>' + A.escapeHtml(p.candidate) +
+        '</b> once the morning family has beaten the coin flip on honest fills (since ' + A.escapeHtml(p.since || '—') +
+        '). Decided in advance; meeting it is the cue to switch, never automatic.</div>' +
+      '<div style="display:flex;flex-direction:column;gap:9px;font-size:13px">' +
+        check(p.checks.days, 'Days traded alongside the coin flip', p.days + ' / ' + p.min_days) +
+        check(p.checks.t, 'Family edge over the coin flip', 't ' + tText + ' / ' + A.signedNum(p.min_t) + edge) +
+        check(p.checks.net, p.candidate + ' beats costs', A.isNum(p.candidate_avg_pnl)
+          ? A.signedMoney(p.candidate_avg_pnl) + '/trade over ' + p.candidate_trades : 'no trades yet') +
+      '</div>' +
+      '<div class="banner ' + (p.met ? 'good' : 'info') + '" style="margin-top:12px">' +
+        (p.met ? 'Rule met — the evidence supports switching the autopilot to ' + A.escapeHtml(p.candidate) + '.'
+               : 'Not met yet — the autopilot stays on its current rule.') + '</div>';
+  }
+
   function loadAutopilot() {
-    return A.get('/api/autopilot' + scopeQuery()).then(renderAutopilot)
+    return A.get('/api/autopilot' + scopeQuery())
+      .then(function (payload) { renderAutopilot(payload); renderPromotion(payload.promotion); })
       .catch(function (error) { fail($('ap-intents'), error); });
   }
 

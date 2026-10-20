@@ -316,3 +316,18 @@ def test_watcher_holds_its_fire_while_the_worker_may_still_be_starting(db, monke
     events = watcher.tick()                            # dead after the grace -> alert
     assert [e["title"] for e in events] == ["Worker DOWN"] and sent == events
     assert watcher.tick() == []                        # and only once
+
+
+def test_morning_entries_alert_once_per_ticker_and_side():
+    config = {"autopilot": {"profit_target_pct": 50, "stop_loss_pct": -35}}
+    base = {"armed": {}, "open": {}, "worker": "up", "worker_age_seconds": 5, "morning": {}}
+    current = dict(base, morning={
+        1: {"ticker": "QQQ", "option_type": "call", "strike": 717.0, "strategy": "morning_orb"},
+        2: {"ticker": "QQQ", "option_type": "call", "strike": 717.0, "strategy": "morning_gap"},
+        3: {"ticker": "SPY", "option_type": "put", "strike": 768.0, "strategy": "morning_orb"},
+    })
+    events = push.new_events(base, current, config)
+    assert sorted(e["title"] for e in events) == ["QQQ morning CALL", "SPY morning PUT"]
+    qqq = next(e for e in events if e["title"].startswith("QQQ"))
+    assert "morning_gap, morning_orb" in qqq["body"] and "+50% / -35%" in qqq["body"]
+    assert push.new_events(current, current, config) == []            # already announced
