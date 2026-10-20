@@ -20,10 +20,9 @@ label itself uses lag 0 - a real-time trade.
 
 Pure functions, no I/O.
 """
-import math
 from dataclasses import dataclass
 
-from data.market_data import _RISK_FREE_RATE, _norm_cdf
+from data.market_data import _RISK_FREE_RATE, bs_price, implied_vol  # noqa: F401 - re-exported
 from paper_trading.engine import evaluate_exit
 from paper_trading.models import Position
 
@@ -35,44 +34,6 @@ def years_to_close(minute: float, close_minute: int = SESSION_MINUTES) -> float:
     """Time left to a 16:00 expiry, in years. Floored at one minute, as
     market_data._years_to_expiration floors at 60 seconds."""
     return max(close_minute - minute, 1.0) / _MINUTES_PER_YEAR
-
-
-def bs_price(spot: float, strike: float, sigma: float, years: float, option_type: str,
-             rate: float = _RISK_FREE_RATE) -> float:
-    """European Black-Scholes price. Intrinsic value when there is no time or
-    no volatility left."""
-    intrinsic = max(spot - strike, 0.0) if option_type == "call" else max(strike - spot, 0.0)
-    if spot <= 0 or strike <= 0 or sigma <= 0 or years <= 0:
-        return intrinsic
-    root = sigma * math.sqrt(years)
-    d1 = (math.log(spot / strike) + (rate + 0.5 * sigma * sigma) * years) / root
-    d2 = d1 - root
-    discount = strike * math.exp(-rate * years)
-    if option_type == "call":
-        return spot * _norm_cdf(d1) - discount * _norm_cdf(d2)
-    return discount * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
-
-
-def implied_vol(price: float, spot: float, strike: float, years: float, option_type: str,
-                rate: float = _RISK_FREE_RATE, low: float = 0.01, high: float = 5.0) -> float | None:
-    """The volatility that reproduces `price` (bisection). None when the price
-    is at or below intrinsic, or beyond what `high` can explain - a quote that
-    can't be inverted says nothing about volatility."""
-    if price is None or price <= 0 or years <= 0:
-        return None
-    if price <= bs_price(spot, strike, low, years, option_type, rate):
-        return None
-    if price >= bs_price(spot, strike, high, years, option_type, rate):
-        return None
-    for _ in range(100):
-        mid = (low + high) / 2.0
-        if bs_price(spot, strike, mid, years, option_type, rate) < price:
-            low = mid
-        else:
-            high = mid
-        if high - low < 1e-7:
-            break
-    return (low + high) / 2.0
 
 
 def spot_at(path: dict, minute: int, max_gap: int = 5) -> float | None:

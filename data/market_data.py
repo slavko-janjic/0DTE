@@ -8,7 +8,7 @@ crashing the whole poll cycle.
 """
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import yfinance as yf
@@ -22,6 +22,44 @@ def _norm_cdf(x: float) -> float:
 
 def _norm_pdf(x: float) -> float:
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def bs_price(spot: float, strike: float, sigma: float, years: float, option_type: str,
+             rate: float = _RISK_FREE_RATE) -> float:
+    """European Black-Scholes price. Intrinsic value when there is no time or
+    no volatility left."""
+    intrinsic = max(spot - strike, 0.0) if option_type == "call" else max(strike - spot, 0.0)
+    if spot <= 0 or strike <= 0 or sigma <= 0 or years <= 0:
+        return intrinsic
+    root = sigma * math.sqrt(years)
+    d1 = (math.log(spot / strike) + (rate + 0.5 * sigma * sigma) * years) / root
+    d2 = d1 - root
+    discount = strike * math.exp(-rate * years)
+    if option_type == "call":
+        return spot * _norm_cdf(d1) - discount * _norm_cdf(d2)
+    return discount * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+
+
+def implied_vol(price: float, spot: float, strike: float, years: float, option_type: str,
+                rate: float = _RISK_FREE_RATE, low: float = 0.01, high: float = 5.0) -> float | None:
+    """The volatility that reproduces `price` (bisection). None when the price
+    is at or below intrinsic, or beyond what `high` can explain - a quote that
+    can't be inverted says nothing about volatility."""
+    if price is None or price <= 0 or years <= 0:
+        return None
+    if price <= bs_price(spot, strike, low, years, option_type, rate):
+        return None
+    if price >= bs_price(spot, strike, high, years, option_type, rate):
+        return None
+    for _ in range(100):
+        mid = (low + high) / 2.0
+        if bs_price(spot, strike, mid, years, option_type, rate) < price:
+            low = mid
+        else:
+            high = mid
+        if high - low < 1e-7:
+            break
+    return (low + high) / 2.0
 
 
 def black_scholes_greeks(
@@ -172,9 +210,119 @@ class OptionChainSnapshot:
     spot: float
     calls: pd.DataFrame
     puts: pd.DataFrame
+    # the share price the quotes actually reflect, and whether bid/ask/lastPrice
+    # were repriced to `spot` (see correct_quote_delay); raw quotes stay in raw_*
+    spot_at_quote: float | None = None
+    delay_corrected: bool = False
 
 
-def get_option_chain(ticker: str, expiration: str | None = None) -> OptionChainSnapshot | None:
+# --- the 15-minute quote delay ------------------------------------------------
+# Yahoo's option quotes trail the share price by 15 minutes. Measured 2026-10-19
+# over ~9,000 one-minute quote pairs per ticker: changes in the ATM option mid
+# correlate +0.69 with the share-price change 15 minutes EARLIER and ~0 with the
+# same minute (SIGNAL_RESEARCH.md). The share price the signals read is not
+# delayed, so every fill used to be priced off where the share stood 15 minutes
+# before: a trade that followed the last 15 minutes of movement bought cheap and
+# watched the stale quote "catch up" - a gain no real trade gets (it explained
+# the paper edge of every follow-the-signal strategy).
+QUOTE_DELAY_MINUTES = 15
+_QUOTE_FIELDS = ("bid", "ask", "lastPrice")
+
+
+_SPOT_BAR_MAX_GAP_MINUTES = 5
+
+
+def get_spot_minutes_ago(ticker: str, minutes: int) -> float | None:
+    """The share price `minutes` ago: the close of the last 1-minute bar that
+    had finished by then. Pre/post-market bars included, so the open's first
+    quarter-hour (whose quotes still reflect the pre-market) is covered too.
+    None when Yahoo has no bar that old today, or when the latest one is more
+    than a few minutes older than that - overnight the last bar is hours old,
+    and "correcting" a quote by a move that happened hours ago is worse than
+    leaving it alone."""
+    try:
+        bars = yf.Ticker(ticker).history(interval="1m", period="1d", prepost=True)
+    except Exception:
+        return None
+    if bars is None or bars.empty:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes + 1)
+    index = bars.index.tz_convert("UTC") if bars.index.tz is not None else bars.index
+    mask = index <= cutoff
+    older = bars[mask]
+    if older.empty or index[mask][-1] < cutoff - timedelta(minutes=_SPOT_BAR_MAX_GAP_MINUTES):
+        return None
+    close = float(older["Close"].iloc[-1])
+    return close if close > 0 else None
+
+
+def correct_quote_delay(snapshot: OptionChainSnapshot, spot_at_quote: float | None,
+                        delay_minutes: int = QUOTE_DELAY_MINUTES) -> OptionChainSnapshot:
+    """Reprices a delayed chain to the current share price.
+
+    For each contract: back out the volatility its mid implies at the share
+    price (and time to expiry) the quote reflects, reprice at the current share
+    price and time, and shift bid, ask and lastPrice by the difference - the
+    quoted spread is kept, since the delay moves the price, not the cost of
+    crossing it. Where the mid can't be inverted (deep in or out of the money)
+    the shift is the change in intrinsic value. Prices never go below zero, and
+    a bid that would is dropped to zero.
+
+    The raw quotes are kept as raw_bid / raw_ask / raw_lastPrice so the delay
+    itself stays measurable. Unchanged (delay_corrected False) when the old
+    share price is unknown or the delay is 0."""
+    if spot_at_quote is None or spot_at_quote <= 0 or delay_minutes <= 0:
+        return snapshot
+    years_now = _years_to_expiration(snapshot.expiration)
+    years_then = years_now + delay_minutes / (365.0 * 24 * 60)
+    spot_now = snapshot.spot
+
+    def reprice(df: pd.DataFrame, option_type: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        for field in _QUOTE_FIELDS:
+            if field in df.columns:
+                df[f"raw_{field}"] = df[field]
+        for idx, row in df.iterrows():
+            strike = _num_or_none(row.get("strike"))
+            if strike is None:
+                continue
+            mid = _mid(row) or _quote(row, "lastPrice")
+            if mid is None:
+                continue
+            sigma = implied_vol(mid, spot_at_quote, strike, years_then, option_type)
+            if sigma is not None:
+                shift = bs_price(spot_now, strike, sigma, years_now, option_type) - mid
+            else:
+                shift = (bs_price(spot_now, strike, 0.0, 0.0, option_type)
+                         - bs_price(spot_at_quote, strike, 0.0, 0.0, option_type))
+            for field in _QUOTE_FIELDS:
+                value = _quote(row, field)
+                if value is not None:
+                    df.at[idx, field] = max(value + shift, 0.0)
+        return df
+
+    snapshot.calls = reprice(snapshot.calls, "call")
+    snapshot.puts = reprice(snapshot.puts, "put")
+    snapshot.spot_at_quote = spot_at_quote
+    snapshot.delay_corrected = True
+    return snapshot
+
+
+def _num_or_none(value) -> float | None:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) else value
+
+
+def get_option_chain(ticker: str, expiration: str | None = None,
+                     quote_delay_minutes: int = QUOTE_DELAY_MINUTES) -> OptionChainSnapshot | None:
+    """The nearest-expiry chain with its quotes repriced to the current share
+    price (correct_quote_delay). Pass quote_delay_minutes=0 for the raw quotes
+    - e.g. from a real-time source."""
     try:
         tk = yf.Ticker(ticker)
         exp = expiration or get_nearest_expiration(ticker)
@@ -188,10 +336,14 @@ def get_option_chain(ticker: str, expiration: str | None = None) -> OptionChainS
         # not "no call volume" - callers read both frames unconditionally.
         if chain.calls is None or chain.puts is None:
             return None
-        return OptionChainSnapshot(ticker=ticker, expiration=exp, spot=spot,
-                                    calls=chain.calls, puts=chain.puts)
+        snapshot = OptionChainSnapshot(ticker=ticker, expiration=exp, spot=spot,
+                                       calls=chain.calls, puts=chain.puts)
     except Exception:
         return None
+    if quote_delay_minutes > 0:
+        snapshot = correct_quote_delay(
+            snapshot, get_spot_minutes_ago(ticker, quote_delay_minutes), quote_delay_minutes)
+    return snapshot
 
 
 def _years_to_expiration(expiration: str) -> float:
@@ -305,10 +457,13 @@ def find_delta_contract(df: pd.DataFrame, target_delta: float) -> pd.Series | No
     return valid.loc[idx]
 
 
-def contract_quote(contract) -> tuple[float | None, float | None, float | None, float | None]:
-    """(bid, ask, mid, spread_pct) for a chain row - the raw cost picture, with
-    each leg None when that quote is missing/zero. Used to log what transacting
-    actually costs, so the intraday cost curve can be measured over time."""
+def contract_quote(contract, raw: bool = False) -> tuple[float | None, float | None, float | None, float | None]:
+    """(bid, ask, mid, spread_pct) for a chain row, each leg None when that
+    quote is missing/zero. Used to log what transacting actually costs, so the
+    intraday cost curve can be measured over time. raw=True reads the quotes
+    as Yahoo sent them (before correct_quote_delay), when the row has them."""
+    if raw and "raw_bid" in getattr(contract, "index", ()):
+        contract = {"bid": contract.get("raw_bid"), "ask": contract.get("raw_ask")}
     return (
         _quote(contract, "bid"),
         _quote(contract, "ask"),
