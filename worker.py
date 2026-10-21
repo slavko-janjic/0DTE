@@ -712,7 +712,10 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         if option_type is None:
             continue
         df = chain.calls if option_type == "call" else chain.puts
-        contract = market_data.find_atm_contract(df, chain.spot)
+        # entry.strike: "atm" (default) or "itm1" - one listed strike deeper in
+        # the money (the paired ITM-vs-ATM test pre-registered 2026-10-21)
+        itm_steps = 1 if entry_cfg.get("strike") == "itm1" else 0
+        contract = market_data.find_strike_contract(df, chain.spot, option_type, itm_steps)
         if contract is None:
             continue
         entry_price = market_data.contract_entry_price(contract)
@@ -731,6 +734,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             "direction_streak": direction_streak,
             "minutes_since_open": round(minutes_since_open, 1),
             "subscores": signal.subscores_used,
+            "strike_choice": entry_cfg.get("strike", "atm"),
             **entry_context(config, ticker, chain, contract, option_type, today),
         }
         sid = storage.open_shadow_position(

@@ -428,6 +428,22 @@ def find_atm_contract(df: pd.DataFrame, spot: float) -> pd.Series | None:
     return df.loc[idx]
 
 
+def find_strike_contract(df: pd.DataFrame, spot: float, option_type: str,
+                         itm_steps: int = 0) -> pd.Series | None:
+    """The ATM row (nearest strike to spot), or the row `itm_steps` listed
+    strikes deeper in the money from it: lower strikes for a call, higher for a
+    put. None when the chain doesn't list that strike."""
+    atm = find_atm_contract(df, spot)
+    if atm is None or itm_steps == 0:
+        return atm
+    strikes = sorted(set(df["strike"].tolist()))
+    i = strikes.index(atm["strike"])
+    j = i - itm_steps if option_type == "call" else i + itm_steps
+    if not 0 <= j < len(strikes):
+        return None
+    return df[df["strike"] == strikes[j]].iloc[0]
+
+
 # --- honest fills ------------------------------------------------------------
 # Paper fills used to use lastPrice - the most optimistic assumption possible.
 # 0DTE spreads are wide and last-trade can be minutes stale, so buys fill at the

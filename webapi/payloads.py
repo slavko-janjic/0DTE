@@ -639,6 +639,15 @@ MORNING_SIGNALS = ("gap_behaviour", "orb15", "trail30_1030", "orb15_1030")
 VS_NULL_MIN_DAYS = 5
 
 
+def morning_family(strategies: list) -> list[str]:
+    """The pre-registered morning family: the ATM strategies on a morning
+    signal. ITM twins (entry.strike: itm1) are a separate paired test, so they
+    stay out of the family - and out of the switch rule."""
+    return [s.get("name") for s in strategies
+            if s.get("entry", {}).get("signal_source") in MORNING_SIGNALS
+            and s.get("entry", {}).get("strike", "atm") == "atm"]
+
+
 def vs_null(closed: list, tz, groups: dict | None = None) -> dict:
     """How each strategy did against the coin flip, on the same ticker and day.
 
@@ -729,8 +738,7 @@ def lab_payload(db_path: str, config: dict, ticker: str | None = None,
     cards = strategy_scorecard(closed)
     edges = strategy_edge(closed, min_trades=MIN_LAB_TRADES)
     versus = vs_null(closed, tz)
-    family = [s.get("name") for s in strategies
-              if s.get("entry", {}).get("signal_source") in MORNING_SIGNALS]
+    family = morning_family(strategies)
     rows = []
     for strategy in strategies:
         name = strategy.get("name", "?")
@@ -951,8 +959,7 @@ def promotion_status(db_path: str, config: dict) -> dict | None:
     closed = [row for row in storage.get_closed_shadow_positions(db_path)
               if row["ticker"] in tickers and (cutover is None or datetime.fromisoformat(
                   row["entry_time"]).astimezone(tz).date() >= cutover)]
-    family = [s["name"] for s in config.get("shadow_strategies", [])
-              if s.get("entry", {}).get("signal_source") in MORNING_SIGNALS]
+    family = morning_family(config.get("shadow_strategies", []))
     edge = vs_null(closed, tz, groups={"family": family})["family"] if family else \
         {"mean_pct": None, "t": None, "days": 0}
     candidate = rule.get("candidate")

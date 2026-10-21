@@ -555,6 +555,31 @@ def lab_breakdown(rows: list, since: date, tz) -> dict:
     return out
 
 
+def itm_vs_atm(rows: list, since: date, tz) -> dict | None:
+    """The pre-registered paired test: for every (ticker, day, morning
+    strategy) where both the ATM strategy and its _itm twin traded, ITM net
+    return minus ATM net return (% of premium). Days pooled across the four
+    pairs, one observation per day. None until anything is paired."""
+    by_key: dict = {}
+    for row in rows:
+        day = datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+        if day < since or row["pnl_pct"] is None:
+            continue
+        base = row["strategy"][:-4] if row["strategy"].endswith("_itm") else row["strategy"]
+        side = "itm" if row["strategy"].endswith("_itm") else "atm"
+        by_key.setdefault((row["ticker"], day, base), {})[side] = row["pnl_pct"]
+    per_day: dict = {}
+    for (_, day, _), pair in by_key.items():
+        if "itm" in pair and "atm" in pair:
+            per_day.setdefault(day, []).append(pair["itm"] - pair["atm"])
+    if not per_day:
+        return None
+    daily = [statistics.fmean(v) for v in per_day.values()]
+    t = session_lab._t(daily)
+    return {"days": len(daily), "pairs": sum(len(v) for v in per_day.values()),
+            "mean": statistics.fmean(daily), "t": t}
+
+
 def cmd_labstats(config: dict, since: str | None) -> None:
     db, _ = _paths(config)
     con = _connect_ro(db)
@@ -584,7 +609,11 @@ def cmd_labstats(config: dict, since: str | None) -> None:
         cell = lambda xs: f"{_pct(mean(xs))} ({len(xs)})" if xs else "-"  # noqa: E731
         print(f"| {name} | {cell(s['call'])} | {cell(s['put'])} | {cell(s['fomc'])} | "
               f"{cell(s['other_days'])} |")
-    print("\nDescriptive only: these splits are not tests (see the 2026-10-20 deep-dive report).")
+    paired = itm_vs_atm(rows, start, tz)
+    print("\nITM vs ATM (pre-registered 2026-10-21; ITM minus ATM, % of premium, one obs per day): " +
+          (f"{_pct(paired['mean'])} per day over {paired['days']} days ({paired['pairs']} pairs), "
+           f"t {paired['t']:+.2f}" if paired else "no paired trades yet"))
+    print("\nDescriptive only: the other splits are not tests (see the 2026-10-20 deep-dive report).")
 
 
 def main() -> None:

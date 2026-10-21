@@ -46,6 +46,8 @@ def should_shadow_enter(
                                   trade 'always_call', 'always_put' or a
                                   'coin_flip': the null controls. Confidence
                                   is not checked - there is none.
+      strike                    - (read by the worker) "atm" (default) or
+                                  "itm1": one listed strike deeper in the money
       positive_gamma_confidence_penalty
                                 - extra confidence required in a positive-gamma
                                   (rangebound) regime, as the autopilot does
