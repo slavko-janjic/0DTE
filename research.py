@@ -7,6 +7,7 @@
     python research.py intraday [--report PATH]   # later decision times + weekday/event slices
     python research.py oos [--since DATE] [--no-fetch] [--push]   # the passed signals on new data only
     python research.py labstats [--since DATE]   # what moved the lab's trades: share, time, vol, costs
+    python research.py shares [--report PATH]    # the morning signals on the share itself, no option
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -21,7 +22,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from analytics import intraday_lab, option_sim, session_lab
+from analytics import intraday_lab, option_sim, session_lab, share_lab
 from paper_trading.costs import round_trip_fees
 from config import database_path, load_settings
 from data import history
@@ -580,6 +581,25 @@ def itm_vs_atm(rows: list, since: date, tz) -> dict | None:
             "mean": statistics.fmean(daily), "t": t}
 
 
+def fed_ramp(rows: list, tz) -> list[dict]:
+    """The Fed-day straddle per ticker and day: call + put P&L ($, net of fees)
+    and as % of the combined premium paid. Only days where both legs closed."""
+    legs: dict = {}
+    for row in rows:
+        if row["strategy"] not in ("fomc_ramp_call", "fomc_ramp_put") or row["pnl"] is None:
+            continue
+        day = datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+        legs.setdefault((row["ticker"], day), []).append(row)
+    out = []
+    for (ticker, day), pair in sorted(legs.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        if len(pair) != 2:
+            continue
+        paid = sum(r["entry_price"] * r["contracts"] * 100 for r in pair)
+        pnl = sum(r["pnl"] for r in pair)
+        out.append({"ticker": ticker, "day": day, "pnl": pnl, "pct": pnl / paid * 100 if paid else None})
+    return out
+
+
 def cmd_labstats(config: dict, since: str | None) -> None:
     db, _ = _paths(config)
     con = _connect_ro(db)
@@ -609,11 +629,72 @@ def cmd_labstats(config: dict, since: str | None) -> None:
         cell = lambda xs: f"{_pct(mean(xs))} ({len(xs)})" if xs else "-"  # noqa: E731
         print(f"| {name} | {cell(s['call'])} | {cell(s['put'])} | {cell(s['fomc'])} | "
               f"{cell(s['other_days'])} |")
+    ramp = fed_ramp(rows, tz)
+    print("\nFed-day ramp (pre-registered 2026-10-21; 10:00 straddle sold at 13:55, net of fees): " +
+          ("; ".join(f"{r['day']} {r['ticker']} {_pct(r['pct'])} (${r['pnl']:+.0f})" for r in ramp)
+           if ramp else "no Fed days traded yet"))
     paired = itm_vs_atm(rows, start, tz)
     print("\nITM vs ATM (pre-registered 2026-10-21; ITM minus ATM, % of premium, one obs per day): " +
           (f"{_pct(paired['mean'])} per day over {paired['days']} days ({paired['pairs']} pairs), "
            f"t {paired['t']:+.2f}" if paired else "no paired trades yet"))
     print("\nDescriptive only: the other splits are not tests (see the 2026-10-20 deep-dive report).")
+
+
+def cmd_shares(config: dict, report: str | None) -> None:
+    """The four forward-tested morning signals scored on the SHARE, exiting
+    where the ATM option would have (analytics/share_lab.py, pre-registered
+    2026-10-21), plus a descriptive hold-to-15:30 version."""
+    _, cache = _paths(config)
+    calibration = _load_calibration(cache)
+    vix = history.load_vix(cache)
+    sessions = {t: session_lab.sessions_from_bars(history.load_bars(cache, t)) for t in TICKERS}
+    signals = {30: session_lab.build_signals(sessions, {d: c for d, (_, c) in vix.items()}),
+               60: intraday_lab.build_signals_at(sessions, 60)}
+    labels = {(m, b): {} for m in (30, 60) for b in (True, False)}
+    for ticker, ss in sessions.items():
+        k = calibration["k"][ticker]
+        for s in ss:
+            if not s.complete() or s.day not in vix:
+                continue
+            sigma = k * vix[s.day][0] / 100.0
+            for m in (30, 60):
+                for barriers in (True, False):
+                    label = share_lab.label_session(s, sigma, m, barriers)
+                    if label is not None:
+                        labels[(m, barriers)][(ticker, s.day)] = label
+    floor = session_lab.noise_floor(len(share_lab.TESTS))
+    results, descriptive = [], []
+    for name, minute, clock in share_lab.TESTS:
+        r = session_lab.evaluate_test(signals[minute], labels[(minute, True)], name, 1, floor)
+        r["time"] = clock
+        results.append(r)
+        d = session_lab.evaluate_test(signals[minute], labels[(minute, False)], name, 1, floor)
+        d["time"] = clock
+        descriptive.append(d)
+
+    def table(rows: list[dict]) -> list[str]:
+        periods = [p for p, _, _ in session_lab.PERIODS]
+        out = ["| Signal | Time | Days | Excess bps/trade | t | " + " | ".join(periods) +
+               " | Net since 2022 (bps) | Verdict |",
+               "|---|---|---|---|---|" + "---|" * len(periods) + "---|---|"]
+        for r in rows:
+            cells = [f"{_fmt(r['periods'][p]['mean'], '+.2f')} ({r['periods'][p]['days']})"
+                     for p in periods]
+            out.append(f"| {r['signal']} | {r['time']} | {r['days']} | {_fmt(r['mean_excess'], '+.2f')} | "
+                       f"{r['t']:+.2f} | " + " | ".join(cells) +
+                       f" | {_fmt(r['net_since_2022'], '+.2f')} | **{r['verdict']}** |")
+        return out
+
+    lines = [f"Morning signals on the share (follow side; 1 bp round-trip cost; noise floor "
+             f"t = {floor:.2f})", "",
+             "Pre-registered: exit where the ATM option would hit +50% / -35% (static levels "
+             "at entry), else 15:30.", ""] + table(results) + [
+             "", "Descriptive only: plain hold to 15:30.", ""] + table(descriptive)
+    text = "\n".join(lines)
+    print(text)
+    if report:
+        Path(report).write_text(text + "\n", encoding="utf-8")
+        print(f"\nWrote {report}")
 
 
 def main() -> None:
@@ -630,6 +711,8 @@ def main() -> None:
     oos.add_argument("--since", default=OOS_SINCE, help="first session to score (YYYY-MM-DD)")
     oos.add_argument("--no-fetch", action="store_true", help="use the cached bars as they are")
     oos.add_argument("--push", action="store_true", help="also push the summary to subscribed devices")
+    shares = sub.add_parser("shares", help="the morning signals on the share itself")
+    shares.add_argument("--report", default=None, help="also write the tables to this file")
     labstats = sub.add_parser("labstats", help="what moved the lab's trades")
     labstats.add_argument("--since", default=None, help="first entry date (default: honest-fill cutover)")
     args = parser.parse_args()
@@ -642,6 +725,8 @@ def main() -> None:
         cmd_fetch(config)
     elif args.command == "intraday":
         cmd_intraday(config, args.report)
+    elif args.command == "shares":
+        cmd_shares(config, args.report)
     elif args.command == "labstats":
         cmd_labstats(config, args.since)
     elif args.command == "oos":
