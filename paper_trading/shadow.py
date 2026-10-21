@@ -46,6 +46,8 @@ def should_shadow_enter(
                                   trade 'always_call', 'always_put' or a
                                   'coin_flip': the null controls. Confidence
                                   is not checked - there is none.
+      only_on                   - (read by the worker) "fomc": enter only on a
+                                  scheduled Fed decision day
       strike                    - (read by the worker) "atm" (default) or
                                   "itm1": one listed strike deeper in the money
       positive_gamma_confidence_penalty

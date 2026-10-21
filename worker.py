@@ -698,6 +698,10 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             # the calibrated point estimate (every strategy predating the gate)
             entry_direction, entry_confidence = signal.direction, signal.confidence_pct
 
+        # entry.only_on: fomc - trade only on a scheduled Fed decision day
+        if entry_cfg.get("only_on") == "fomc" and not _is_fomc_day(config, today):
+            continue
+
         has_open = any(row["expiration"] >= today.isoformat()
                        for row in open_by_strategy.get(name, []))
         option_type = should_shadow_enter(
@@ -743,6 +747,12 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         )
         print(f"[{ticker}] SHADOW {name}: opened {sid} {option_type} "
               f"{contract['strike']:g} @ ${entry_price:.2f}")
+
+
+def _is_fomc_day(config: dict, day) -> bool:
+    tz_name = config["market_hours"].get("timezone", "America/New_York")
+    return any(c.get("label") == "FOMC" for c in day_setup_mod.catalysts_for_date(
+        config.get("market_catalysts", []), day, tz_name))
 
 
 # ticker -> (date, today's open), for the morning realized/implied ratio

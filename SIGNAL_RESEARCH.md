@@ -338,3 +338,57 @@ Event coverage: fomc 2016-01-27..2026-12-09, cpi 2016-01-20..2026-12-10, jobs 20
 | month_end | +1.0% (259) | -3.6% (259) | -6.0% (259) | -6.1% (259) |
 | quarter_end | -3.4% (86) | -5.5% (86) | -9.2% (86) | -8.1% (86) |
 | after_megacap_earnings | +0.8% (379) | -1.5% (379) | -4.0% (379) | -2.4% (379) |
+
+---
+
+# Share-price check — 2026-10-21
+
+Is the morning edge real direction, or something the option model manufactures? The four
+forward-tested morning signals (follow side) were scored on the **share itself**, exiting
+where the ATM option would have hit +50% / −35% (levels fixed at entry), else at 15:30, with a
+1 bp round-trip cost. Pre-registered in `analytics/share_lab.py` before the run; 4 tests, noise
+floor t = 1.67. Tool: `python research.py shares`.
+
+## Verdict
+
+**The direction is real, and it is tiny.** All four signals beat a coin flip on the share in
+every period (2016–18, 2019–21, 2022–24, 2025–now), with no option pricing involved:
+
+| Signal | Time | Excess per trade | t | Net since 2022 | Verdict |
+|---|---|---|---|---|---|
+| `orb15` | 10:30 | +1.77 bp | +3.52 | +1.32 bp | **PASS** |
+| `trail30` | 10:30 | +0.93 bp | +2.30 | +0.02 bp | **PASS** |
+| `orb15` | 10:00 | +1.44 bp | +2.27 | +0.95 bp | **PASS** |
+| `gap_behaviour` | 10:00 | +1.59 bp | +2.71 | −0.27 bp | INCONCLUSIVE (net slightly negative since 2022) |
+
+- The option results were not a model artefact: the same signals carry the same sign and
+  similar strength with the share alone.
+- The edge lives in the first stretch after entry. Holding the share to 15:30 instead is noisy
+  and mostly fails (descriptive table below), consistent with the intraday study's finding
+  that nothing passes from 11:30 on.
+- It is too small to trade as shares: about a basis point a trade after costs. In option
+  terms, one basis point of SPY is roughly 3% of an ATM 0DTE option's premium (delta 0.5,
+  $1.23 premium), the same order as the option round-trip cost (~2.5% of premium) — so
+  whether options capture it net is still the open question the real-quote replay answers.
+
+## Full tables
+
+Morning signals on the share (follow side; 1 bp round-trip cost; noise floor t = 1.67)
+
+Pre-registered: exit where the ATM option would hit +50% / -35% (static levels at entry), else 15:30.
+
+| Signal | Time | Days | Excess bps/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 (bps) | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| gap_behaviour | 10:00 | 1559 | +1.59 | +2.71 | +2.06 (431) | +2.57 (438) | +0.90 (438) | +0.28 (252) | -0.27 | **INCONCLUSIVE** |
+| orb15 | 10:00 | 1587 | +1.44 | +2.27 | +0.59 (438) | +1.89 (435) | +1.71 (428) | +1.63 (286) | +0.95 | **PASS** |
+| trail30 | 10:30 | 2689 | +0.93 | +2.30 | +1.10 (731) | +0.83 (756) | +0.89 (753) | +0.89 (449) | +0.02 | **PASS** |
+| orb15 | 10:30 | 2038 | +1.77 | +3.52 | +0.48 (548) | +2.30 (588) | +2.41 (561) | +1.89 (341) | +1.32 | **PASS** |
+
+Descriptive only: plain hold to 15:30.
+
+| Signal | Time | Days | Excess bps/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 (bps) | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| gap_behaviour | 10:00 | 1559 | +2.70 | +1.37 | +3.88 (431) | +1.09 (438) | +4.76 (438) | -0.07 (252) | +1.99 | **FAIL** |
+| orb15 | 10:00 | 1587 | +2.92 | +1.47 | +0.32 (438) | +2.46 (435) | +6.67 (428) | +1.98 (286) | +3.79 | **INCONCLUSIVE** |
+| trail30 | 10:30 | 2689 | -0.63 | -0.46 | -2.18 (731) | -1.81 (756) | +4.87 (753) | -5.33 (449) | +0.06 | **FAIL** |
+| orb15 | 10:30 | 2038 | +2.39 | +1.47 | -2.73 (548) | +1.43 (588) | +9.51 (561) | +0.53 (341) | +5.11 | **FAIL** |
