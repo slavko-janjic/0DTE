@@ -215,8 +215,7 @@ def alert_state(db_path: str, config: dict) -> dict:
                           "strike": row["strike"]}
               for row in storage.get_open_positions(db_path) if row["opened_by"] == "auto"}
     worker, age = worker_state(db_path, config)
-    family = {s["name"] for s in config.get("shadow_strategies", [])
-              if s.get("entry", {}).get("signal_source") in payloads.MORNING_SIGNALS}
+    family = set(payloads.morning_family(config.get("shadow_strategies", [])))
     morning = {row["id"]: {"ticker": row["ticker"], "option_type": row["option_type"],
                            "strike": row["strike"], "strategy": row["strategy"]}
                for row in storage.get_open_shadow_positions(db_path)

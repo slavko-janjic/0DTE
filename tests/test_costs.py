@@ -131,3 +131,30 @@ def test_lab_breakdown_reports_parts_and_splits(tmp_path):
     p = s["parts"][0]
     assert sum(p.values()) == pytest.approx(rows[0]["pnl_pct"], abs=1e-6)  # parts sum to net %
     assert p["fees"] == pytest.approx(-2.10 / 123.5 * 100)
+
+
+# --- the one-strike-ITM twins (pre-registered 2026-10-21) ------------------------
+
+def test_find_strike_contract_steps_into_the_money_per_side():
+    df = pd.DataFrame({"strike": [767.0, 768.0, 769.0, 770.0, 771.0], "ask": [1, 2, 3, 4, 5]})
+    assert market_data.find_strike_contract(df, 769.2, "call")["strike"] == 769.0       # ATM
+    assert market_data.find_strike_contract(df, 769.2, "call", 1)["strike"] == 768.0    # ITM call: lower
+    assert market_data.find_strike_contract(df, 769.2, "put", 1)["strike"] == 770.0     # ITM put: higher
+    assert market_data.find_strike_contract(df, 771.0, "put", 1) is None                # off the chain
+
+
+def test_itm_twins_stay_out_of_the_family_and_pair_up_in_labstats(tmp_path):
+    from webapi import payloads
+    strategies = [{"name": "morning_orb", "entry": {"signal_source": "orb15"}},
+                  {"name": "morning_orb_itm", "entry": {"signal_source": "orb15", "strike": "itm1"}},
+                  {"name": "null_coin", "entry": {"direction_rule": "coin_flip"}}]
+    assert payloads.morning_family(strategies) == ["morning_orb"]
+    db = str(tmp_path / "itm.db")
+    storage.init_db(db)
+    for name, entry, exit_ in (("morning_orb", 1.20, 1.50), ("morning_orb_itm", 1.80, 2.16)):
+        sid = storage.open_shadow_position(db, name, "QQQ", "call", 717.0, "2099-01-02", entry, {})
+        storage.close_shadow_position(db, sid, exit_, "trailing_stop")
+    from zoneinfo import ZoneInfo
+    paired = research.itm_vs_atm(storage.get_closed_shadow_positions(db), date(2020, 1, 1),
+                                 ZoneInfo("America/New_York"))
+    assert paired["pairs"] == 1 and paired["mean"] == pytest.approx(20.0 - 25.0)

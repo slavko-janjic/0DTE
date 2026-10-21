@@ -363,6 +363,39 @@ shadow_strategies:
     exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
             reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
             late_session_minutes: 90, late_session_stop_pct: -20 }
+  # --- PRE-REGISTERED 2026-10-21: one strike in the money vs at the money -----
+  # Each morning strategy gets a twin that buys one listed strike deeper in the
+  # money: same signal, same window, same exits. The deep-dive report (model,
+  # not evidence) put a 1-strike-ITM option at ~1.6c of spread per unit of
+  # delta vs ~2.0c ATM, with slower decay but less gamma. ONE confirmatory
+  # test: ITM minus ATM, paired on the same ticker, signal and day
+  # (research.py labstats, 'ITM vs ATM'). Compare on the underlying move too:
+  # the same +50%/-35% needs a bigger share move on the ITM option. The twins
+  # are not part of the morning family or the switch rule.
+  - name: morning_gap_itm
+    entry: { signal_source: gap_behaviour, strike: itm1, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb_itm
+    entry: { signal_source: orb15, strike: itm1, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 31, window_end_minutes: 40, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_trail_1030_itm
+    entry: { signal_source: trail30_1030, strike: itm1, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  - name: morning_orb_1030_itm
+    entry: { signal_source: orb15_1030, strike: itm1, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
   # --- PRE-REGISTERED single-signal hypotheses (declared 2026-07-17) ----------
   # An 18-cell sweep of signal x ticker over the first 11 days found NOTHING
   # significant: the best cell was SPY/technicals at 55.9% (z=+1.13), while pure
