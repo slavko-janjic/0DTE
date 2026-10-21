@@ -15,6 +15,7 @@ data and the same honest bid/ask fill model as the real paper account.
 import hashlib
 import math
 import statistics
+from datetime import datetime
 
 from paper_trading.models import Position
 from signals.composite import direction_from_score
@@ -252,3 +253,43 @@ def strategy_scorecard(closed_rows: list) -> dict[str, dict]:
             "max_drawdown": max_drawdown,
         }
     return cards
+
+
+# --- agents: lab strategies trading their own money -------------------------
+
+def agent_strategies(config: dict) -> list[dict]:
+    """The configured agents (config `agents`) as runnable shadow strategies.
+    Each takes the rules of the lab strategy it follows (entry and exit, with
+    the agent's own overrides on top) under its own name, plus an 'agent'
+    block the worker sizes and guards it with. An agent whose strategy isn't
+    configured is skipped - there is nothing to follow."""
+    by_name = {s.get("name"): s for s in config.get("shadow_strategies", [])}
+    out = []
+    for agent in config.get("agents") or []:
+        followed = by_name.get(agent.get("follows"))
+        if not agent.get("name") or followed is None:
+            continue
+        out.append({"name": agent["name"],
+                    "entry": {**followed.get("entry", {}), **agent.get("entry", {})},
+                    "exit": {**followed.get("exit", {}), **agent.get("exit", {})},
+                    "agent": agent})
+    return out
+
+
+def agent_book(rows: list, starting_balance: float, today, tz) -> dict:
+    """An agent's money, from its own positions (every row of its strategy):
+    cash = starting balance + realized P&L (net of fees) - premium tied up in
+    open positions. equity_at_open is what it had before today's closes
+    (0DTE: nothing is held overnight), the base of its daily loss limit."""
+    realized = realized_today = tied_up = 0.0
+    for row in rows:
+        if row["status"] == "open":
+            tied_up += row["entry_price"] * row["contracts"] * 100
+        elif row["pnl"] is not None:
+            realized += row["pnl"]
+            if (row["exit_time"] and
+                    datetime.fromisoformat(row["exit_time"]).astimezone(tz).date() == today):
+                realized_today += row["pnl"]
+    return {"cash": starting_balance + realized - tied_up, "realized": realized,
+            "realized_today": realized_today, "tied_up": tied_up,
+            "equity_at_open": starting_balance + realized - realized_today}

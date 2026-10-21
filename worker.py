@@ -32,7 +32,8 @@ from paper_trading.engine import (
 )
 from paper_trading.models import Position
 from paper_trading.shadow import (
-    null_direction, shadow_exit_score, shadow_position_from_row, should_shadow_enter,
+    agent_book, agent_strategies, null_direction, shadow_exit_score, shadow_position_from_row,
+    should_shadow_enter,
 )
 from signals import day_setup as day_setup_mod
 from signals import indicators
@@ -605,8 +606,9 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
     whose expiration has passed settle at intrinsic value (0.00 when OTM or
     when no final spot was recorded) - an unmanaged 0DTE isn't sold at a
     quote, and the shadow book stays honest about that."""
-    # retired strategies only see their open positions out - no new entries
-    strategies = list(config.get("shadow_strategies", [])) + [
+    # retired strategies only see their open positions out - no new entries;
+    # agents trade a lab strategy's rules with their own money
+    strategies = list(config.get("shadow_strategies", [])) + agent_strategies(config) + [
         dict(s, retired=True) for s in config.get("retired_shadow_strategies", [])]
     if not strategies:
         return
@@ -647,6 +649,9 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             reason = evaluate_exit(position, current_price,
                                    shadow_exit_score(entry_cfg, signal.composite_score),
                                    minutes_to_close, exit_cfg)
+            # agents keep the autopilot's rule: never hold into a catalyst
+            if not reason and strategy.get("agent") and _catalyst_imminent(config):
+                reason = "catalyst"
             if reason:
                 pnl = storage.close_shadow_position(
                     db_path, row["id"], current_price, reason, config.get("costs"),
@@ -725,6 +730,12 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         entry_price = market_data.contract_entry_price(contract)
         if entry_price is None:
             continue
+        contracts = 1
+        if strategy.get("agent"):
+            contracts, blocker = agent_entry(config, db_path, name, strategy["agent"], entry_price)
+            if not contracts:
+                print(f"[{ticker}] AGENT {name} would enter, but stands down: {blocker}")
+                continue
         entry_reason = {
             # what this strategy actually acted on (differs from the composite
             # when signal_source pins it to a single subscore)
@@ -743,10 +754,41 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         }
         sid = storage.open_shadow_position(
             db_path, name, ticker, option_type, float(contract["strike"]),
-            chain.expiration, entry_price, entry_reason,
+            chain.expiration, entry_price, entry_reason, contracts=contracts,
         )
-        print(f"[{ticker}] SHADOW {name}: opened {sid} {option_type} "
-              f"{contract['strike']:g} @ ${entry_price:.2f}")
+        print(f"[{ticker}] {'AGENT' if strategy.get('agent') else 'SHADOW'} {name}: opened {sid} "
+              f"{contracts}x {option_type} {contract['strike']:g} @ ${entry_price:.2f}")
+
+
+def agent_entry(config: dict, db_path: str, name: str, agent: dict, entry_price: float,
+                now: datetime | None = None) -> tuple[int, str | None]:
+    """(contracts, None) an agent buys at entry_price, or (0, why not): the
+    real autopilot's guard rails and sizing, on the agent's own money -
+    calendar, catalyst stand-down, daily loss limit, risk per trade."""
+    tz_name = config["market_hours"].get("timezone", "America/New_York")
+    tz = ZoneInfo(tz_name)
+    now = now if now is not None else datetime.now(tz)
+    blocker = day_setup_mod.calendar_blocker(config, now.date())
+    if blocker:
+        return 0, blocker
+    ap_cfg = config.get("autopilot", {})
+    window = ap_cfg.get("no_entry_before_catalyst_minutes", 0)
+    if window:
+        minutes = day_setup_mod.minutes_to_next_catalyst(day_setup_mod.catalysts_for_date(
+            config.get("market_catalysts", []), now.date(), tz_name), now, tz_name)
+        if minutes is not None and 0 <= minutes <= window:
+            return 0, f"a high-impact catalyst is {minutes:.0f} min away"
+    start = agent.get("starting_balance", config.get("account", {}).get("starting_balance", 10000))
+    book = agent_book(storage.get_strategy_shadow_positions(db_path, name), start, now.date(), tz)
+    limit = agent.get("daily_loss_limit_pct", ap_cfg.get("daily_loss_limit_pct", 10))
+    if limit and book["realized_today"] <= -limit / 100.0 * book["equity_at_open"]:
+        return 0, f"daily loss limit ({limit:.0f}% of opening equity) hit"
+    risk = agent.get("risk_per_trade_pct", ap_cfg.get("risk_per_trade_pct", 5))
+    contracts = calculate_contracts(book["cash"], risk, entry_price)
+    if not contracts:
+        return 0, (f"${book['cash']:,.0f} cash can't buy one contract at ${entry_price:.2f} "
+                   f"within {risk:.0f}% risk")
+    return contracts, None
 
 
 def _is_fomc_day(config: dict, day) -> bool:

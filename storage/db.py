@@ -740,6 +740,15 @@ def get_closed_shadow_positions(db_path: str | Path, limit: int = 2000) -> list[
         ).fetchall()
 
 
+def get_strategy_shadow_positions(db_path: str | Path, strategy: str) -> list[sqlite3.Row]:
+    """Every position (open and closed) one strategy has taken - an agent's book."""
+    with connect(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM shadow_positions WHERE strategy = ? ORDER BY entry_time",
+            (strategy,),
+        ).fetchall()
+
+
 def update_shadow_price(db_path: str | Path, position_id: int, current_price: float) -> None:
     """Latest premium + high-water mark bump, mirroring update_position_price."""
     with connect(db_path) as conn:

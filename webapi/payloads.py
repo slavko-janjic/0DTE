@@ -20,7 +20,7 @@ from paper_trading.engine import (
     calculate_pnl, daily_realized_pnl, explain_auto_decision, month_calendar_cells,
     session_start_equity, summarize_pnl, trade_events,
 )
-from paper_trading.shadow import strategy_edge, strategy_scorecard
+from paper_trading.shadow import agent_book, strategy_edge, strategy_scorecard
 from signals import day_setup as day_setup_mod
 from storage import db as storage
 from worker import (
@@ -985,6 +985,56 @@ def promotion_status(db_path: str, config: dict) -> dict | None:
     }
 
 
+def agents_payload(db_path: str, config: dict) -> dict:
+    """Each agent's own book (config `agents`) - balance, P&L, record, what it
+    holds - plus the real autopilot's auto trades over the same stretch (from
+    the first agent trade), so they can be read side by side."""
+    tz = _tz(config)
+    today = datetime.now(tz).date()
+    default_start = config.get("account", {}).get("starting_balance", 10000)
+    agents, firsts = [], []
+    for agent in config.get("agents") or []:
+        name = agent.get("name")
+        if not name:
+            continue
+        rows = storage.get_strategy_shadow_positions(db_path, name)
+        start = agent.get("starting_balance", default_start)
+        book = agent_book(rows, start, today, tz)
+        held = [row for row in rows if row["status"] == "open"]
+        pnls = [row["pnl"] for row in rows if row["status"] == "closed" and row["pnl"] is not None]
+        equity = book["cash"] + sum((row["current_price"] or row["entry_price"]) * row["contracts"] * 100
+                                    for row in held)
+        if rows:
+            firsts.append(datetime.fromisoformat(rows[0]["entry_time"]).astimezone(tz).date())
+        agents.append({
+            "name": name,
+            "label": agent.get("label", name),
+            "follows": agent.get("follows"),
+            "about": agent.get("about"),
+            "starting_balance": start,
+            "equity": _num(equity),
+            "cash": _num(book["cash"]),
+            "realized": _num(book["realized"]),
+            "return_pct": _num((equity / start - 1) * 100) if start else None,
+            "today": _num(book["realized_today"]),
+            "trades": len(pnls),
+            "win_rate_pct": _num(sum(1 for p in pnls if p > 0) / len(pnls) * 100) if pnls else None,
+            "avg_pnl": _num(sum(pnls) / len(pnls)) if pnls else None,
+            "open": [{"ticker": row["ticker"], "option_type": row["option_type"],
+                      "strike": row["strike"], "contracts": row["contracts"]} for row in held],
+            "since": _iso(datetime.fromisoformat(rows[0]["entry_time"]).astimezone(tz).date())
+                     if rows else None,
+        })
+    since = min(firsts) if firsts else None
+    auto = [row["pnl"] or 0.0 for row in storage.get_closed_positions(db_path)
+            if row["opened_by"] == "auto" and since is not None
+            and datetime.fromisoformat(row["entry_time"]).astimezone(tz).date() >= since]
+    return {"agents": agents, "since": _iso(since),
+            "autopilot": {"trades": len(auto), "total_pnl": _num(sum(auto)) if auto else None,
+                          "win_rate_pct": _num(sum(1 for p in auto if p > 0) / len(auto) * 100)
+                          if auto else None}}
+
+
 def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> dict:
     """Mode, per-ticker intent (the bot's own dry-run decision), record, config.
 
@@ -1040,6 +1090,7 @@ def autopilot_payload(db_path: str, config: dict, ticker: str | None = None) -> 
         },
         "intents": intents,
         "promotion": promotion_status(db_path, config),
+        "agents": agents_payload(db_path, config),
         "traded_tickers": list(tickers),     # the autopilot's whitelist
         "record_ticker": ticker,
         "record": record,
