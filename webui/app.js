@@ -870,9 +870,51 @@
         'a replay on real historical quotes is the test that can confirm one.</div>';
   }
 
+  /* Agents: lab strategies trading their own money, beside the autopilot's
+     own auto trades over the same stretch. */
+  function renderAgents(p) {
+    var box = $('ap-agents');
+    if (!p || !(p.agents || []).length) {
+      box.innerHTML = '<div class="empty">No agents configured (settings.yaml → agents).</div>';
+      return;
+    }
+    function cell(value, fmt, toned) {
+      return '<td class="num' + (toned && A.isNum(value) ? ' ' + A.tone(value) : '') + '">' +
+        (A.isNum(value) ? fmt(value) : '—') + '</td>';
+    }
+    var rows = p.agents.map(function (agent) {
+      var sub = [agent.follows];
+      agent.open.forEach(function (o) {
+        sub.push('holds ' + o.contracts + '× ' + o.ticker + ' ' + o.strike + ' ' + o.option_type);
+      });
+      return '<tr><td class="tkcell">' + A.escapeHtml(agent.label) +
+          '<div class="sub">' + A.escapeHtml(sub.join(' · ')) + '</div>' +
+          (agent.about ? '<div class="sub">' + A.escapeHtml(agent.about) + '</div>' : '') + '</td>' +
+        cell(agent.equity, function (v) { return A.money(v); }) +
+        cell(agent.realized, A.signedMoney, true) +
+        cell(agent.return_pct, function (v) { return A.signedPct(v, 1); }, true) +
+        '<td class="num">' + agent.trades + '</td>' +
+        cell(agent.win_rate_pct, A.pct) +
+        cell(agent.avg_pnl, A.signedMoney, true) +
+        cell(agent.today, A.signedMoney, true) + '</tr>';
+    });
+    var ap = p.autopilot || {};
+    rows.push('<tr class="retired"><td class="tkcell">Autopilot (composite gate)' +
+        '<div class="sub">your account · auto trades' + (p.since ? ' since ' + A.escapeHtml(p.since) : '') + '</div></td>' +
+      '<td class="num">—</td>' + cell(ap.total_pnl, A.signedMoney, true) + '<td class="num">—</td>' +
+      '<td class="num">' + (ap.trades || 0) + '</td>' + cell(ap.win_rate_pct, A.pct) +
+      '<td class="num">—</td><td class="num">—</td></tr>');
+    box.innerHTML = '<table><thead><tr><th>Agent</th><th class="num">Balance</th><th class="num">P&amp;L</th>' +
+      '<th class="num">Return</th><th class="num">Trades</th><th class="num">Win</th>' +
+      '<th class="num">Avg/trade</th><th class="num">Today</th></tr></thead><tbody>' +
+      rows.join('') + '</tbody></table>';
+  }
+
   function loadAutopilot() {
     return A.get('/api/autopilot' + scopeQuery())
-      .then(function (payload) { renderAutopilot(payload); renderPromotion(payload.promotion); })
+      .then(function (payload) {
+        renderAutopilot(payload); renderPromotion(payload.promotion); renderAgents(payload.agents);
+      })
       .catch(function (error) { fail($('ap-intents'), error); });
   }
 

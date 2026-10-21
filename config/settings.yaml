@@ -254,6 +254,33 @@ autopilot_promotion:
   min_t: 2.0                      # the family's edge over the coin flip, per day
   candidate_net_positive: true    # and the candidate's own average P&L per trade > 0 (beats costs)
 
+# Agents (added 2026-10-21): lab strategies trading their OWN paper money,
+# beside the real autopilot and without touching its account. Each follows one
+# shadow strategy's entry and exit rules (`entry`/`exit` here override them),
+# buys risk_per_trade_pct of its own cash per trade (like the autopilot), and
+# keeps the autopilot's guard rails: calendar check, no entry just before a
+# high-impact catalyst, force-close just before one, daily loss limit. Its
+# book is its own rows in the lab table; balance = starting_balance + realized
+# P&L. Shown on the Autopilot page. The coin-flip agent is the control: same
+# entry time, exits and sizing as the morning agent, no direction call - the
+# morning agent has to beat it before its P&L means anything.
+agents:
+  - name: agent_morning
+    label: Morning 10:30
+    follows: morning_trail_1030
+    about: "Follows the 10:00-10:30 move at 10:30 - the switch rule's candidate."
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
+  - name: agent_coin
+    label: Coin flip (control)
+    follows: null_coin
+    about: "Same time, exits and sizing as the morning agent; direction by coin flip."
+    entry: { window_start_minutes: 61, window_end_minutes: 70 }
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
+
 # The day lab fills became honest. Until then every option price came from
 # Yahoo quotes 15 minutes behind the share price (PR #27, SIGNAL_RESEARCH.md),
 # which flattered follow-the-signal strategies by ~$32 a trade. The lab

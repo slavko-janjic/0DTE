@@ -7,7 +7,7 @@
 <title>0DTE Console</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233a5bd9'/><text x='16' y='22' font-size='16' font-family='monospace' font-weight='600' fill='white' text-anchor='middle'>0&#916;</text></svg>">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="styles.css?v=10">
+<link rel="stylesheet" href="styles.css?v=11">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="theme-color" content="#3a5bd9">
@@ -234,6 +234,11 @@
           <div id="ap-promotion" style="margin-top:12px"><div class="loading">Loading</div></div>
         </div>
       </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="hd"><div><h3><span class="eyebrow">Agents</span> · own rules, own money</h3><div class="sub">Each agent trades one lab strategy with its own paper money, sized and guarded like the autopilot. Your balance is untouched.</div></div></div>
+        <div style="overflow-x:auto" id="ap-agents"><div class="loading">Loading</div></div>
+      </div>
     </section>
 
     <!-- TUNING -->
@@ -290,7 +295,7 @@
 
 <!-- bump ?v= with any change: phones cache these hard, and a stale app.js
      against new markup breaks the page -->
-<script src="api.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="api.js?v=11"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
