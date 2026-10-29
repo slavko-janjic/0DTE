@@ -19,6 +19,12 @@ passes: `trail30` (the 10:00-10:30 move, follow) and `orb15` at 10:30 (follow),
 published here as trail30_1030 / orb15_1030. The 10:15 bar's close is the
 10:29 price they need.
 
+confirmed_1030 (2026-10-29, "confirmed morning"): trail30_1030's score when
+it and orb15_1030 are both non-zero and agree, else 0 - trade only when the
+two 10:30 passes point the same way. Pre-registered and run on 2016-2026
+against the strictest floor so far (t 2.86): PASS, +3.1% a trade over the coin
+flip, t 3.29 (SIGNAL_RESEARCH.md). Forward-tested by morning_confirmed_1030.
+
 Pure functions; the worker does the fetching.
 """
 from dataclasses import dataclass
@@ -26,9 +32,9 @@ from datetime import date
 
 from analytics import session_lab
 
-SIGNALS = ("gap_behaviour", "orb15", "trail30_1030", "orb15_1030")
+SIGNALS = ("gap_behaviour", "orb15", "trail30_1030", "orb15_1030", "confirmed_1030")
 SIGNALS_1000 = ("gap_behaviour", "orb15")
-SIGNALS_1030 = ("trail30_1030", "orb15_1030")
+SIGNALS_1030 = ("trail30_1030", "orb15_1030")       # confirmed_1030 derives from these
 _FULL_DAY_BARS = 20             # of 26 fifteen-minute bars; a half-day has 14
 
 
@@ -104,6 +110,7 @@ def morning_scores(sessions: list[MorningSession], today: date) -> dict | None:
         "orb15": session_lab.orb15_score(current.price, current.high15, current.low15),
         "trail30_1030": None,
         "orb15_1030": None,
+        "confirmed_1030": None,
     }
     if current.price_1030 is not None:
         med_trail = session_lab.median_abs(trail_hist)
@@ -112,4 +119,13 @@ def morning_scores(sessions: list[MorningSession], today: date) -> dict | None:
                                   if med_trail else None)
         scores["orb15_1030"] = session_lab.orb15_score(current.price_1030, current.high15,
                                                        current.low15)
+        scores["confirmed_1030"] = confirmed_score(scores["trail30_1030"], scores["orb15_1030"])
     return scores
+
+
+def confirmed_score(trail: float | None, orb: float | None) -> float | None:
+    """trail30's score when it and orb15 (both at 10:30) are non-zero and
+    agree; 0 (stand aside) when they don't; None when either is unknown."""
+    if trail is None or orb is None:
+        return None
+    return trail if trail and orb and (trail > 0) == (orb > 0) else 0.0

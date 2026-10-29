@@ -284,6 +284,7 @@ MORNING_LABELS = (
     ("orb15", "10:00", "Opening-range breakout"),
     ("trail30_1030", "10:30", "Follow the 10:00-10:30 move"),
     ("orb15_1030", "10:30", "Opening-range breakout"),
+    ("confirmed_1030", "10:30", "Both agree (confirmed morning)"),
 )
 
 
@@ -1009,7 +1010,8 @@ def agents_payload(db_path: str, config: dict) -> dict:
         agents.append({
             "name": name,
             "label": agent.get("label", name),
-            "follows": agent.get("follows"),
+            "follows": " + ".join(agent["follows"]) if isinstance(agent.get("follows"), list)
+                       else agent.get("follows"),
             "about": agent.get("about"),
             "starting_balance": start,
             "equity": _num(equity),

@@ -119,3 +119,18 @@ def test_half_days_are_a_previous_close_but_not_a_normal_size():
         assert (live[name] is None) == (research[name] is None)
         if research[name] is not None:
             assert live[name] == pytest.approx(research[name])
+
+
+def test_confirmed_trades_only_when_both_ten_thirty_signals_agree():
+    assert morning.confirmed_score(0.6, 0.3) == 0.6
+    assert morning.confirmed_score(-0.6, -0.1) == -0.6
+    assert morning.confirmed_score(0.6, -0.3) == 0.0          # they disagree
+    assert morning.confirmed_score(0.6, 0.0) == 0.0           # still inside the range
+    assert morning.confirmed_score(None, 0.3) is None
+
+
+def test_confirmed_stays_out_of_the_morning_family():
+    from webapi import payloads
+    strategies = [{"name": "a", "entry": {"signal_source": "trail30_1030"}},
+                  {"name": "b", "entry": {"signal_source": "confirmed_1030"}}]
+    assert payloads.morning_family(strategies) == ["a"]

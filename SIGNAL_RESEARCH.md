@@ -392,3 +392,96 @@ Descriptive only: plain hold to 15:30.
 | orb15 | 10:00 | 1587 | +2.92 | +1.47 | +0.32 (438) | +2.46 (435) | +6.67 (428) | +1.98 (286) | +3.79 | **INCONCLUSIVE** |
 | trail30 | 10:30 | 2689 | -0.63 | -0.46 | -2.18 (731) | -1.81 (756) | +4.87 (753) | -5.33 (449) | +0.06 | **FAIL** |
 | orb15 | 10:30 | 2038 | +2.39 | +1.47 | -2.73 (548) | +1.43 (588) | +9.51 (561) | +0.53 (341) | +5.11 | **FAIL** |
+
+---
+
+# Confirmed morning - 2026-10-29
+
+Claude's tactic, built from what held up: the morning continuation is the only
+direction edge, 10:30 is its steadiest time, and the edge is about the size of
+costs, so the aim is fewer, better trades. Rule: at 10:30 trade only when
+trail30 and orb15 (the two 10:30 passes) are both non-zero and agree; follow
+them. ATM option, the autopilot's exits, costs - the intraday study's label.
+
+Pre-registered before the run (scratch script, rule and bar written first):
+this is about the 60th test on the same 2016-2026 data, so the bar was the
+strictest yet - pooled t >= sqrt(2 ln 60) = 2.86, positive in all four
+periods, net positive since 2022 - AND more excess per trade than trail30
+alone, or the filter adds nothing.
+
+**Verdict: PASS.** +3.1% of premium a trade over the coin flip (t 3.29), on
+1,790 days; positive in every period; net +3.2% since 2022. Per trade it beats
+trail30 alone (+2.1%) and, narrowly, orb15 alone (+2.8%) - the confirmation
+mostly keeps orb15's days and drops the ones where the trend disagrees.
+
+Caveats, plainly: it combines two signals that already passed on this data, so
+the in-sample result flatters it however strict the floor; it is still the
+same "morning move continues" bet; and the simulator's absolute level is
+untrustworthy (excess over the coin flip is the measure). It goes into the lab
+as `morning_confirmed_1030` and trades its own $10,000 as `agent_claude` - kept
+OUT of the morning family and the switch rule - and earns its place forward.
+
+Confirmed morning (pre-registered 2026-10-29), floor t = 2.86
+
+| Signal | Side | Days | Excess/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 | Win % | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| confirmed | follow | 1790 | +3.1% | +3.29 | +1.3 (465) | +2.8 (520) | +4.8 (512) | +3.7 (293) | +3.2% | 46 | **PASS** |
+| trail30 | follow | 2689 | +2.1% | +2.95 | +2.5 (731) | +1.6 (756) | +2.3 (753) | +2.0 (449) | +0.8% | 44 | **PASS** |
+| orb15 | follow | 2038 | +2.8% | +3.09 | +0.7 (548) | +2.2 (588) | +4.9 (561) | +3.6 (341) | +3.1% | 46 | **PASS** |
+
+---
+
+# Premarket - 2026-10-29
+
+SPY/QQQ options only trade 09:30-16:00, so the premarket (04:00-09:30) is
+information, not a trading window. Ten years of premarket minute bars
+(Alpaca, `python research.py fetch --premarket`) against three tests
+pre-registered in `analytics/premarket_lab.py` and committed before the run.
+Tool: `python research.py premarket`.
+
+## Verdict
+
+**Direction: nothing.** Neither the late-premarket drift (08:00-09:29) nor the
+premarket high/low break says which way the option will pay at 10:00 (t -0.62
+and +0.97, both FAIL). The drift agrees with the gap's direction 63% of the
+time - most of what it knows, the gap already carries.
+
+**Volatility: a strong yes.** After a WIDE premarket (range at least 1.5x its
+own 20-day normal) the share moves 1.34x what the option's volatility implies
+between 10:00 and 15:30; after a QUIET one (2/3 of normal or less), 0.96x.
+t +7.58, the strongest result in this whole study, and the gap holds in every
+period (2016-18 1.31 vs 0.96, 2019-21 1.22 vs 0.81, 2022-24 1.50 vs 1.15,
+2025-now 1.32 vs 0.96). Wide days have moved more than implied since 2022
+(1.43x). PASS.
+
+What that means and doesn't:
+- The "implied move" here is the simulator's (k x VIX at the open, k fixed per
+  ticker). Real 0DTE option prices may already rise on wide-premarket days -
+  only real quotes can say how much of the 1.34x a buyer actually gets.
+- It forecasts SIZE, not direction: a quiet premarket marks the days a bought
+  option is most likely to bleed. The simulated 10:00 straddle (with the
+  autopilot's exits, net of costs) loses -6.4% of premium on quiet days, -1.1%
+  on wide days, -4.1% on all days.
+- Natural next uses, each to be pre-registered and tested before it trades:
+  skip buying on quiet-premarket days (every buying agent); a straddle only on
+  wide days; and, once real quotes exist, premium selling on quiet days.
+
+Premarket tests (pre-registered 2026-10-29; noise floor t = 1.48)
+
+Direction at 10:00 (option label, follow side, net of costs):
+
+| Signal | Side | Days | Excess/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 | Win % | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pre_drift | follow | 2692 | -0.5% | -0.62 | +0.2 (734) | -1.0 (756) | -0.3 (753) | -0.8 (449) | +0.2% | 43 | **FAIL** |
+| pre_levels | follow | 1454 | +1.1% | +0.97 | -0.3 (472) | +3.0 (390) | +0.2 (372) | +1.9 (220) | +0.7% | 45 | **FAIL** |
+
+Volatility: |move 10:00-15:30| / implied move, WIDE premarket (ratio >= 1.5) vs QUIET (<= 1/1.5), one value per day:
+
+| Test | Days wide / quiet | Wide | Quiet | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Wide since 2022 | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pre_range | 766 / 806 | 1.34 | 0.96 | +7.58 | 1.31 / 0.96 | 1.22 / 0.81 | 1.50 / 1.15 | 1.32 / 0.96 | 1.43 | **PASS** |
+
+Descriptive only:
+
+- 10:00 straddle (simulated, call + put, net of costs, % of premium per leg): wide -1.1% (766 days), quiet -6.4% (806 days), all -4.1% (2691 days)
+- pre_drift agrees with gap_direction on 63% of 5294 days, gap_behaviour on 51% of 2632 days

@@ -732,7 +732,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             continue
         contracts = 1
         if strategy.get("agent"):
-            contracts, blocker = agent_entry(config, db_path, name, strategy["agent"], entry_price)
+            contracts, blocker = agent_entry(config, db_path, strategy["agent"], entry_price)
             if not contracts:
                 print(f"[{ticker}] AGENT {name} would enter, but stands down: {blocker}")
                 continue
@@ -760,7 +760,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
               f"{contracts}x {option_type} {contract['strike']:g} @ ${entry_price:.2f}")
 
 
-def agent_entry(config: dict, db_path: str, name: str, agent: dict, entry_price: float,
+def agent_entry(config: dict, db_path: str, agent: dict, entry_price: float,
                 now: datetime | None = None) -> tuple[int, str | None]:
     """(contracts, None) an agent buys at entry_price, or (0, why not): the
     real autopilot's guard rails and sizing, on the agent's own money -
@@ -779,7 +779,8 @@ def agent_entry(config: dict, db_path: str, name: str, agent: dict, entry_price:
         if minutes is not None and 0 <= minutes <= window:
             return 0, f"a high-impact catalyst is {minutes:.0f} min away"
     start = agent.get("starting_balance", config.get("account", {}).get("starting_balance", 10000))
-    book = agent_book(storage.get_strategy_shadow_positions(db_path, name), start, now.date(), tz)
+    book = agent_book(storage.get_strategy_shadow_positions(db_path, agent["name"]),
+                      start, now.date(), tz)
     limit = agent.get("daily_loss_limit_pct", ap_cfg.get("daily_loss_limit_pct", 10))
     if limit and book["realized_today"] <= -limit / 100.0 * book["equity_at_open"]:
         return 0, f"daily loss limit ({limit:.0f}% of opening equity) hit"

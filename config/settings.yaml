@@ -280,6 +280,29 @@ agents:
     starting_balance: 10000
     risk_per_trade_pct: 5
     daily_loss_limit_pct: 10
+  # added 2026-10-29: two more ideas that differ from the morning bet
+  - name: agent_bull
+    label: Always call
+    follows: null_call
+    about: "Buys a call every morning at 10:30: does the market's upward drift pay for a day of time decay?"
+    entry: { window_start_minutes: 61, window_end_minutes: 70 }
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
+  - name: agent_claude
+    label: Confirmed morning (Claude's pick)
+    follows: morning_confirmed_1030
+    about: "At 10:30, only when the 10:00-10:30 trend and the opening-range break agree; stands aside otherwise."
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
+  - name: agent_fed                # a call and a put, each leg sized at 5% of its cash
+    label: Fed-day straddle
+    follows: [fomc_ramp_call, fomc_ramp_put]
+    about: "Fed days only: a call and a put at 10:00, both sold at 13:55, before the statement."
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
 
 # The day lab fills became honest. Until then every option price came from
 # Yahoo quotes 15 minutes behind the share price (PR #27, SIGNAL_RESEARCH.md),
@@ -380,6 +403,16 @@ shadow_strategies:
   # together: read them as one confirmation, not four.
   - name: morning_trail_1030
     entry: { signal_source: trail30_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
+             window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
+    exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
+            reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
+            late_session_minutes: 90, late_session_stop_pct: -20 }
+  # PRE-REGISTERED 2026-10-29 ("confirmed morning", Claude's tactic): trade at
+  # 10:30 only when trail30 and orb15 agree. Passed 2016-2026 at the strictest
+  # floor yet (t 3.29 vs 2.86). A new hypothesis built from two existing passes -
+  # NOT part of the morning family or the switch rule; it earns its place forward.
+  - name: morning_confirmed_1030
+    entry: { signal_source: confirmed_1030, only_tickers: [QQQ, SPY], min_confidence_pct: 0,
              window_start_minutes: 61, window_end_minutes: 70, no_entry_last_minutes: 60 }
     exit: { profit_target_pct: 50, stop_loss_pct: -35, time_cutoff_minutes_before_close: 30,
             reversal_confidence_pct: 101, trailing_activate_pct: 40, trailing_stop_pct: 20,
