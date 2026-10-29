@@ -8,6 +8,8 @@
     python research.py oos [--since DATE] [--no-fetch] [--push]   # the passed signals on new data only
     python research.py labstats [--since DATE]   # what moved the lab's trades: share, time, vol, costs
     python research.py shares [--report PATH]    # the morning signals on the share itself, no option
+    python research.py fetch --premarket         # download / update the 04:00-09:30 bars
+    python research.py premarket [--report PATH] # does the premarket say anything the open doesn't?
 
 Spec: docs/superpowers/specs/2026-10-19-signal-research-lab-design.md.
 Reads the live database read-only. `fetch` and `calibrate` write only to the
@@ -22,7 +24,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from analytics import intraday_lab, option_sim, session_lab, share_lab
+from analytics import intraday_lab, option_sim, premarket_lab, session_lab, share_lab
 from paper_trading.costs import round_trip_fees
 from config import database_path, load_settings
 from data import history
@@ -230,9 +232,16 @@ def cmd_validate(config: dict) -> bool:
     return verdict
 
 
-def cmd_fetch(config: dict) -> None:
+def cmd_fetch(config: dict, premarket: bool = False) -> None:
     db, cache = _paths(config)
     keys = history.load_keys(Path(db).parent)
+    if premarket:
+        target = history.premarket_dir(cache)
+        print(f"Fetching premarket 1-minute bars into {target}")
+        for ticker in TICKERS:
+            history.update_cache(target, ticker, keys, date.today() - timedelta(days=1),
+                                 keep=history.premarket_hours)
+        return
     print(f"Fetching 1-minute bars into {cache}")
     for ticker in TICKERS:
         history.update_cache(cache, ticker, keys, date.today() - timedelta(days=1))
@@ -697,12 +706,75 @@ def cmd_shares(config: dict, report: str | None) -> None:
         print(f"\nWrote {report}")
 
 
+def cmd_premarket(config: dict, report: str | None) -> None:
+    """The pre-registered premarket tests (analytics/premarket_lab.py,
+    2026-10-29): two direction signals on the 10:00 option label, and whether
+    a wide premarket means a day that moves more than the option price expects."""
+    _, cache = _paths(config)
+    pre_dir = history.premarket_dir(cache)
+    labels, signals, _ = _labels_and_signals(config, cache)
+    calibration = _load_calibration(cache)
+    vix = history.load_vix(cache)
+    pre_signals, ratios, outcomes = {}, {}, {}
+    for ticker in TICKERS:
+        pre_rows = history.load_bars(pre_dir, ticker)
+        if not pre_rows:
+            raise SystemExit(f"No {ticker} premarket bars - run: python research.py fetch --premarket")
+        sessions = session_lab.sessions_from_bars(history.load_bars(cache, ticker))
+        pre = premarket_lab.premarket_from_bars(pre_rows)
+        for day, scores in premarket_lab.ticker_signals(sessions, pre).items():
+            key = (ticker, day)
+            pre_signals[key] = {**signals.get(key, {}), **scores}
+            if "range_ratio" in scores:
+                ratios[key] = scores["range_ratio"]
+        k = calibration["k"][ticker]
+        for session in sessions:
+            if session.complete() and session.day in vix:
+                outcome = premarket_lab.move_vs_implied(session, k * vix[session.day][0] / 100.0)
+                if outcome is not None:
+                    outcomes[(ticker, session.day)] = outcome
+    floor = session_lab.noise_floor(premarket_lab.TESTS)
+    results = [session_lab.evaluate_test(pre_signals, labels, name, 1, floor)
+               for name in ("pre_drift", "pre_levels")]
+    rng = premarket_lab.evaluate_range(ratios, outcomes, floor)
+    straddle = premarket_lab.straddle_by_class(ratios, labels)
+    agree = {other: premarket_lab.agreement(pre_signals, "pre_drift", other)
+             for other in ("gap_direction", "gap_behaviour")}
+
+    periods = [p for p, _, _ in session_lab.PERIODS]
+    lines = [f"Premarket tests (pre-registered 2026-10-29; noise floor t = {floor:.2f})", "",
+             "Direction at 10:00 (option label, follow side, net of costs):", ""] + _table(results) + [
+             "", f"Volatility: |move 10:00-15:30| / implied move, WIDE premarket (ratio >= "
+             f"{premarket_lab.WIDE}) vs QUIET (<= 1/{premarket_lab.WIDE}), one value per day:", "",
+             "| Test | Days wide / quiet | Wide | Quiet | t | " + " | ".join(periods) +
+             " | Wide since 2022 | Verdict |",
+             "|---|---|---|---|---|" + "---|" * len(periods) + "---|---|",
+             f"| pre_range | {rng['days'][0]} / {rng['days'][1]} | {_fmt(rng['wide_mean'], '.2f')} | "
+             f"{_fmt(rng['quiet_mean'], '.2f')} | {rng['t']:+.2f} | " +
+             " | ".join(f"{_fmt(rng['periods'][p]['wide'], '.2f')} / {_fmt(rng['periods'][p]['quiet'], '.2f')}"
+                        for p in periods) +
+             f" | {_fmt(rng['wide_since_2022'], '.2f')} | **{rng['verdict']}** |", "",
+             "Descriptive only:", "",
+             "- 10:00 straddle (simulated, call + put, net of costs, % of premium per leg): " +
+             ", ".join(f"{cls} {_pct(v['mean'])} ({v['days']} days)" for cls, v in straddle.items()),
+             "- pre_drift agrees with " + ", ".join(
+                 f"{other} on {_fmt(v['agree_pct'], '.0f')}% of {v['days']} days"
+                 for other, v in agree.items())]
+    text = "\n".join(lines)
+    print(text)
+    if report:
+        Path(report).write_text(text + "\n", encoding="utf-8")
+        print(f"\nWrote {report}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("calibrate")
     sub.add_parser("validate-label")
-    sub.add_parser("fetch")
+    fetch = sub.add_parser("fetch")
+    fetch.add_argument("--premarket", action="store_true",
+                       help="the 04:00-09:30 bars, into history/premarket/")
     run = sub.add_parser("run")
     run.add_argument("--report", default=None, help="also write the tables to this file")
     intraday = sub.add_parser("intraday", help="later decision times + weekday/event slices")
@@ -711,6 +783,8 @@ def main() -> None:
     oos.add_argument("--since", default=OOS_SINCE, help="first session to score (YYYY-MM-DD)")
     oos.add_argument("--no-fetch", action="store_true", help="use the cached bars as they are")
     oos.add_argument("--push", action="store_true", help="also push the summary to subscribed devices")
+    pre = sub.add_parser("premarket", help="the pre-registered premarket tests")
+    pre.add_argument("--report", default=None, help="also write the tables to this file")
     shares = sub.add_parser("shares", help="the morning signals on the share itself")
     shares.add_argument("--report", default=None, help="also write the tables to this file")
     labstats = sub.add_parser("labstats", help="what moved the lab's trades")
@@ -722,9 +796,11 @@ def main() -> None:
     elif args.command == "validate-label":
         cmd_validate(config)
     elif args.command == "fetch":
-        cmd_fetch(config)
+        cmd_fetch(config, args.premarket)
     elif args.command == "intraday":
         cmd_intraday(config, args.report)
+    elif args.command == "premarket":
+        cmd_premarket(config, args.report)
     elif args.command == "shares":
         cmd_shares(config, args.report)
     elif args.command == "labstats":

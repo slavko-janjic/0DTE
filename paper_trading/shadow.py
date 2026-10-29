@@ -261,18 +261,23 @@ def agent_strategies(config: dict) -> list[dict]:
     """The configured agents (config `agents`) as runnable shadow strategies.
     Each takes the rules of the lab strategy it follows (entry and exit, with
     the agent's own overrides on top) under its own name, plus an 'agent'
-    block the worker sizes and guards it with. An agent whose strategy isn't
-    configured is skipped - there is nothing to follow."""
+    block the worker sizes and guards it with. An agent may follow several
+    strategies at once - the legs of a straddle - each run as '<agent>.<leg>'
+    on the one book. An agent with a strategy that isn't configured is
+    skipped - there is nothing to follow."""
     by_name = {s.get("name"): s for s in config.get("shadow_strategies", [])}
     out = []
     for agent in config.get("agents") or []:
-        followed = by_name.get(agent.get("follows"))
-        if not agent.get("name") or followed is None:
+        follows = agent.get("follows")
+        legs = [by_name.get(n) for n in (follows if isinstance(follows, list) else [follows])]
+        if not agent.get("name") or not legs or None in legs:
             continue
-        out.append({"name": agent["name"],
-                    "entry": {**followed.get("entry", {}), **agent.get("entry", {})},
-                    "exit": {**followed.get("exit", {}), **agent.get("exit", {})},
-                    "agent": agent})
+        for followed in legs:
+            out.append({"name": agent["name"] if len(legs) == 1
+                        else f"{agent['name']}.{followed['name']}",
+                        "entry": {**followed.get("entry", {}), **agent.get("entry", {})},
+                        "exit": {**followed.get("exit", {}), **agent.get("exit", {})},
+                        "agent": agent})
     return out
 
 

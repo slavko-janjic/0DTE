@@ -741,11 +741,13 @@ def get_closed_shadow_positions(db_path: str | Path, limit: int = 2000) -> list[
 
 
 def get_strategy_shadow_positions(db_path: str | Path, strategy: str) -> list[sqlite3.Row]:
-    """Every position (open and closed) one strategy has taken - an agent's book."""
+    """Every position (open and closed) one strategy has taken, legs included
+    ('<strategy>.<leg>') - an agent's book."""
     with connect(db_path) as conn:
         return conn.execute(
-            "SELECT * FROM shadow_positions WHERE strategy = ? ORDER BY entry_time",
-            (strategy,),
+            "SELECT * FROM shadow_positions WHERE strategy = ? "
+            "OR substr(strategy, 1, length(?) + 1) = ? || '.' ORDER BY entry_time",
+            (strategy, strategy, strategy),
         ).fetchall()
 
 

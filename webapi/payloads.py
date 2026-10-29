@@ -1009,7 +1009,8 @@ def agents_payload(db_path: str, config: dict) -> dict:
         agents.append({
             "name": name,
             "label": agent.get("label", name),
-            "follows": agent.get("follows"),
+            "follows": " + ".join(agent["follows"]) if isinstance(agent.get("follows"), list)
+                       else agent.get("follows"),
             "about": agent.get("about"),
             "starting_balance": start,
             "equity": _num(equity),

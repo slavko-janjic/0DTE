@@ -280,6 +280,22 @@ agents:
     starting_balance: 10000
     risk_per_trade_pct: 5
     daily_loss_limit_pct: 10
+  # added 2026-10-29: two more ideas that differ from the morning bet
+  - name: agent_bull
+    label: Always call
+    follows: null_call
+    about: "Buys a call every morning at 10:30: does the market's upward drift pay for a day of time decay?"
+    entry: { window_start_minutes: 61, window_end_minutes: 70 }
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
+  - name: agent_fed                # a call and a put, each leg sized at 5% of its cash
+    label: Fed-day straddle
+    follows: [fomc_ramp_call, fomc_ramp_put]
+    about: "Fed days only: a call and a put at 10:00, both sold at 13:55, before the statement."
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
 
 # The day lab fills became honest. Until then every option price came from
 # Yahoo quotes 15 minutes behind the share price (PR #27, SIGNAL_RESEARCH.md),

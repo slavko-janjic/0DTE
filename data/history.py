@@ -7,7 +7,8 @@ never needs. Plain `requests`; keys come from <data dir>/alpaca_keys.json
 environment variables - never from the repo.
 
 Cache: <data dir>/history/{TICKER}_{YEAR}.csv.gz, regular-hours bars only,
-UTC ISO timestamps. A finished year is fetched once; the current year is
+UTC ISO timestamps; premarket bars (04:00-09:30 ET) live apart, in
+history/premarket/, with the same layout. A finished year is fetched once; the current year is
 re-fetched whole on each update (a few requests). A year is written to a temp
 file and renamed, so a failed fetch never leaves a partial year behind.
 
@@ -57,10 +58,21 @@ def _regular_hours(ts: datetime) -> bool:
     return 9 * 60 + 30 <= minutes < 16 * 60
 
 
+def premarket_hours(ts: datetime) -> bool:
+    local = ts.astimezone(ET)
+    minutes = local.hour * 60 + local.minute
+    return 4 * 60 <= minutes < 9 * 60 + 30
+
+
+def premarket_dir(cache: Path) -> Path:
+    return Path(cache) / "premarket"
+
+
 def fetch_bars(symbol: str, start: datetime, end: datetime, keys: tuple[str, str],
-               http=requests, timeout: float = 60.0) -> list[tuple]:
+               http=requests, timeout: float = 60.0, keep=_regular_hours) -> list[tuple]:
     """All 1-minute bars in [start, end), following next_page_token, kept to
-    regular hours. Rows: (utc datetime, open, high, low, close, volume).
+    regular hours (or whatever `keep` accepts). Rows: (utc datetime, open,
+    high, low, close, volume).
     Raises on any HTTP error - a partial year must not be cached."""
     headers = {"APCA-API-KEY-ID": keys[0], "APCA-API-SECRET-KEY": keys[1]}
     params = {"timeframe": "1Min", "start": start.isoformat(), "end": end.isoformat(),
@@ -73,7 +85,7 @@ def fetch_bars(symbol: str, start: datetime, end: datetime, keys: tuple[str, str
         payload = response.json()
         for bar in payload.get("bars") or []:
             ts = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
-            if _regular_hours(ts):
+            if keep(ts):
                 rows.append((ts, float(bar["o"]), float(bar["h"]), float(bar["l"]),
                              float(bar["c"]), float(bar["v"])))
         token = payload.get("next_page_token")
@@ -106,7 +118,8 @@ def read_year(path: Path) -> list[tuple]:
 
 
 def update_cache(cache: Path, symbol: str, keys: tuple[str, str], today: date,
-                 first_year: int = FIRST_YEAR, http=requests, log=print) -> list[int]:
+                 first_year: int = FIRST_YEAR, http=requests, log=print,
+                 keep=_regular_hours) -> list[int]:
     """Fetches every missing year, and the current year to date. Returns the
     years written."""
     written = []
@@ -117,7 +130,7 @@ def update_cache(cache: Path, symbol: str, keys: tuple[str, str], today: date,
         start = datetime(year, 1, 1, tzinfo=timezone.utc)
         end = (datetime(year + 1, 1, 1, tzinfo=timezone.utc) if year < today.year
                else datetime(today.year, today.month, today.day, tzinfo=timezone.utc))
-        rows = fetch_bars(symbol, start, end, keys, http=http)
+        rows = fetch_bars(symbol, start, end, keys, http=http, keep=keep)
         write_year(path, rows)
         written.append(year)
         log(f"  {symbol} {year}: {len(rows):,} bars")

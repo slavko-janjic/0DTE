@@ -107,8 +107,8 @@ def test_agent_stands_down_just_before_a_catalyst(market):
     config = _config()
     config["market_catalysts"] = [{"date": soon.date().isoformat(), "time": soon.strftime("%H:%M"),
                                    "label": "CPI", "impact": "high"}]
-    contracts, blocker = worker.agent_entry(config, market, "agent_a",
-                                            config["agents"][0], 2.0, soon - timedelta(minutes=10))
+    contracts, blocker = worker.agent_entry(config, market, config["agents"][0], 2.0,
+                                            soon - timedelta(minutes=10))
     assert contracts == 0 and "catalyst" in blocker
 
 
@@ -136,3 +136,23 @@ def test_agents_payload_reports_each_book(market):
     assert agent["equity"] == pytest.approx(10000 + agent["realized"])
     assert agent["return_pct"] == pytest.approx(agent["realized"] / 100)
     assert out["autopilot"]["trades"] == 0 and out["since"] is not None
+
+
+def test_a_straddle_agent_runs_both_legs_on_one_book(market):
+    config = _config()
+    config["shadow_strategies"].append({"name": "put_leg", "exit": EXIT,
+                                        "entry": dict(ENTRY, direction_rule="always_put")})
+    config["agents"] = [{"name": "agent_s", "follows": ["follow_me", "put_leg"],
+                         "starting_balance": 10000, "risk_per_trade_pct": 5}]
+    assert [s["name"] for s in agent_strategies(config)] == ["agent_s.follow_me", "agent_s.put_leg"]
+    _run(market, config)
+    legs = {r["strategy"]: r for r in storage.get_open_shadow_positions(market)
+            if r["strategy"].startswith("agent_s.")}
+    assert legs["agent_s.follow_me"]["option_type"] == "call"
+    assert legs["agent_s.put_leg"]["option_type"] == "put"
+    # the put was sized from what the call left: $9,600 * 5% = $480 -> 2 x $200
+    assert legs["agent_s.put_leg"]["contracts"] == 2
+    [agent] = payloads.agents_payload(market, config)["agents"]
+    assert agent["cash"] == pytest.approx(10000 - 800)
+    assert agent["follows"] == "follow_me + put_leg"
+    assert storage.get_strategy_shadow_positions(market, "agent") == []   # prefix is per leg
