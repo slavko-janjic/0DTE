@@ -392,3 +392,39 @@ Descriptive only: plain hold to 15:30.
 | orb15 | 10:00 | 1587 | +2.92 | +1.47 | +0.32 (438) | +2.46 (435) | +6.67 (428) | +1.98 (286) | +3.79 | **INCONCLUSIVE** |
 | trail30 | 10:30 | 2689 | -0.63 | -0.46 | -2.18 (731) | -1.81 (756) | +4.87 (753) | -5.33 (449) | +0.06 | **FAIL** |
 | orb15 | 10:30 | 2038 | +2.39 | +1.47 | -2.73 (548) | +1.43 (588) | +9.51 (561) | +0.53 (341) | +5.11 | **FAIL** |
+
+---
+
+# Confirmed morning - 2026-10-29
+
+Claude's tactic, built from what held up: the morning continuation is the only
+direction edge, 10:30 is its steadiest time, and the edge is about the size of
+costs, so the aim is fewer, better trades. Rule: at 10:30 trade only when
+trail30 and orb15 (the two 10:30 passes) are both non-zero and agree; follow
+them. ATM option, the autopilot's exits, costs - the intraday study's label.
+
+Pre-registered before the run (scratch script, rule and bar written first):
+this is about the 60th test on the same 2016-2026 data, so the bar was the
+strictest yet - pooled t >= sqrt(2 ln 60) = 2.86, positive in all four
+periods, net positive since 2022 - AND more excess per trade than trail30
+alone, or the filter adds nothing.
+
+**Verdict: PASS.** +3.1% of premium a trade over the coin flip (t 3.29), on
+1,790 days; positive in every period; net +3.2% since 2022. Per trade it beats
+trail30 alone (+2.1%) and, narrowly, orb15 alone (+2.8%) - the confirmation
+mostly keeps orb15's days and drops the ones where the trend disagrees.
+
+Caveats, plainly: it combines two signals that already passed on this data, so
+the in-sample result flatters it however strict the floor; it is still the
+same "morning move continues" bet; and the simulator's absolute level is
+untrustworthy (excess over the coin flip is the measure). It goes into the lab
+as `morning_confirmed_1030` and trades its own $10,000 as `agent_claude` - kept
+OUT of the morning family and the switch rule - and earns its place forward.
+
+Confirmed morning (pre-registered 2026-10-29), floor t = 2.86
+
+| Signal | Side | Days | Excess/trade | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Net since 2022 | Win % | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| confirmed | follow | 1790 | +3.1% | +3.29 | +1.3 (465) | +2.8 (520) | +4.8 (512) | +3.7 (293) | +3.2% | 46 | **PASS** |
+| trail30 | follow | 2689 | +2.1% | +2.95 | +2.5 (731) | +1.6 (756) | +2.3 (753) | +2.0 (449) | +0.8% | 44 | **PASS** |
+| orb15 | follow | 2038 | +2.8% | +3.09 | +0.7 (548) | +2.2 (588) | +4.9 (561) | +3.6 (341) | +3.1% | 46 | **PASS** |

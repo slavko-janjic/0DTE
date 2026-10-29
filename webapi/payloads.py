@@ -284,6 +284,7 @@ MORNING_LABELS = (
     ("orb15", "10:00", "Opening-range breakout"),
     ("trail30_1030", "10:30", "Follow the 10:00-10:30 move"),
     ("orb15_1030", "10:30", "Opening-range breakout"),
+    ("confirmed_1030", "10:30", "Both agree (confirmed morning)"),
 )
 
 
