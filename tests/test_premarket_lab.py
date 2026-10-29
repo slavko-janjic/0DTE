@@ -100,3 +100,59 @@ def test_agreement_counts_same_sign_days():
     signals = {("SPY", 1): {"a": 0.5, "b": 0.2}, ("SPY", 2): {"a": -0.5, "b": 0.3},
                ("SPY", 3): {"a": 0.5}}
     assert premarket_lab.agreement(signals, "a", "b") == {"days": 2, "agree_pct": 50.0}
+
+
+def test_live_ratio_matches_the_research_one():
+    start = date(2024, 1, 1)
+    days = [start + timedelta(days=i) for i in range(25)]
+    sessions = [_session(d) for d in days]
+    pre = {d: _pre(100.0, 100.1, high=100.5, low=99.5) for d in days[:-1]}
+    pre[days[-1]] = _pre(100.0, 100.0, high=100.2, low=99.9)
+    research = premarket_lab.ticker_signals(sessions, pre)[days[-1]]["range_ratio"]
+    # live, today's session hasn't happened yet: only the earlier ones exist
+    live = premarket_lab.range_ratio_today(sessions[:-1], pre, days[-1])
+    assert live == pytest.approx(research) == pytest.approx(0.3, rel=1e-3)
+    assert premarket_lab.range_class(live) == "quiet"
+    assert premarket_lab.range_ratio_today(sessions[:5], pre, days[5]) is None   # no normal yet
+
+
+def test_range_classes():
+    assert premarket_lab.range_class(1.5) == "wide"
+    assert premarket_lab.range_class(1.0) == "normal"
+    assert premarket_lab.range_class(1 / 1.5) == "quiet"
+    assert premarket_lab.range_class(None) is None
+
+
+def test_live_fetch_splits_premarket_from_the_session(tmp_path):
+    from signals import premarket
+    (tmp_path / "alpaca_keys.json").write_text('{"key_id": "k", "secret_key": "s"}')
+    today = date(2024, 2, 1)
+    asked = {}
+
+    def fetch(ticker, start, end, keys, keep):
+        asked.update(ticker=ticker, start=start, end=end)
+        rows = []
+        for i in range(1, 30):
+            d = today - timedelta(days=i)
+            for h, m, p in ((5, 0, 100.5), (6, 0, 99.5), (9, 30, 100.0), (15, 59, 100.0)):
+                ts = datetime(d.year, d.month, d.day, h, m, tzinfo=ET)
+                if keep(ts):
+                    rows.append((ts.astimezone(timezone.utc), p, p, p, p, 1.0))
+        for h, p in ((5, 100.1), (6, 99.9)):
+            rows.append((datetime(2024, 2, 1, h, 0, tzinfo=ET).astimezone(timezone.utc), p, p, p, p, 1.0))
+        return rows
+
+    ratio = premarket.compute_ratio("SPY", today, tmp_path, fetch)
+    assert ratio == pytest.approx(0.2, rel=1e-3)          # 0.2% range vs a 1% normal
+    assert asked["end"] == datetime(2024, 2, 1, 9, 30, tzinfo=ET)
+
+
+def test_live_ratio_is_none_without_keys_and_is_cached(tmp_path, monkeypatch):
+    from signals import premarket
+    calls = []
+    monkeypatch.setattr(premarket, "_cache", {})
+    monkeypatch.setattr(premarket, "compute_ratio",
+                        lambda *a: calls.append(1) or (_ for _ in ()).throw(history.MissingKeys("no")))
+    assert premarket.range_ratio("SPY", date(2024, 2, 1), tmp_path) is None
+    assert premarket.range_ratio("SPY", date(2024, 2, 1), tmp_path) is None
+    assert len(calls) == 1                                 # retried only after RETRY_SECONDS

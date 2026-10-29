@@ -156,3 +156,17 @@ def test_a_straddle_agent_runs_both_legs_on_one_book(market):
     assert agent["cash"] == pytest.approx(10000 - 800)
     assert agent["follows"] == "follow_me + put_leg"
     assert storage.get_strategy_shadow_positions(market, "agent") == []   # prefix is per leg
+
+
+def test_agent_can_skip_a_quiet_premarket(market, monkeypatch):
+    ratio = {"value": 0.5}
+    monkeypatch.setattr(worker.premarket, "range_ratio", lambda *a: ratio["value"])
+    monkeypatch.setattr(worker.market_data, "find_contract_price", lambda *a: 2.0)
+    config = _config(entry={"skip_quiet_premarket": True})
+    _run(market, config)
+    assert _agent_rows(market) == []                         # quiet: stands aside
+    [lab] = [r for r in storage.get_open_shadow_positions(market) if r["strategy"] == "follow_me"]
+    assert '"premarket_ratio": 0.5' in lab["entry_reason_json"]   # the lab still buys, and logs it
+    ratio["value"] = 1.0
+    _run(market, config)
+    assert len(_agent_rows(market)) == 1                     # a normal premarket: trades

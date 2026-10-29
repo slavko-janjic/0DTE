@@ -485,3 +485,57 @@ Descriptive only:
 
 - 10:00 straddle (simulated, call + put, net of costs, % of premium per leg): wide -1.1% (766 days), quiet -6.4% (806 days), all -4.1% (2691 days)
 - pre_drift agrees with gap_direction on 63% of 5294 days, gap_behaviour on 51% of 2632 days
+
+---
+
+# Quiet-premarket filter - 2026-10-29
+
+The premarket study found a quiet premarket marks a day that moves less than
+the option price expects. Question: should the buying agents stand aside on
+those days? Rule: no bought option at 10:30 on a ticker whose premarket range
+was QUIET (at most 2/3 of its own 20-day normal; known by 09:30).
+
+Pre-registered before the run (scratch script, rule and bar written first),
+on the intraday study's 10:30 label (ATM, the autopilot's exits, costs), one
+value per day. About the 61st test on this data, so floor t = 2.87. PASS
+needed all four: (1) the blind bought option (coin flip) does better on the
+REST of the days than on QUIET ones, t >= 2.87; (2) in all four periods;
+(3) QUIET days lose since 2022; (4) the morning tactic (trail30, agent_morning's
+rule) earns more per trade since 2022 with the filter than without.
+
+**Verdict: PASS**, all four. The coin flip loses -8.3% a trade on quiet days
+vs -5.5% on the rest (t +3.96), worse in every period, -3.1% on quiet days
+since 2022. trail30 since 2022: +0.7% a trade unfiltered, +1.8% filtered,
+skipping 22% of trades. Always-call improves the most (quiet days -5.3%).
+
+The exception: on the confirmed-morning rule the skipped days were
+*profitable* since 2022 (+1.5%), so the filter would have cost agent_claude
+money lately - it is not applied there.
+
+Caveats: the "implied" move is the simulator's (k x VIX), and real 0DTE
+prices may already be cheaper on quiet mornings, which would shrink the
+effect - only forward trades on real quotes can say. Forward test: agent_calm
+= agent_morning's rule plus the filter, read against agent_morning (same
+signal, same days, minus the quiet ones). The live ratio is computed from the
+same Alpaca bars by the same code (signals/premarket.py; it reproduced the
+research value exactly on a spot check), and every lab entry now logs its
+`premarket_ratio`, so `research.py labstats` splits all lab buys by class.
+
+Quiet-premarket filter (pre-registered 2026-10-29), floor t = 2.87
+
+Primary: the blind bought option at 10:30 (coin flip, net of costs), one value per day
+
+| Days rest / quiet | Rest | Quiet | t | 2016-2018 | 2019-2021 | 2022-2024 | 2025-now | Quiet since 2022 | trail30 net/trade since 2022: all -> kept | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2306 / 806 | -5.5% | -8.3% | +3.96 | -11.9% / -17.0% | -6.2% / -7.9% | -1.0% / -2.4% | -1.5% / -4.1% | -3.1% | +0.7% -> +1.8% | **PASS** |
+
+Checks: t >= floor yes, every period yes, quiet loses since 2022 yes, helps trail30 yes
+
+Descriptive: each agent rule, net per trade (% of premium), all 2016-2026 and since 2022
+
+| Rule | Trades | Skipped | All | Kept | Skipped days | Since 2022: all | kept | skipped | Total P&L change from skipping |
+|---|---|---|---|---|---|---|---|---|---|
+| Morning 10:30 (trail30) | 5333 | 22% | -3.7% | -2.5% | -8.0% | +0.7% | +1.8% | -3.3% | +9430 pts (+1618 since 2022) |
+| Confirmed morning | 2872 | 21% | -2.4% | -1.8% | -4.8% | +2.5% | +2.7% | +1.5% | +2927 pts (-384 since 2022) |
+| Coin flip | 5370 | 22% | -5.9% | -5.2% | -8.2% | -1.3% | -0.9% | -3.1% | +9753 pts (+1535 since 2022) |
+| Always call | 5370 | 22% | -5.6% | -4.7% | -8.8% | -1.3% | -0.3% | -5.3% | +10450 pts (+2657 since 2022) |

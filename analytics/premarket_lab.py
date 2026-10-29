@@ -49,6 +49,7 @@ DRIFT_FROM = 4 * 60                 # 08:00, in minutes since 04:00
 PRE_END = 5 * 60 + 30               # 09:30: bars 0..329
 MAX_GAP = 30                        # premarket prints are sparse
 WIDE = 1.5
+QUIET = 1 / WIDE
 EXIT_MINUTE = 360                   # 15:30, the autopilot's cutoff
 TESTS = 3
 
@@ -115,6 +116,33 @@ def ticker_signals(sessions: list, premarket: dict) -> dict:
         if session.bars:
             previous = session
     return out
+
+
+def range_ratio_today(sessions: list, premarket: dict, today: date) -> float | None:
+    """Today's range_ratio, live: the same history ticker_signals keeps (each
+    earlier day's premarket range over the close before it), from the
+    sessions before today - today's own session is still open."""
+    ranges, previous = [], None
+    for session in sessions:
+        if session.day >= today:
+            break
+        feats = features(premarket.get(session.day, {}))
+        if feats and previous is not None:
+            ranges.append((feats["high"] - feats["low"]) / previous.last_close())
+        if session.bars:
+            previous = session
+    feats = features(premarket.get(today, {}))
+    med = session_lab.median_abs(ranges)
+    if not feats or previous is None or not med:
+        return None
+    return (feats["high"] - feats["low"]) / previous.last_close() / med
+
+
+def range_class(ratio: float | None) -> str | None:
+    """'wide', 'quiet' or 'normal' (None when the ratio is unknown)."""
+    if ratio is None:
+        return None
+    return "wide" if ratio >= WIDE else "quiet" if ratio <= QUIET else "normal"
 
 
 def move_vs_implied(session, sigma: float) -> float | None:
