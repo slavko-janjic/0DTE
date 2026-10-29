@@ -296,6 +296,19 @@ agents:
     starting_balance: 10000
     risk_per_trade_pct: 5
     daily_loss_limit_pct: 10
+  # PRE-REGISTERED 2026-10-29 (quiet-premarket filter, SIGNAL_RESEARCH.md):
+  # agent_morning's rule, standing aside on a ticker whose premarket range was
+  # 2/3 of its normal or less. Read it against agent_morning - same signal, same
+  # days, minus the quiet ones. Not applied to agent_claude: on its rule the
+  # skipped days were profitable since 2022.
+  - name: agent_calm
+    label: Morning 10:30, skips quiet premarkets
+    follows: morning_trail_1030
+    entry: { skip_quiet_premarket: true }
+    about: "The Morning 10:30 rule, but stands aside when the premarket barely moved (range 2/3 of normal or less)."
+    starting_balance: 10000
+    risk_per_trade_pct: 5
+    daily_loss_limit_pct: 10
   - name: agent_fed                # a call and a put, each leg sized at 5% of its cash
     label: Fed-day straddle
     follows: [fomc_ramp_call, fomc_ramp_put]

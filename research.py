@@ -590,6 +590,19 @@ def itm_vs_atm(rows: list, since: date, tz) -> dict | None:
             "mean": statistics.fmean(daily), "t": t}
 
 
+def premarket_split(rows: list, since: date, tz) -> dict:
+    """{class: [pnl_pct, ...]} over closed lab trades that logged their
+    premarket ratio at entry (from 2026-10-30)."""
+    out: dict = {}
+    for row in rows:
+        day = datetime.fromisoformat(row["entry_time"]).astimezone(tz).date()
+        ratio = json.loads(row["entry_reason_json"] or "{}").get("premarket_ratio")
+        if day < since or row["pnl_pct"] is None or ratio is None:
+            continue
+        out.setdefault(premarket_lab.range_class(ratio), []).append(row["pnl_pct"])
+    return {cls: out[cls] for cls in ("quiet", "normal", "wide") if cls in out}
+
+
 def fed_ramp(rows: list, tz) -> list[dict]:
     """The Fed-day straddle per ticker and day: call + put P&L ($, net of fees)
     and as % of the combined premium paid. Only days where both legs closed."""
@@ -646,6 +659,11 @@ def cmd_labstats(config: dict, since: str | None) -> None:
     print("\nITM vs ATM (pre-registered 2026-10-21; ITM minus ATM, % of premium, one obs per day): " +
           (f"{_pct(paired['mean'])} per day over {paired['days']} days ({paired['pairs']} pairs), "
            f"t {paired['t']:+.2f}" if paired else "no paired trades yet"))
+    split = premarket_split(rows, start, tz)
+    print("\nPremarket class at entry (quiet-premarket filter, pre-registered 2026-10-29; all lab "
+          "buys, % of premium per trade): " +
+          (", ".join(f"{cls} {_pct(statistics.fmean(v))} ({len(v)})" for cls, v in split.items())
+           if split else "no entries have logged it yet"))
     print("\nDescriptive only: the other splits are not tests (see the 2026-10-20 deep-dive report).")
 
 

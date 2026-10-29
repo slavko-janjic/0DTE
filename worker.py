@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import single_instance
 
-from analytics import accuracy
+from analytics import accuracy, premarket_lab
 from config import (
     DatabaseNotMigrated, backup_dir, check_database_location, database_path, load_settings,
     poll_interval_seconds,
@@ -38,6 +38,7 @@ from paper_trading.shadow import (
 from signals import day_setup as day_setup_mod
 from signals import indicators
 from signals import morning
+from signals import premarket
 from signals.composite import build_recommendation, compute_signal, direction_from_score
 from storage import db as storage
 
@@ -720,6 +721,15 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
         )
         if option_type is None:
             continue
+        # entry.skip_quiet_premarket - stand aside on a ticker whose premarket
+        # range was 2/3 of normal or less (pre-registered 2026-10-29); an
+        # unknown range never blocks. Every lab entry logs the ratio.
+        premarket_ratio = premarket.range_ratio(ticker, today, Path(db_path).parent)
+        if (entry_cfg.get("skip_quiet_premarket")
+                and premarket_lab.range_class(premarket_ratio) == "quiet"):
+            print(f"[{ticker}] SHADOW {name}: stands aside - quiet premarket "
+                  f"({premarket_ratio:.2f}x normal)")
+            continue
         df = chain.calls if option_type == "call" else chain.puts
         # entry.strike: "atm" (default) or "itm1" - one listed strike deeper in
         # the money (the paired ITM-vs-ATM test pre-registered 2026-10-21)
@@ -750,6 +760,7 @@ def process_shadow_strategies(ticker: str, config: dict, db_path: str,
             "minutes_since_open": round(minutes_since_open, 1),
             "subscores": signal.subscores_used,
             "strike_choice": entry_cfg.get("strike", "atm"),
+            "premarket_ratio": round(premarket_ratio, 3) if premarket_ratio is not None else None,
             **entry_context(config, ticker, chain, contract, option_type, today),
         }
         sid = storage.open_shadow_position(
