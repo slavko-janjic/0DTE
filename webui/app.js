@@ -121,6 +121,7 @@
 
   function loadPage() {
     if (state.page === 'signals') { loadSignal(); loadHistory(); }
+    else if (state.page === 'market') { loadMarket(); }
     else if (state.page === 'lab') { loadLab(); }
     else if (state.page === 'cost') { loadCost(); }
     else if (state.page === 'trades') { loadPositions(); loadTradeHistory(); loadCalendar(); }
@@ -774,6 +775,66 @@
             '<td class="num">' + row.samples + '</td></tr>';
         }).join('') + '</tbody></table>';
     }).catch(function (error) { fail($('cost-chart'), error); });
+  }
+
+  /* ---- market briefing ------------------------------------------------- */
+
+  /* The digest cards are a headline line plus "- " bullets; render just that
+     much Markdown (bold, bullets, paragraphs) after escaping everything. */
+  function miniMarkdown(text) {
+    var html = [], list = false;
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var safe = A.escapeHtml(line.trim()).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      var bullet = /^[-*] /.test(line.trim());
+      if (bullet && !list) { html.push('<ul>'); list = true; }
+      if (!bullet && list) { html.push('</ul>'); list = false; }
+      if (bullet) { html.push('<li>' + safe.slice(2) + '</li>'); }
+      else if (safe) { html.push('<p>' + safe + '</p>'); }
+    });
+    if (list) { html.push('</ul>'); }
+    return html.join('');
+  }
+
+  function ageText(minutes) {
+    if (minutes == null) { return 'never'; }
+    if (minutes < 60) { return minutes + ' min ago'; }
+    if (minutes < 48 * 60) { return Math.round(minutes / 60) + ' h ago'; }
+    return Math.round(minutes / 1440) + ' d ago';
+  }
+
+  function loadMarket() {
+    return A.get('/api/market').then(function (payload) {
+      var u = payload.usage_24h;
+      $('mkt-usage').textContent = u.calls
+        ? u.calls + ' model calls · ' + Math.round((u.tokens_in + u.tokens_out) / 1000) + 'k tokens / 24h' +
+          (u.failed ? ' · ' + u.failed + ' failed' : '')
+        : 'no model calls yet';
+      $('mkt-sub').textContent = 'Short cards written by a small model from the feeds and the worker\'s own data \u2014 ' +
+        'the same read the trading agents get. Rebuilt at ' + (payload.schedule.join(', ') || '—') + ' ET on trading days.';
+      $('mkt-feeds').innerHTML = payload.feeds.length ? payload.feeds.map(function (f) {
+        return '<span class="feed ' + f.state + '" title="' + A.escapeHtml(f.error || '') + '"><i></i>' +
+          A.escapeHtml(f.label) + '<span class="sub">' + ageText(f.last_ok_minutes) + '</span></span>';
+      }).join('') : '<div class="empty">The feeds runner hasn\'t run yet.</div>';
+      $('mkt-cards').innerHTML = payload.cards.map(function (c) {
+        return '<div class="card digest"><div class="eyebrow">' + A.escapeHtml(c.title) + '</div>' +
+          (c.content ? '<div class="md">' + miniMarkdown(c.content) + '</div>'
+                     : '<div class="empty">Not built yet.</div>') +
+          (c.last_error ? '<div class="err">Last rebuild failed: ' + A.escapeHtml(c.last_error) + '</div>' : '') +
+          '<div class="foot">' + (c.built_at ? 'built ' + ageText(c.age_minutes) : '') + '</div></div>';
+      }).join('');
+      $('mkt-crowd').innerHTML = payload.crowd.length
+        ? '<table><thead><tr><th class="num">#</th><th>Ticker</th><th class="num">Mentions</th>' +
+          '<th class="num">24h before</th><th class="num">Change</th><th class="num">Rank 24h before</th></tr></thead><tbody>' +
+          payload.crowd.map(function (r) {
+            var ch = r.change_pct == null ? '—' : (r.change_pct > 0 ? '+' : '') + r.change_pct + '%';
+            var cls = r.change_pct == null ? '' : (r.change_pct >= 0 ? 'up' : 'down');
+            return '<tr><td class="num">' + r.rank + '</td><td class="tkcell">' + A.escapeHtml(r.ticker) +
+              '<div class="sub">' + A.escapeHtml(r.name || '') + '</div></td>' +
+              '<td class="num">' + r.mentions + '</td><td class="num">' + (r.mentions_24h_ago == null ? '—' : r.mentions_24h_ago) + '</td>' +
+              '<td class="num ' + cls + '">' + ch + '</td><td class="num">' + (r.rank_24h_ago == null ? '—' : r.rank_24h_ago) + '</td></tr>';
+          }).join('') + '</tbody></table>'
+        : '<div class="empty" style="padding:0 17px 14px">No Reddit snapshot yet.</div>';
+    }).catch(function (error) { fail($('mkt-cards'), error); });
   }
 
   /* ---- autopilot -------------------------------------------------------- */

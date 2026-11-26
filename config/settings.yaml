@@ -721,3 +721,15 @@ feeds:
     user_agent: "0DTE research tool (contact: CHANGE_ME@example.com)"
     forms: ["8-K", "10-Q", "10-K", "4", "S-1", "SC 13D", "SC 13G"]
     lookback_days: 14
+
+# Digests (added 2026-11-26): short Markdown cards written by a small model
+# from the feeds and the worker's own data - what the LLM agents read instead
+# of raw feeds, and what the Market page shows. Built by feeds.py at these
+# exchange-time slots on trading days (only the latest missed slot is built
+# after downtime). `python feeds.py --digests-now` builds them on demand.
+# Runs on the Claude subscription of the Claude Code CLI logged in on this PC.
+digests:
+  enabled: true
+  model: haiku
+  at: ["08:45", "11:00", "13:30", "16:15"]
+  cards: [market, calendar, news, crowd, filings]

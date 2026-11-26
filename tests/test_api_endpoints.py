@@ -158,3 +158,8 @@ def test_lab_era_is_validated(client):
     assert client.get("/api/lab?era=honest").json()["era"] in ("honest", "all")
     assert client.get("/api/lab?era=delayed&ticker=QQQ").status_code == 200
     assert client.get("/api/lab?era=yesterday").status_code == 404
+
+
+def test_market_page_endpoint(client):
+    body = client.get("/api/market").json()
+    assert set(body) >= {"cards", "feeds", "crowd", "usage_24h", "schedule"}

@@ -5,10 +5,12 @@ never delay the trading loop.
 
     python feeds.py            # loop forever (the scheduled task)
     python feeds.py --once     # run every feed once now and exit
+    python feeds.py --digests-now   # build every digest card now and exit
 
 Each feed has its own interval in config `feeds.intervals_minutes`; a feed is
 due when that long has passed since its last run (stored in feed_status, so a
-restart doesn't re-hit every site at once). Secrets (the SEC contact email)
+restart doesn't re-hit every site at once). The digest cards (digests/) are
+built here too, at the times in config `digests.at` on trading days. Secrets (the SEC contact email)
 come from the environment or a secrets.env file beside the database - never
 from the repo.
 """
@@ -19,15 +21,18 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import single_instance
 from config import DatabaseNotMigrated, check_database_location, database_path, load_settings
 from data import filings, news
+from digests import build as digest_build
 from sentiment import apewisdom
 from storage import db as storage
+from storage import digests as digest_store
 from storage import feeds as feed_store
 
 LOG_PATH = Path(__file__).resolve().parent / "feeds.log"
@@ -36,6 +41,7 @@ TICK_SECONDS = 60
 SYMBOLS_MAX_AGE_DAYS = 7
 DEFAULT_INTERVALS = {"reddit": 30, "news": 15, "filings": 360}
 RETRY_MINUTES = 10
+DEFAULT_DIGEST_TIMES = ["08:45", "11:00", "13:30", "16:15"]
 
 log = logging.getLogger("feeds")
 
@@ -128,6 +134,41 @@ def run_due(config: dict, db_path: str, force: bool = False) -> None:
             run_feed(name, config, db_path)
 
 
+def digest_slot_due(config: dict, last_run: str | None, now: datetime) -> datetime | None:
+    """The scheduled build time (UTC) that is due now, or None. A slot is due
+    once it has passed today (exchange time zone, trading days only) and no
+    card has been built since. Only the latest passed slot counts, so a PC
+    that wakes at noon builds once, not for every missed slot."""
+    cfg = config.get("digests", {})
+    if not cfg.get("enabled", True):
+        return None
+    tz = ZoneInfo(config.get("market_hours", {}).get("timezone", "America/New_York"))
+    local = now.astimezone(tz)
+    if local.weekday() >= 5 or local.date().isoformat() in set(config.get("market_holidays", [])):
+        return None
+    passed = []
+    for t in cfg.get("at", DEFAULT_DIGEST_TIMES):
+        hh, mm = (int(x) for x in str(t).split(":"))
+        slot = datetime.combine(local.date(), dtime(hh, mm), tz)
+        if slot <= local:
+            passed.append(slot)
+    if not passed:
+        return None
+    slot = max(passed).astimezone(timezone.utc)
+    if last_run and datetime.fromisoformat(last_run) >= slot:
+        return None
+    return slot
+
+
+def run_digests_if_due(config: dict, db_path: str, now: datetime | None = None) -> None:
+    now = now or datetime.now(timezone.utc)
+    slot = digest_slot_due(config, digest_store.last_digest_run(db_path), now)
+    if slot is None:
+        return
+    log.info("digests: building the %s UTC slot", slot.strftime("%H:%M"))
+    digest_build.build_all(db_path, config)
+
+
 def _setup_logging(to_file: bool) -> None:
     handlers = [logging.StreamHandler(sys.stdout)]
     if to_file:
@@ -140,8 +181,9 @@ def _setup_logging(to_file: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="run every feed once and exit")
+    parser.add_argument("--digests-now", action="store_true", help="build every digest card now and exit")
     args = parser.parse_args()
-    _setup_logging(to_file=not args.once)
+    _setup_logging(to_file=not (args.once or args.digests_now))
 
     config = load_settings()
     db_path = database_path(config)
@@ -156,6 +198,16 @@ def main() -> None:
     if args.once:
         run_due(config, db_path, force=True)
         return
+    if args.digests_now:
+        started = datetime.now(timezone.utc).isoformat()
+        for card in digest_build.build_all(db_path, config):
+            print(f"\n=== {card['kind']} ({'ok' if card['ok'] else 'FAILED'}) ===\n{card['content']}")
+        print("\nmodel calls this run (input / cache read / cache write / output tokens, seconds):")
+        for u in digest_store.usage_rows(db_path, started):
+            print(f"  {u['purpose']:<18} {u['input_tokens']} / {u['cache_read_tokens']} / "
+                  f"{u['cache_write_tokens']} / {u['output_tokens']}, "
+                  f"{(u['duration_ms'] or 0) / 1000:.1f}s{'' if u['ok'] else '  FAILED: ' + (u['error'] or '')}")
+        return
     try:
         _lock = single_instance.acquire(LOCK_PORT)  # noqa: F841 - held for process lifetime
     except single_instance.AlreadyRunning as exc:
@@ -166,6 +218,7 @@ def main() -> None:
         try:
             config = load_settings()    # picks up interval / watchlist edits without a restart
             run_due(config, db_path)
+            run_digests_if_due(config, db_path)
         except Exception:  # noqa: BLE001
             log.exception("feeds cycle failed")
         time.sleep(TICK_SECONDS)
