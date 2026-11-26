@@ -8,6 +8,7 @@ agents will use - for testing the broker layer and for manual overrides.
     python agent_orders.py sell QQQ 1 --put  590 --exp 2026-12-18 --limit 3.10
     python agent_orders.py settle                  # close expired options
     python agent_orders.py pause|resume [--agent NAME]
+    python agent_orders.py check                   # are the Alpaca keys working?
 
 The default agent is `manual_test`, a $5,000 book that exists only for this.
 """
@@ -33,9 +34,31 @@ def agent_config(config: dict, name: str) -> dict:
     return {}
 
 
+def check_alpaca(config: dict) -> int:
+    """Confirm the Alpaca paper keys work, without printing them."""
+    import os
+    import requests
+    from broker.venues import ALPACA_PAPER_URL, AlpacaVenue
+    if not AlpacaVenue.available():
+        print("No Alpaca keys found: add ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY to secrets.env")
+        return 1
+    base = config.get("broker", {}).get("alpaca_url", ALPACA_PAPER_URL)
+    r = requests.get(f"{base}/v2/account", timeout=15, headers={
+        "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY_ID"],
+        "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET_KEY"]})
+    if r.status_code != 200:
+        print(f"Alpaca said {r.status_code}: {r.text[:200]}")
+        return 1
+    a = r.json()
+    print(f"Alpaca OK - account {a.get('account_number')} ({a.get('status')}), "
+          f"equity ${float(a.get('equity', 0)):,.0f}, buying power ${float(a.get('buying_power', 0)):,.0f}, "
+          f"options level {a.get('options_trading_level', 'n/a')}, paper: {'paper-api' in base}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", choices=["buy", "sell", "status", "settle", "pause", "resume"])
+    p.add_argument("action", choices=["buy", "sell", "status", "settle", "pause", "resume", "check"])
     p.add_argument("symbol", nargs="?")
     p.add_argument("qty", nargs="?", type=int)
     p.add_argument("--agent", default="manual_test")
@@ -52,6 +75,8 @@ def main(argv=None) -> int:
     storage.init_db(db_path)
     load_secrets(db_path)
 
+    if args.action == "check":
+        return check_alpaca(config)
     if args.action == "settle":
         print(f"settled {service.settle_expired(db_path, config)} expired option position(s)")
         return 0
