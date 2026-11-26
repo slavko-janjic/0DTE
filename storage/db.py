@@ -7,7 +7,7 @@ position already carries entry/exit price and realized P&L.
 import json
 
 from paper_trading.costs import round_trip_fees
-from storage import feeds
+from storage import digests, feeds
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -296,6 +296,7 @@ def init_db(path: str | Path) -> None:
         conn.executescript(_SCHEMA)
         _migrate(conn)
         feeds.create_tables(conn)   # research feeds for the LLM agents (storage/feeds.py)
+        digests.create_tables(conn)  # digest cards + LLM token log (storage/digests.py)
         conn.commit()
 
 

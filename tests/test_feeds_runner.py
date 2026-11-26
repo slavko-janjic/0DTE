@@ -74,3 +74,31 @@ def test_failed_feed_retries_sooner():
     assert feeds.due(failed, "filings", 360, now)
     failed["filings"]["last_error"] = None
     assert not feeds.due(failed, "filings", 360, now)
+
+
+# --- digest schedule ----------------------------------------------------------
+
+NY = "America/New_York"
+CFG = {"market_hours": {"timezone": NY}, "market_holidays": ["2026-12-25"],
+       "digests": {"at": ["08:45", "11:00"]}}
+
+
+def ny(y, m, d, hh, mm):
+    from zoneinfo import ZoneInfo
+    return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo(NY)).astimezone(timezone.utc)
+
+
+def test_digest_slot_latest_passed_only():
+    now = ny(2026, 11, 30, 12, 0)                 # Monday noon
+    slot = feeds.digest_slot_due(CFG, None, now)
+    assert slot == ny(2026, 11, 30, 11, 0)
+    assert feeds.digest_slot_due(CFG, ny(2026, 11, 30, 11, 1).isoformat(), now) is None
+    assert feeds.digest_slot_due(CFG, ny(2026, 11, 30, 9, 0).isoformat(), now) == slot
+
+
+def test_digest_slot_none_before_first_weekend_holiday_or_disabled():
+    assert feeds.digest_slot_due(CFG, None, ny(2026, 11, 30, 8, 0)) is None
+    assert feeds.digest_slot_due(CFG, None, ny(2026, 11, 28, 12, 0)) is None   # Saturday
+    assert feeds.digest_slot_due(CFG, None, ny(2026, 12, 25, 12, 0)) is None   # holiday
+    off = {**CFG, "digests": {"enabled": False}}
+    assert feeds.digest_slot_due(off, None, ny(2026, 11, 30, 12, 0)) is None
