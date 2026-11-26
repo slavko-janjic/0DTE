@@ -847,6 +847,54 @@
       d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
 
+  /* An agent's face: an original drawing from its avatar settings (colour,
+     eyes, accessory) and its mood (happy / sad / neutral / asleep). */
+  function agentFace(av, mood, cls) {
+    var ink = '#1f2430', c = av.color || '#06b6d4', p = [];
+    p.push('<rect x="12" y="14" width="76" height="76" rx="26" fill="' + c + '"/>');
+    p.push('<rect x="20" y="20" width="60" height="22" rx="11" fill="#fff" opacity=".16"/>');
+    var L = 37, R = 63, Y = 50;
+    if (mood === 'asleep') {
+      p.push('<path d="M' + (L - 7) + ' ' + Y + ' q7 5 14 0M' + (R - 7) + ' ' + Y + ' q7 5 14 0" stroke="' + ink + '" stroke-width="3" fill="none" stroke-linecap="round"/>');
+    } else if (av.eyes === 'sharp') {
+      // determined: round eyes under lids slanted toward the nose
+      p.push('<circle cx="' + L + '" cy="' + (Y + 1) + '" r="5.5" fill="' + ink + '"/><circle cx="' + R + '" cy="' + (Y + 1) + '" r="5.5" fill="' + ink + '"/>');
+      p.push('<path d="M' + (L - 9) + ' ' + (Y - 7) + ' L' + (L + 8) + ' ' + (Y - 2) + 'M' + (R + 9) + ' ' + (Y - 7) + ' L' + (R - 8) + ' ' + (Y - 2) + '" stroke="' + ink + '" stroke-width="4" stroke-linecap="round"/>');
+    } else if (av.eyes === 'squint') {
+      p.push('<path d="M' + (L - 7) + ' ' + Y + ' h14M' + (R - 7) + ' ' + (Y - 1) + ' h14" stroke="' + ink + '" stroke-width="4.5" stroke-linecap="round"/>');
+    } else {
+      p.push('<circle cx="' + L + '" cy="' + Y + '" r="6" fill="' + ink + '"/><circle cx="' + R + '" cy="' + Y + '" r="6" fill="' + ink + '"/>');
+      p.push('<circle cx="' + (L + 2) + '" cy="' + (Y - 2) + '" r="1.8" fill="#fff"/><circle cx="' + (R + 2) + '" cy="' + (Y - 2) + '" r="1.8" fill="#fff"/>');
+    }
+    if (mood === 'happy') {
+      p.push('<path d="M36 68 Q50 80 64 68" stroke="' + ink + '" stroke-width="4" fill="none" stroke-linecap="round"/>');
+      p.push('<circle cx="27" cy="64" r="5" fill="#ff6b8a" opacity=".35"/><circle cx="73" cy="64" r="5" fill="#ff6b8a" opacity=".35"/>');
+    } else if (mood === 'sad') {
+      p.push('<path d="M37 75 Q50 64 63 75" stroke="' + ink + '" stroke-width="4" fill="none" stroke-linecap="round"/>');
+    } else if (mood === 'asleep') {
+      p.push('<circle cx="50" cy="71" r="4" fill="none" stroke="' + ink + '" stroke-width="3"/>');
+      p.push('<text x="80" y="20" font-size="13" font-weight="700" fill="' + c + '">z</text><text x="88" y="11" font-size="9" font-weight="700" fill="' + c + '">z</text>');
+    } else {
+      p.push('<path d="M39 71 H61" stroke="' + ink + '" stroke-width="4" stroke-linecap="round"/>');
+    }
+    var acc = av.accessory;
+    if (acc === 'visor') {
+      p.push('<rect x="10" y="27" width="80" height="9" rx="4.5" fill="' + ink + '" opacity=".88"/>');
+      p.push('<path d="M2 40 h8M0 47 h10M4 54 h6" stroke="' + c + '" stroke-width="3" stroke-linecap="round" opacity=".7"/>');
+    } else if (acc === 'glasses') {
+      p.push('<g fill="none" stroke="' + ink + '" stroke-width="3"><circle cx="' + L + '" cy="' + Y + '" r="11"/><circle cx="' + R + '" cy="' + Y + '" r="11"/><path d="M48 49 h4M26 48 l-12 -3M74 48 l12 -3"/></g>');
+    } else if (acc === 'brow') {
+      p.push('<path d="M28 36 Q37 28 46 34M54 38 H72" stroke="' + ink + '" stroke-width="3.5" fill="none" stroke-linecap="round"/>');
+    } else if (acc === 'headset') {
+      p.push('<g fill="none" stroke="' + ink + '" stroke-width="4" stroke-linecap="round"><path d="M14 46 Q14 4 50 4 Q86 4 86 46"/><path d="M86 52 Q86 76 64 80"/></g>');
+      p.push('<rect x="6" y="40" width="10" height="16" rx="4" fill="' + ink + '"/><rect x="84" y="40" width="10" height="16" rx="4" fill="' + ink + '"/><circle cx="62" cy="80" r="3.5" fill="' + ink + '"/>');
+    } else if (acc === 'goggles') {
+      p.push('<path d="M10 48 H90" stroke="' + ink + '" stroke-width="4"/>');
+      p.push('<g fill="#fff" fill-opacity=".25" stroke="' + ink + '" stroke-width="3.5"><rect x="' + (L - 12) + '" y="' + (Y - 10) + '" width="24" height="19" rx="8"/><rect x="' + (R - 12) + '" y="' + (Y - 10) + '" width="24" height="19" rx="8"/></g>');
+    }
+    return '<svg class="' + (cls || 'face') + '" viewBox="0 0 100 100" role="img" aria-label="agent face">' + p.join('') + '</svg>';
+  }
+
   function orderLine(o) {
     var what = (o.side || '') + ' ' + (o.qty || '') + ' ' + (o.instrument || '');
     if (o.status === 'filled' || o.status === 'dry_run') {
@@ -855,12 +903,23 @@
     return 'REJECTED ' + what + ' — ' + (o.rule || '') + ': ' + (o.detail || '');
   }
 
-  function renderLlmAgent(a) {
-    var b = a.book, modeBadge = a.mode === 'live' ? 'b-up' : (a.mode === 'off' ? 'b-mut' : 'b-acc');
-    var stats = b ? [['Equity', A.money(b.equity)], ['Return', A.signedPct(b.return_pct, 1)],
-      ['Today', b.today_pct == null ? '—' : A.signedPct(b.today_pct, 1)], ['Cash', A.money(b.cash)],
-      ['Drawdown', b.drawdown_pct == null ? '—' : A.pct(b.drawdown_pct, 1)], ['Positions', b.positions.length]]
-      : [['Equity', A.money(a.starting_balance)], ['Status', 'no trades yet']];
+  function renderAgentCard(a, selected) {
+    var s = a.stats, ret = s.return_pct || 0;
+    var modeBadge = a.mode === 'live' ? 'b-up' : (a.mode === 'off' ? 'b-mut' : 'b-acc');
+    return '<div class="acard' + (selected ? ' on' : '') + '" data-agent="' + A.escapeHtml(a.name) + '">' +
+      agentFace(a.avatar, a.mood) + '<div class="nm">' + A.escapeHtml(a.label) + '</div>' +
+      '<div class="tags"><span class="badge ' + modeBadge + '">' + (a.mode === 'dry_run' ? 'practice' : A.escapeHtml(a.mode)) + '</span>' +
+      (a.book && a.book.paused ? '<span class="badge b-down">paused</span>' : '') + '</div>' +
+      '<div class="ret ' + (ret > 0 ? 'up' : (ret < 0 ? 'down' : '')) + '">' + A.signedPct(ret, 1) + '</div>' +
+      '<div class="sub">' + A.money(s.equity == null ? a.starting_balance : s.equity) +
+      (s.today_pct != null ? ' · today ' + A.signedPct(s.today_pct, 1) : '') + '</div>' +
+      '<div class="mini"><div>Trades<b>' + (s.trades + (s.dry_trades ? '<span style="color:var(--faint)">+' + s.dry_trades + '</span>' : '')) + '</b></div>' +
+      '<div>Win rate<b>' + (s.win_rate_pct == null ? '—' : Math.round(s.win_rate_pct) + '%') + '</b></div>' +
+      '<div>Open<b>' + s.open_positions + '</b></div></div></div>';
+  }
+
+  function renderAgentDetail(a) {
+    var b = a.book;
     var positions = b && b.positions.length
       ? '<table><thead><tr><th>Position</th><th class="num">Qty</th><th class="num">Avg cost</th><th class="num">Last</th>' +
         '<th class="num">Value</th><th class="num">P&amp;L</th></tr></thead><tbody>' + b.positions.map(function (p) {
@@ -888,22 +947,67 @@
     var rejected = a.rejections.length ? a.rejections.map(function (r) {
       return '<div class="ord">' + when(r.at) + ' · ' + A.escapeHtml(r.rule) + ': ' + A.escapeHtml(r.detail || '') + '</div>';
     }).join('') : '<div class="empty">None.</div>';
-    return '<div class="card agent"><div class="hd"><div><h3>' + A.escapeHtml(a.label) +
-      ' <span class="badge ' + modeBadge + '">' + A.escapeHtml(a.mode.replace('_', ' ')) + '</span></h3>' +
+    var s = a.stats;
+    var facts = [['Cash', b ? A.money(b.cash) : A.money(a.starting_balance)],
+      ['Drawdown', s.drawdown_pct == null ? '—' : A.pct(s.drawdown_pct, 1)],
+      ['Closed trades', s.closed], ['Avg win', s.avg_win == null ? '—' : A.signedMoney(s.avg_win)],
+      ['Avg loss', s.avg_loss == null ? '—' : A.signedMoney(s.avg_loss)], ['Last wake-up', when(s.last_wake)]];
+    return '<div class="card agent" style="margin-top:16px"><div class="hd"><div><h3>' + A.escapeHtml(a.label) + '</h3>' +
       '<div class="sub">' + A.escapeHtml(a.about || '') + '</div><div class="sub">Wakes ' + a.schedule.join(', ') +
       ' ET · ' + A.escapeHtml(a.model) + '</div></div></div>' +
-      '<div class="stats">' + stats.map(function (s) { return '<div>' + s[0] + '<b>' + s[1] + '</b></div>'; }).join('') + '</div>' +
+      '<div class="stats">' + facts.map(function (f) { return '<div>' + f[0] + '<b>' + f[1] + '</b></div>'; }).join('') + '</div>' +
       '<h4>Positions</h4><div style="overflow-x:auto">' + positions + '</div>' +
       '<h4>Journal</h4>' + entries + '<h4>Wake-ups</h4><div style="overflow-x:auto">' + runs + '</div>' +
       '<h4>Rejected orders</h4>' + rejected + '</div>';
   }
 
-  function loadLlmAgents() {
-    return A.get('/api/llm-agents').then(function (payload) {
-      $('llm-agents').innerHTML = payload.agents.length ? payload.agents.map(renderLlmAgent).join('')
-        : '<div class="card"><div class="empty">No LLM agents configured (settings.yaml → llm_agents).</div></div>';
-    }).catch(function (error) { fail($('llm-agents'), error); });
+  function renderAgentTrades(payload) {
+    var byName = {};
+    payload.agents.forEach(function (a) { byName[a.name] = a; });
+    var pick = state.agentFilter && byName[state.agentFilter] ? state.agentFilter : null;
+    var rows = payload.trades.filter(function (t) { return !pick || t.agent === pick; });
+    $('trade-filter').innerHTML = pick
+      ? '<span class="chip" data-agent="' + A.escapeHtml(pick) + '">' + A.escapeHtml(byName[pick].label) + ' &times;</span>' : '';
+    $('agent-trades').innerHTML = rows.length
+      ? '<table><thead><tr><th>When</th><th>Agent</th><th>Trade</th><th class="num">Price</th>' +
+        '<th class="num">P&amp;L</th><th>Why</th></tr></thead><tbody>' + rows.map(function (t) {
+          var a = byName[t.agent];
+          var pnl = t.realized == null ? '—' : A.signedMoney(t.realized);
+          return '<tr><td class="num">' + when(t.at) + '</td><td>' + (a ? agentFace(a.avatar, a.mood, 'tface') + A.escapeHtml(a.label) : A.escapeHtml(t.agent)) +
+            '</td><td><b>' + A.escapeHtml(t.side) + '</b> ' + t.qty + ' ' + A.escapeHtml(t.instrument || '') +
+            (t.dry_run ? ' <span class="badge b-mut">dry</span>' : '') + '</td><td class="num">' + t.price + '</td>' +
+            '<td class="num ' + (t.realized > 0 ? 'up' : (t.realized < 0 ? 'down' : '')) + '">' + pnl + '</td>' +
+            '<td><div class="tr-reason" title="' + A.escapeHtml(t.reason || '') + '">' + A.escapeHtml(t.reason || '') + '</div></td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty" style="padding:0 17px 14px">No trades yet' + (pick ? ' for this agent' : '') + '.</div>';
   }
+
+  function renderLlmAgents(payload) {
+    state.agentsPayload = payload;
+    if (!payload.agents.length) {
+      $('agent-cards').innerHTML = '<div class="card"><div class="empty">No LLM agents configured (settings.yaml → llm_agents).</div></div>';
+      $('agent-detail').innerHTML = '';
+      $('agent-trades').innerHTML = '';
+      return;
+    }
+    $('agent-cards').innerHTML = payload.agents.map(function (a) { return renderAgentCard(a, a.name === state.agentFilter); }).join('');
+    var sel = payload.agents.filter(function (a) { return a.name === state.agentFilter; })[0];
+    $('agent-detail').innerHTML = sel ? renderAgentDetail(sel) : '';
+    renderAgentTrades(payload);
+  }
+
+  function loadLlmAgents() {
+    return A.get('/api/llm-agents').then(renderLlmAgents)
+      .catch(function (error) { fail($('agent-cards'), error); });
+  }
+
+  /* tap a card (or the filter chip) to filter the trades and open the detail; tap again to clear */
+  document.addEventListener('click', function (event) {
+    var hit = event.target.closest('#llm-agents [data-agent]');
+    if (!hit || !state.agentsPayload) { return; }
+    state.agentFilter = state.agentFilter === hit.dataset.agent ? null : hit.dataset.agent;
+    renderLlmAgents(state.agentsPayload);
+  });
 
   /* ---- autopilot -------------------------------------------------------- */
 

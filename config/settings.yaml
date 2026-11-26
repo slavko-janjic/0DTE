@@ -768,6 +768,7 @@ llm_agents:
     label: Momentum swing
     about: "Buys strength on rising volume, cuts losers fast; shares and 2-6 week calls; holds days to weeks."
     persona: momentum.md
+    avatar: { color: "#f59e0b", eyes: sharp, accessory: visor }   # the face on the Agents page
     mode: dry_run
     model: sonnet
     starting_balance: 5000

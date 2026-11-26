@@ -176,3 +176,22 @@ def test_scan_trends(tmp_path):
     assert [r["symbol"] for r in rows] == ["TSLA", "QQQ"]
     assert rows[0]["above_sma20"] is True and rows[0]["sma20_over_sma50"] is True
     assert "weekly_closes" not in d.price_history("TSLA", weekly=False)
+
+
+def test_agents_overview_cards_and_trades(tmp_path):
+    from webapi.llm_agents import agents_payload
+    path = make_db(tmp_path)
+    cfg = {**CONFIG, "llm_agents": [AGENT | {"mode": "live"}, {"name": "contrarian", "mode": "off"}]}
+    d = desk(path)
+    jid = d.write_journal("open", "TSLA is trending up on volume, above both averages.", ticker="TSLA",
+                          stop=95)["journal_id"]
+    d.place_order(jid, "TSLA", "buy", 5)
+    jid = d.write_journal("close", "TSLA closed below its 20-day average; trend broken.", ticker="TSLA")["journal_id"]
+    d.place_order(jid, "TSLA", "sell", 5)
+    body = agents_payload(path, cfg)
+    mom, con = body["agents"]
+    assert mom["avatar"]["accessory"] == "visor" and con["avatar"]["accessory"] == "brow"
+    assert con["mood"] == "asleep" and mom["mood"] == "neutral"
+    assert mom["stats"]["trades"] == 2 and mom["stats"]["closed"] == 1
+    assert [t["side"] for t in body["trades"]] == ["sell", "buy"]
+    assert body["trades"][0]["realized"] == 0.0 and "trend broken" in body["trades"][0]["reason"]

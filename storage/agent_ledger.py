@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS agent_fills (
     fees REAL NOT NULL,
     venue TEXT NOT NULL,              -- sim | alpaca | expiry
     venue_order_id TEXT,
-    reason TEXT
+    reason TEXT,
+    realized REAL                     -- P&L this fill realized (sells/expiries), net of its fees
 );
 CREATE INDEX IF NOT EXISTS idx_agent_fills ON agent_fills(agent, at);
 
@@ -83,6 +84,9 @@ CREATE TABLE IF NOT EXISTS agent_daily (
 
 def create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_fills)")}
+    if "realized" not in cols:          # added after the table first shipped
+        conn.execute("ALTER TABLE agent_fills ADD COLUMN realized REAL")
 
 
 def _connect(path):
@@ -249,8 +253,9 @@ def record_fill(path: str | Path, *, agent: str, instrument: str, asset: str, sy
             pid = pos["id"]
         conn.execute("UPDATE agent_accounts SET cash = cash + ? WHERE agent = ?", (cash_delta, agent))
         conn.execute("INSERT INTO agent_fills (agent, position_id, at, side, qty, price, fees, venue, "
-                     "venue_order_id, reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                     (agent, pid, now, side, qty, price, fees, venue, venue_order_id, reason))
+                     "venue_order_id, reason, realized) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (agent, pid, now, side, qty, price, fees, venue, venue_order_id, reason,
+                      None if side == "buy" else realized))
         cash = conn.execute("SELECT cash FROM agent_accounts WHERE agent = ?", (agent,)).fetchone()["cash"]
         conn.commit()
         return {"position_id": pid, "realized": realized, "cash": cash}
