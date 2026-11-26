@@ -12,3 +12,5 @@ storage/backups/
 worker.log
 worker.log.old
 worker_crash.log
+feeds.log
+feeds.log.*
