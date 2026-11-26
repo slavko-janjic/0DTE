@@ -70,7 +70,26 @@ class Desk:
                 "change_pct_vs_prev_close": _r((price / prev - 1) * 100) if price and prev else None,
                 "note": "delayed up to ~15 min"}
 
-    def price_history(self, symbol: str, period: str = "6mo") -> dict:
+    def scan_trends(self, symbols: list[str]) -> list[dict]:
+        """One compact trend line per symbol (6 months of daily bars): the
+        screen to run BEFORE pulling any single name's detail."""
+        out = []
+        for sym in list(dict.fromkeys(s.upper() for s in symbols))[:25]:
+            h = self.price_history(sym, "6mo", weekly=False)
+            if "error" in h:
+                out.append({"symbol": sym, "error": h["error"]})
+                continue
+            last = h["last_close"]
+            out.append({"symbol": sym, "last": last, "chg_5d": h["change_pct"]["5d"],
+                        "chg_20d": h["change_pct"]["20d"], "chg_60d": h["change_pct"]["60d"],
+                        "above_sma20": last > h["sma20"] if h["sma20"] else None,
+                        "above_sma50": last > h["sma50"] if h["sma50"] else None,
+                        "sma20_over_sma50": h["sma20"] > h["sma50"] if h["sma50"] else None,
+                        "pct_off_6m_high": _r((last / h["high"] - 1) * 100),
+                        "vol_vs_20d_avg": _r(h["last_volume"] / h["avg_volume_20d"]) if h["avg_volume_20d"] else None})
+        return out
+
+    def price_history(self, symbol: str, period: str = "6mo", weekly: bool = True) -> dict:
         symbol = symbol.upper()
         if period not in ("1mo", "3mo", "6mo", "1y"):
             period = "6mo"
@@ -83,16 +102,18 @@ class Desk:
         def chg(n):
             return _r((last / float(close.iloc[-n - 1]) - 1) * 100) if len(close) > n else None
 
-        weekly = bars.iloc[::-5].iloc[::-1]       # every 5th session, oldest first
-        return {
+        weekly_bars = bars.iloc[::-5].iloc[::-1]       # every 5th session, oldest first
+        out = {
             "symbol": symbol, "last_close": _r(last), "sessions": len(close),
             "change_pct": {"5d": chg(5), "20d": chg(20), "60d": chg(60)},
             "sma20": _r(close.tail(20).mean()), "sma50": _r(close.tail(50).mean()) if len(close) >= 50 else None,
             "high": _r(close.max()), "low": _r(close.min()),
             "avg_volume_20d": int(vol.tail(20).mean()) if len(vol) else None,
             "last_volume": int(vol.iloc[-1]),
-            "weekly_closes": [[ts.date().isoformat(), _r(c)] for ts, c in weekly["Close"].items()],
         }
+        if weekly:
+            out["weekly_closes"] = [[ts.date().isoformat(), _r(c)] for ts, c in weekly_bars["Close"].items()]
+        return out
 
     def option_chain(self, symbol: str, expiration: str | None = None) -> dict:
         symbol = symbol.upper()

@@ -31,6 +31,14 @@ def build_server(desk: Desk):
     async def get_quote(a):
         return _ok(desk.quote(a["symbol"]))
 
+    @tool("scan_trends",
+          "Screen up to 25 tickers in ONE call: last price, % change 5/20/60 sessions, above SMA20/50, "
+          "SMA20 over SMA50, % off the 6-month high, volume vs 20-day average. Use this before any detail.",
+          {"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}},
+           "required": ["symbols"]})
+    async def scan_trends(a):
+        return _ok(desk.scan_trends(a["symbols"]))
+
     @tool("get_price_history",
           "Daily price history summary: % change over 5/20/60 sessions, SMA20/50, high/low, volume, weekly closes.",
           {"symbol": str, "period": Annotated[str, "1mo | 3mo | 6mo | 1y"]})
@@ -78,6 +86,6 @@ def build_server(desk: Desk):
     async def place_order(a):
         return _ok(desk.place_order(**a))
 
-    tools = [get_digest, get_portfolio, get_quote, get_price_history, get_option_chain,
+    tools = [get_digest, get_portfolio, get_quote, scan_trends, get_price_history, get_option_chain,
              get_ticker_buzz, write_journal, place_order]
     return create_sdk_mcp_server(SERVER, tools=tools), [f"mcp__{SERVER}__{t.name}" for t in tools]

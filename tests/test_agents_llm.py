@@ -168,3 +168,11 @@ def test_agents_page_payload(tmp_path):
     assert a["book"]["positions"][0]["instrument"] == "TSLA"
     assert a["journal"][0]["orders"][0]["status"] == "filled"
     assert a["runs"][0]["status"] == "running" and a["schedule"] == ["09:50"]
+
+
+def test_scan_trends(tmp_path):
+    d = desk(make_db(tmp_path))
+    rows = d.scan_trends(["tsla", "TSLA", "QQQ"])
+    assert [r["symbol"] for r in rows] == ["TSLA", "QQQ"]
+    assert rows[0]["above_sma20"] is True and rows[0]["sma20_over_sma50"] is True
+    assert "weekly_closes" not in d.price_history("TSLA", weekly=False)
