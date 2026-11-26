@@ -80,7 +80,7 @@ def run_agent(db_path: str, config: dict, agent_cfg: dict, mode: str | None = No
         elif res.is_error:
             status, error = "error", str(res.result or res.subtype)[:500]
         final = (res.result if res is not None and res.result else (texts[-1] if texts else "")) or ""
-        summary = final.strip().splitlines()[-1][:500] if final.strip() else None
+        summary = final.strip().splitlines()[-1].replace("**", "")[:500] if final.strip() else None
     except asyncio.TimeoutError:
         status, error = "timeout", "wake-up ran past its time limit"
     except Exception as exc:  # noqa: BLE001

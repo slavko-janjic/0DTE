@@ -92,7 +92,7 @@ def agents_payload(db_path: str, config: dict) -> dict:
         trades = _trades(db_path, name)
         all_trades.extend(trades)
         runs = [{"started_at": r["started_at"], "mode": r["mode"], "status": r["status"],
-                 "summary": r["summary"], "orders": r["orders"], "turns": r["turns"],
+                 "summary": (r["summary"] or "").replace("**", "") or None, "orders": r["orders"], "turns": r["turns"],
                  "tokens": (r["tokens_in"] or 0) + (r["tokens_out"] or 0), "error": r["error"]}
                 for r in journal.recent_runs(db_path, name, limit=8)]
         entries = [{"at": e["at"], "action": e["action"], "ticker": e["ticker"], "thesis": e["thesis"],
