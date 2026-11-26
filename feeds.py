@@ -50,14 +50,18 @@ def load_secrets(db_path: str) -> None:
         log.info("no secrets.env in %s", folder)
         return
     loaded = []
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
+    raw = path.read_bytes()
+    # Notepad's "Unicode" option writes UTF-16; everything else is UTF-8
+    text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig")
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
         loaded.append(key.strip())
-    log.info("secrets loaded from %s: %s", path.name, ", ".join(loaded) or "none")
+    log.info("secrets loaded from %s: %s", path.name,
+             ", ".join(loaded) or f"none ({len(raw)} bytes, no KEY=value lines)")
 
 
 def due(status: dict, feed: str, minutes: float, now: datetime) -> bool:

@@ -58,3 +58,10 @@ def test_load_secrets_handles_bom_and_txt_extension(tmp_path, monkeypatch):
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     feeds.load_secrets(str(tmp_path / "t.db"))
     assert os.environ["SEC_USER_AGENT"] == "x a@b.c"
+
+
+def test_load_secrets_reads_utf16(tmp_path, monkeypatch):
+    (tmp_path / "secrets.env").write_text("SEC_USER_AGENT=x a@b.c\n", encoding="utf-16")
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    feeds.load_secrets(str(tmp_path / "t.db"))
+    assert os.environ["SEC_USER_AGENT"] == "x a@b.c"
