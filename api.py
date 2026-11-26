@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from config import check_database_location, database_path, load_settings, poll_interval_seconds
 from storage import db as storage
-from webapi import live, market, payloads, push
+from webapi import live, llm_agents, market, payloads, push
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +168,12 @@ def get_autopilot(ticker: str | None = None) -> dict:
 def get_market() -> dict:
     """The Market page: digest cards, Reddit mention leaders, feed health."""
     return market.market_payload(db_path, config)
+
+
+@app.get("/api/llm-agents")
+def get_llm_agents() -> dict:
+    """The Agents page: each LLM agent's book, wake-ups, journal, rejections."""
+    return llm_agents.agents_payload(db_path, config)
 
 
 @app.get("/api/calibration/{ticker}")

@@ -14,3 +14,5 @@ worker.log.old
 worker_crash.log
 feeds.log
 feeds.log.*
+agents.log
+agents.log.*

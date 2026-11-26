@@ -293,3 +293,12 @@ def unseen_rejections(path: str | Path, agent: str, mark_seen: bool = True) -> l
         return rows
     finally:
         conn.close()
+
+
+def recent_rejections(path: str | Path, agent: str, limit: int = 10) -> list[sqlite3.Row]:
+    conn = _connect(path)
+    try:
+        return conn.execute("SELECT * FROM agent_rejections WHERE agent = ? ORDER BY id DESC LIMIT ?",
+                            (agent, limit)).fetchall()
+    finally:
+        conn.close()

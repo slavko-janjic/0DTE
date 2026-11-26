@@ -28,7 +28,7 @@ from storage import db as storage
 
 
 def agent_config(config: dict, name: str) -> dict:
-    for a in config.get("agents") or []:
+    for a in (config.get("llm_agents") or []) + (config.get("agents") or []):
         if a.get("name") == name:
             return a
     return {}

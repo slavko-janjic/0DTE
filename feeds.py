@@ -21,11 +21,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
+import scheduling
 import single_instance
 from config import DatabaseNotMigrated, check_database_location, database_path, load_settings
 from broker import service as broker_service
@@ -143,22 +143,7 @@ def digest_slot_due(config: dict, last_run: str | None, now: datetime) -> dateti
     cfg = config.get("digests", {})
     if not cfg.get("enabled", True):
         return None
-    tz = ZoneInfo(config.get("market_hours", {}).get("timezone", "America/New_York"))
-    local = now.astimezone(tz)
-    if local.weekday() >= 5 or local.date().isoformat() in set(config.get("market_holidays", [])):
-        return None
-    passed = []
-    for t in cfg.get("at", DEFAULT_DIGEST_TIMES):
-        hh, mm = (int(x) for x in str(t).split(":"))
-        slot = datetime.combine(local.date(), dtime(hh, mm), tz)
-        if slot <= local:
-            passed.append(slot)
-    if not passed:
-        return None
-    slot = max(passed).astimezone(timezone.utc)
-    if last_run and datetime.fromisoformat(last_run) >= slot:
-        return None
-    return slot
+    return scheduling.slot_due(cfg.get("at", DEFAULT_DIGEST_TIMES), config, last_run, now)
 
 
 def run_digests_if_due(config: dict, db_path: str, now: datetime | None = None) -> None:

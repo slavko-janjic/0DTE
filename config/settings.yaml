@@ -752,3 +752,29 @@ risk:
   max_open_positions: 8
   zero_dte_cutoff_minutes: 30
   allowed_assets: [stock, option]
+
+# LLM agents (added 2026-11-26; agents/, agent_runner.py = task 0DTE-Agents).
+# Kept apart from `agents:` above (the rule-based lab agents) so neither code
+# path trips over the other. Each wakes at its `at` times (exchange time,
+# trading days), reads the briefing cards and its own book, may look deeper
+# with the desk tools and a few web searches, journals every decision, and
+# trades its own book through the risk gate.
+#   mode: off | dry_run (decides, never fills) | live (paper fills)
+#   risk: tighten-only overrides of `risk:` above
+llm_schedule:
+  default: ["09:45", "11:00", "12:30", "14:00", "15:30"]
+llm_agents:
+  - name: momentum
+    label: Momentum swing
+    about: "Buys strength on rising volume, cuts losers fast; shares and 2-6 week calls; holds days to weeks."
+    persona: momentum.md
+    mode: dry_run
+    model: sonnet
+    starting_balance: 5000
+    at: ["09:50", "12:30", "15:20"]
+    deep_dives_per_run: 3
+    max_turns: 30
+    max_tokens_per_day: 600000
+    digests: [market, calendar, news, crowd, filings]
+    risk:
+      max_open_positions: 5

@@ -122,6 +122,7 @@
   function loadPage() {
     if (state.page === 'signals') { loadSignal(); loadHistory(); }
     else if (state.page === 'market') { loadMarket(); }
+    else if (state.page === 'agents') { loadLlmAgents(); }
     else if (state.page === 'lab') { loadLab(); }
     else if (state.page === 'cost') { loadCost(); }
     else if (state.page === 'trades') { loadPositions(); loadTradeHistory(); loadCalendar(); }
@@ -835,6 +836,73 @@
           }).join('') + '</tbody></table>'
         : '<div class="empty" style="padding:0 17px 14px">No Reddit snapshot yet.</div>';
     }).catch(function (error) { fail($('mkt-cards'), error); });
+  }
+
+  /* ---- LLM agents ------------------------------------------------------ */
+
+  function when(iso) {
+    if (!iso) { return '—'; }
+    var d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function orderLine(o) {
+    var what = (o.side || '') + ' ' + (o.qty || '') + ' ' + (o.instrument || '');
+    if (o.status === 'filled' || o.status === 'dry_run') {
+      return (o.status === 'dry_run' ? 'DRY RUN ' : 'FILLED ') + what + ' @ ' + o.price;
+    }
+    return 'REJECTED ' + what + ' — ' + (o.rule || '') + ': ' + (o.detail || '');
+  }
+
+  function renderLlmAgent(a) {
+    var b = a.book, modeBadge = a.mode === 'live' ? 'b-up' : (a.mode === 'off' ? 'b-mut' : 'b-acc');
+    var stats = b ? [['Equity', A.money(b.equity)], ['Return', A.signedPct(b.return_pct, 1)],
+      ['Today', b.today_pct == null ? '—' : A.signedPct(b.today_pct, 1)], ['Cash', A.money(b.cash)],
+      ['Drawdown', b.drawdown_pct == null ? '—' : A.pct(b.drawdown_pct, 1)], ['Positions', b.positions.length]]
+      : [['Equity', A.money(a.starting_balance)], ['Status', 'no trades yet']];
+    var positions = b && b.positions.length
+      ? '<table><thead><tr><th>Position</th><th class="num">Qty</th><th class="num">Avg cost</th><th class="num">Last</th>' +
+        '<th class="num">Value</th><th class="num">P&amp;L</th></tr></thead><tbody>' + b.positions.map(function (p) {
+          return '<tr><td class="tkcell">' + A.escapeHtml(p.instrument) + '</td><td class="num">' + p.qty + '</td>' +
+            '<td class="num">' + p.avg_cost + '</td><td class="num">' + (p.price == null ? '—' : p.price) + '</td>' +
+            '<td class="num">' + A.money(p.value) + '</td><td class="num ' + (p.unrealized >= 0 ? 'up' : 'down') + '">' +
+            A.signedMoney(p.unrealized) + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty">No open positions.</div>';
+    var runs = a.runs.length ? '<table><thead><tr><th>Wake-up</th><th>Result</th><th class="num">Orders</th>' +
+      '<th class="num">Tokens</th></tr></thead><tbody>' + a.runs.map(function (r) {
+        return '<tr><td class="num">' + when(r.started_at) + (r.mode === 'dry_run' ? ' <span class="badge b-mut">dry</span>' : '') +
+          '</td><td>' + A.escapeHtml(r.status === 'ok' ? (r.summary || 'ok') : r.status + ': ' + (r.error || '')) + '</td>' +
+          '<td class="num">' + r.orders + '</td><td class="num">' + (r.tokens ? Math.round(r.tokens / 1000) + 'k' : '—') + '</td></tr>';
+      }).join('') + '</tbody></table>' : '<div class="empty">Hasn\'t woken up yet.</div>';
+    var entries = a.journal.length ? a.journal.map(function (e) {
+      var plan = [e.confidence != null ? 'confidence ' + e.confidence : null, e.stop != null ? 'stop ' + e.stop : null,
+        e.target != null ? 'target ' + e.target : null, e.hold_until ? 'hold until ' + e.hold_until : null]
+        .filter(Boolean).join(' · ');
+      return '<div class="jentry"><div class="meta">' + when(e.at) + ' · <b>' + A.escapeHtml(e.action) + '</b>' +
+        (e.ticker ? ' ' + A.escapeHtml(e.ticker) : '') + (plan ? ' · ' + A.escapeHtml(plan) : '') + '</div>' +
+        A.escapeHtml(e.thesis) + (e.evidence ? '<div class="ev">' + A.escapeHtml(e.evidence) + '</div>' : '') +
+        e.orders.map(function (o) { return '<div class="ord">' + A.escapeHtml(orderLine(o)) + '</div>'; }).join('') + '</div>';
+    }).join('') : '<div class="empty">No journal entries yet.</div>';
+    var rejected = a.rejections.length ? a.rejections.map(function (r) {
+      return '<div class="ord">' + when(r.at) + ' · ' + A.escapeHtml(r.rule) + ': ' + A.escapeHtml(r.detail || '') + '</div>';
+    }).join('') : '<div class="empty">None.</div>';
+    return '<div class="card agent"><div class="hd"><div><h3>' + A.escapeHtml(a.label) +
+      ' <span class="badge ' + modeBadge + '">' + A.escapeHtml(a.mode.replace('_', ' ')) + '</span></h3>' +
+      '<div class="sub">' + A.escapeHtml(a.about || '') + '</div><div class="sub">Wakes ' + a.schedule.join(', ') +
+      ' ET · ' + A.escapeHtml(a.model) + '</div></div></div>' +
+      '<div class="stats">' + stats.map(function (s) { return '<div>' + s[0] + '<b>' + s[1] + '</b></div>'; }).join('') + '</div>' +
+      '<h4>Positions</h4><div style="overflow-x:auto">' + positions + '</div>' +
+      '<h4>Journal</h4>' + entries + '<h4>Wake-ups</h4><div style="overflow-x:auto">' + runs + '</div>' +
+      '<h4>Rejected orders</h4>' + rejected + '</div>';
+  }
+
+  function loadLlmAgents() {
+    return A.get('/api/llm-agents').then(function (payload) {
+      $('llm-agents').innerHTML = payload.agents.length ? payload.agents.map(renderLlmAgent).join('')
+        : '<div class="card"><div class="empty">No LLM agents configured (settings.yaml → llm_agents).</div></div>';
+    }).catch(function (error) { fail($('llm-agents'), error); });
   }
 
   /* ---- autopilot -------------------------------------------------------- */

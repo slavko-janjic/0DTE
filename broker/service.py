@@ -60,17 +60,21 @@ def account_state(db_path: str, config: dict, agent: str, venue: SimVenue | None
         paused=bool(acct["paused"]), held=held)
 
 
-def _reject(db_path, order, rule, detail):
-    ledger.record_rejection(db_path, order.agent, rule, detail, order.to_dict())
+def _reject(db_path, order, rule, detail, record=True):
+    if record:
+        ledger.record_rejection(db_path, order.agent, rule, detail, order.to_dict())
     log.info("rejected %s %s %s: %s (%s)", order.agent, order.side, order.instrument, rule, detail)
     return {"status": "rejected", "rule": rule, "detail": detail, "instrument": order.instrument}
 
 
 def submit(db_path: str, config: dict, order: OrderRequest, agent_cfg: dict | None = None,
-           venue=None, market: risk.MarketState | None = None) -> dict:
+           venue=None, market: risk.MarketState | None = None, preview: bool = False) -> dict:
+    """preview=True runs every check against live quotes but stops before the
+    fill: status 'would_fill' or 'rejected', nothing booked or logged."""
+    rec = not preview
     problem = validate_shape(order)
     if problem:
-        return _reject(db_path, order, "invalid", problem)
+        return _reject(db_path, order, "invalid", problem, rec)
     ledger.ensure_account(db_path, order.agent,
                           (agent_cfg or {}).get("starting_balance", DEFAULT_STARTING_BALANCE))
     venue = venue or venue_for(order, config)
@@ -79,15 +83,18 @@ def submit(db_path: str, config: dict, order: OrderRequest, agent_cfg: dict | No
     try:
         price = venue.quote(order)
     except Exception as exc:  # noqa: BLE001
-        return _reject(db_path, order, "no_quote", str(exc)[:200])
+        return _reject(db_path, order, "no_quote", str(exc)[:200], rec)
     if not price:
-        return _reject(db_path, order, "no_quote", f"no live price for {order.instrument}")
+        return _reject(db_path, order, "no_quote", f"no live price for {order.instrument}", rec)
     limits = risk.effective_limits(config, agent_cfg)
     rejection = risk.check(order, price, venue.fees(order), acct, market, limits)
     if rejection:
-        if rejection.rule == "max_drawdown":
+        if rejection.rule == "max_drawdown" and not preview:
             ledger.set_paused(db_path, order.agent, True, rejection.detail)
-        return _reject(db_path, order, rejection.rule, rejection.detail)
+        return _reject(db_path, order, rejection.rule, rejection.detail, rec)
+    if preview:
+        return {"status": "would_fill", "instrument": order.instrument, "side": order.side,
+                "qty": order.qty, "price": price, "fees": venue.fees(order)}
     try:
         fill = venue.execute(order, price)
     except VenueError as exc:

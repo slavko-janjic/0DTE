@@ -47,7 +47,7 @@ $userId = "$env:USERDOMAIN\$env:USERNAME"
 Write-Host "Re-registering 0DTE scheduled tasks as user '$userId' (Limited level, StopExisting policy)..." -ForegroundColor Cyan
 
 # --- 1. stop + remove any existing tasks (kills their tracked instances) ------
-foreach ($name in '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds') {
+foreach ($name in '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds', '0DTE-Agents') {
     if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
         Write-Host "  stopping + unregistering $name ..."
         Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
@@ -58,7 +58,7 @@ foreach ($name in '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds') {
 # --- 2. sweep up any leftover orphans (now killable - we are elevated) -------
 Write-Host "  sweeping leftover python worker/dashboard processes ..."
 Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'feeds\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
+    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'feeds\.py' -or $_.CommandLine -match 'agent_runner\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
     ForEach-Object {
         Write-Host ("    killing pid {0}: {1}" -f $_.ProcessId, $_.CommandLine)
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -144,15 +144,24 @@ $feedsXml = New-TaskXml -Description '0DTE feeds (Reddit, news, SEC filings)' `
 Register-ScheduledTask -TaskName '0DTE-Feeds' -Xml $feedsXml -User $userId -Force | Out-Null
 Write-Host "  registered 0DTE-Feeds" -ForegroundColor Green
 
+# --- 5c. LLM agents -----------------------------------------------------------
+# agent_runner.py wakes the llm_agents at their times; each agent's `mode` in
+# settings.yaml decides whether it may fill (live) or only decide (dry_run).
+$agentsXml = New-TaskXml -Description '0DTE LLM trading agents' `
+    -Command $python -Arguments '-u agent_runner.py' -WorkingDir $root -User $userId
+Register-ScheduledTask -TaskName '0DTE-Agents' -Xml $agentsXml -User $userId -Force | Out-Null
+Write-Host "  registered 0DTE-Agents" -ForegroundColor Green
+
 # --- 6. start + verify -------------------------------------------------------
 Write-Host "Starting all tasks ..." -ForegroundColor Cyan
 Start-ScheduledTask -TaskName '0DTE-Worker'
 Start-ScheduledTask -TaskName '0DTE-Dashboard'
 Start-ScheduledTask -TaskName '0DTE-Feeds'
+Start-ScheduledTask -TaskName '0DTE-Agents'
 Start-Sleep -Seconds 4
 
 Write-Host "`nTask state:" -ForegroundColor Cyan
-Get-ScheduledTask -TaskName '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds' |
+Get-ScheduledTask -TaskName '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds', '0DTE-Agents' |
     Select-Object TaskName,
         @{n = 'State';    e = { $_.State }},
         @{n = 'RunLevel'; e = { $_.Principal.RunLevel }},
@@ -161,9 +170,9 @@ Get-ScheduledTask -TaskName '0DTE-Worker', '0DTE-Dashboard', '0DTE-Feeds' |
 
 Write-Host "Python processes now running:" -ForegroundColor Cyan
 Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'feeds\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
+    Where-Object { $_.CommandLine -match 'worker\.py' -or $_.CommandLine -match 'feeds\.py' -or $_.CommandLine -match 'agent_runner\.py' -or $_.CommandLine -match 'streamlit' -or $_.CommandLine -match 'uvicorn' } |
     Select-Object ProcessId, CommandLine | Format-Table -AutoSize -Wrap
 
-Write-Host "`nDone. Expect exactly ONE worker.py, ONE feeds.py and ONE uvicorn process above." -ForegroundColor Green
+Write-Host "`nDone. Expect exactly ONE worker.py, ONE feeds.py, ONE agent_runner.py and ONE uvicorn process above." -ForegroundColor Green
 Write-Host "The worker will create the worker_heartbeat table on its first cycle;" -ForegroundColor Green
 Write-Host "the web UI's worker banner should clear within a minute." -ForegroundColor Green

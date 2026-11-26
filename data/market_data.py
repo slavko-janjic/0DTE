@@ -194,6 +194,14 @@ def get_next_earnings_date(ticker: str) -> str | None:
         return None
 
 
+def get_expirations(ticker: str) -> list[str]:
+    """Every listed option expiration (YYYY-MM-DD), nearest first; [] on any issue."""
+    try:
+        return list(yf.Ticker(ticker).options or [])
+    except Exception:
+        return []
+
+
 def get_nearest_expiration(ticker: str) -> str | None:
     """Returns the nearest available expiration date string (0DTE if today's listed)."""
     try:

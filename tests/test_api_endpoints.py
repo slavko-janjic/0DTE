@@ -163,3 +163,8 @@ def test_lab_era_is_validated(client):
 def test_market_page_endpoint(client):
     body = client.get("/api/market").json()
     assert set(body) >= {"cards", "feeds", "crowd", "usage_24h", "schedule"}
+
+
+def test_llm_agents_endpoint(client):
+    body = client.get("/api/llm-agents").json()
+    assert "agents" in body
