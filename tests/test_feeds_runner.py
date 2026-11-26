@@ -51,3 +51,10 @@ def test_disabled_feeds_do_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(feeds, "refresh_symbols_if_stale",
                         lambda c, p: (_ for _ in ()).throw(AssertionError("ran")))
     feeds.run_due({"feeds": {"enabled": False}}, path)
+
+
+def test_load_secrets_handles_bom_and_txt_extension(tmp_path, monkeypatch):
+    (tmp_path / "secrets.env.txt").write_text("SEC_USER_AGENT=x a@b.c\n", encoding="utf-8-sig")
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    feeds.load_secrets(str(tmp_path / "t.db"))
+    assert os.environ["SEC_USER_AGENT"] == "x a@b.c"

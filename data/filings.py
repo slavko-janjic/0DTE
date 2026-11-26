@@ -39,7 +39,7 @@ def user_agent(config: dict) -> str:
     if not ua or "CHANGE_ME" in ua:      # the settings.yaml placeholder
         ua = os.environ.get("SEC_USER_AGENT")
     if not ua or "@" not in ua:
-        raise MissingUserAgent("set feeds.filings.user_agent (with a contact email) in settings.yaml")
+        raise MissingUserAgent("no SEC contact: set SEC_USER_AGENT (with an email) in secrets.env beside the database")
     return ua
 
 

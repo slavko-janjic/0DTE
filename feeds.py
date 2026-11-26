@@ -42,15 +42,22 @@ log = logging.getLogger("feeds")
 def load_secrets(db_path: str) -> None:
     """KEY=value lines from secrets.env beside the database into the
     environment, without overriding anything already set."""
-    path = Path(db_path).parent / "secrets.env"
-    if not path.exists():
+    folder = Path(db_path).parent
+    # Notepad likes to add .txt; utf-8-sig drops the byte-order mark Windows
+    # editors put at the start, which would otherwise glue onto the first key.
+    path = next((p for p in (folder / "secrets.env", folder / "secrets.env.txt") if p.exists()), None)
+    if path is None:
+        log.info("no secrets.env in %s", folder)
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    loaded = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        loaded.append(key.strip())
+    log.info("secrets loaded from %s: %s", path.name, ", ".join(loaded) or "none")
 
 
 def due(status: dict, feed: str, minutes: float, now: datetime) -> bool:
