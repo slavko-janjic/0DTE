@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 
 import single_instance
 from config import DatabaseNotMigrated, check_database_location, database_path, load_settings
+from broker import service as broker_service
 from data import filings, news
 from digests import build as digest_build
 from sentiment import apewisdom
@@ -219,6 +220,9 @@ def main() -> None:
             config = load_settings()    # picks up interval / watchlist edits without a restart
             run_due(config, db_path)
             run_digests_if_due(config, db_path)
+            settled = broker_service.settle_expired(db_path, config)   # agents' expired options
+            if settled:
+                log.info("broker: settled %d expired option position(s)", settled)
         except Exception:  # noqa: BLE001
             log.exception("feeds cycle failed")
         time.sleep(TICK_SECONDS)

@@ -733,3 +733,22 @@ digests:
   model: haiku
   at: ["08:45", "11:00", "13:30", "16:15"]
   cards: [market, calendar, news, crowd, filings]
+
+# Broker + risk gate for the LLM agents (added 2026-11-26; broker/). Every
+# agent order goes validate -> quote -> risk gate -> fill -> ledger. Options
+# always fill in the simulator against the live chain (buy at the ask, sell at
+# the bid, `costs` above). Stocks go to the Alpaca paper account when
+# ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY are in secrets.env, else the
+# simulator at the last price plus slippage. Each agent's own `risk:` block can
+# only tighten these limits, never loosen them.
+broker:
+  stocks: alpaca              # alpaca | sim
+  stock_slippage_bps: 5       # simulator only
+risk:
+  max_position_pct: 20        # one position's value after a buy, % of equity
+  max_0dte_premium_pct: 10    # premium in options expiring today, % of equity
+  max_daily_loss_pct: 6       # down this much today -> no new buys until tomorrow
+  max_drawdown_pct: 30        # this far below peak equity -> agent paused for review
+  max_open_positions: 8
+  zero_dte_cutoff_minutes: 30
+  allowed_assets: [stock, option]
