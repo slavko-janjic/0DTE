@@ -83,6 +83,9 @@ def test_calendar_input_window_and_earnings():
     assert "2026-11-27 | half day" in text
     assert "2026-11-30 | earnings | TSLA" in text
     assert "FOMC" not in text            # Dec 9 is outside the 7-day window
+    asked = []
+    inputs.calendar(None, CONFIG, earnings_lookup=lambda t: asked.append(t), today=date(2026, 11, 26))
+    assert asked == ["TSLA"]              # QQQ is an ETF: no earnings lookup
     empty = inputs.calendar(None, {"feeds": {}}, earnings_lookup=lambda t: None, today=date(2026, 6, 1))
     assert empty.startswith("No scheduled catalysts")
 

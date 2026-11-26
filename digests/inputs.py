@@ -18,6 +18,8 @@ NEWS_HOURS = 18
 NEWS_MAX_ITEMS = 90
 FILINGS_DAYS = 3
 CALENDAR_DAYS = 7
+# Index ETFs have no earnings; asking yfinance for them only logs 404 noise.
+NO_EARNINGS = {"QQQ", "SPY", "IWM", "DIA", "VOO", "VTI"}
 
 
 def _pct_change(now: int | None, before: int | None) -> str:
@@ -119,7 +121,9 @@ def calendar(db_path: str, config: dict, earnings_lookup=None,
     """Scheduled macro catalysts, market holidays/half days, and watchlist
     earnings in the next CALENDAR_DAYS days."""
     if earnings_lookup is None:
+        import logging
         from data.market_data import get_next_earnings_date as earnings_lookup
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)   # misses are expected
     tz = ZoneInfo(config.get("market_hours", {}).get("timezone", "America/New_York"))
     today = today or datetime.now(tz).date()
     end = today + timedelta(days=CALENDAR_DAYS)
@@ -135,6 +139,8 @@ def calendar(db_path: str, config: dict, earnings_lookup=None,
         if in_window(d):
             lines.append(f"{d} | half day, early close 13:00 ET")
     for t in config.get("feeds", {}).get("watchlist", []):
+        if t in NO_EARNINGS:
+            continue
         when = earnings_lookup(t)
         if when and in_window(when[:10]):
             lines.append(f"{when[:10]} | earnings | {t}")
