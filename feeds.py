@@ -199,10 +199,14 @@ def main() -> None:
         run_due(config, db_path, force=True)
         return
     if args.digests_now:
+        started = datetime.now(timezone.utc).isoformat()
         for card in digest_build.build_all(db_path, config):
             print(f"\n=== {card['kind']} ({'ok' if card['ok'] else 'FAILED'}) ===\n{card['content']}")
-        for purpose, u in digest_store.usage_summary(db_path, hours=1).items():
-            print(f"{purpose}: {u['calls']} calls, {u['tokens_in']} tokens in, {u['tokens_out']} out")
+        print("\nmodel calls this run (input / cache read / cache write / output tokens, seconds):")
+        for u in digest_store.usage_rows(db_path, started):
+            print(f"  {u['purpose']:<18} {u['input_tokens']} / {u['cache_read_tokens']} / "
+                  f"{u['cache_write_tokens']} / {u['output_tokens']}, "
+                  f"{(u['duration_ms'] or 0) / 1000:.1f}s{'' if u['ok'] else '  FAILED: ' + (u['error'] or '')}")
         return
     try:
         _lock = single_instance.acquire(LOCK_PORT)  # noqa: F841 - held for process lifetime

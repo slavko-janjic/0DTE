@@ -109,6 +109,14 @@ def log_llm_usage(path: str | Path, purpose: str, *, model: str | None, usage: d
         conn.close()
 
 
+def usage_rows(path: str | Path, since: str) -> list[sqlite3.Row]:
+    conn = _connect(path)
+    try:
+        return conn.execute("SELECT * FROM llm_usage WHERE at >= ? ORDER BY id", (since,)).fetchall()
+    finally:
+        conn.close()
+
+
 def usage_summary(path: str | Path, hours: float = 24) -> dict[str, dict]:
     """Per purpose prefix (digest, agent) over the window: calls and tokens."""
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()

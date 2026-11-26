@@ -34,7 +34,8 @@ async def _query(prompt: str, system: str, model: str, timeout: float) -> LlmRes
     with tempfile.TemporaryDirectory(prefix="0dte-llm-") as empty:
         options = ClaudeAgentOptions(
             model=model, system_prompt=system, tools=[], allowed_tools=[], max_turns=1,
-            setting_sources=[], cwd=empty)
+            setting_sources=[], cwd=empty,
+            thinking={"type": "disabled"})    # short cards: thinking only burns output tokens
         parts, result = [], None
         started = time.monotonic()
 
