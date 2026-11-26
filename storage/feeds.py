@@ -1,5 +1,5 @@
 """Tables for the outside-world feeds the LLM agents read: Reddit posts, news
-headlines, SEC filings, plus the ticker universe used to tag them and a status
+headlines, SEC filings, Reddit mention counts (via ApeWisdom), plus the ticker universe used to tag them and a status
 row per feed. Written by feeds.py (its own scheduled task), read by the digest
 builders and the web UI. Kept apart from storage/db.py so the trading tables
 and these research tables can change independently; db.init_db creates both.
@@ -15,22 +15,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS reddit_posts (
-    id TEXT PRIMARY KEY,              -- reddit's post id (t3_ prefix stripped)
-    subreddit TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT,                        -- selftext, trimmed
-    author TEXT,
-    url TEXT,
-    score INTEGER,                    -- NULL when read from RSS (no counts there)
-    num_comments INTEGER,
-    created_at TEXT NOT NULL,         -- UTC ISO
-    tickers_json TEXT NOT NULL,       -- ["TSLA", ...]
-    tone REAL,                        -- -1 bearish .. +1 bullish, keyword count
-    first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS reddit_mentions (
+    taken_at TEXT NOT NULL,           -- UTC ISO, one value per collection run
+    filter TEXT NOT NULL,             -- ApeWisdom filter: wallstreetbets, options, all-stocks, ...
+    ticker TEXT NOT NULL,
+    name TEXT,
+    rank INTEGER,
+    mentions INTEGER,                 -- over the trailing 24 hours
+    upvotes INTEGER,
+    rank_24h_ago INTEGER,
+    mentions_24h_ago INTEGER,
+    PRIMARY KEY (taken_at, filter, ticker)
 );
-CREATE INDEX IF NOT EXISTS idx_reddit_created ON reddit_posts(created_at);
+CREATE INDEX IF NOT EXISTS idx_reddit_mentions_ticker ON reddit_mentions(ticker, taken_at);
 
 CREATE TABLE IF NOT EXISTS news_items (
     id TEXT PRIMARY KEY,              -- feed guid, or the link when there is none
@@ -93,42 +90,47 @@ def _since(hours: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
-# --- reddit -------------------------------------------------------------------
+# --- reddit (ApeWisdom mention snapshots) ------------------------------------
 
-def upsert_reddit_posts(path: str | Path, posts: list[dict]) -> int:
-    """Insert new posts; for ones already stored, refresh score, comment count
-    and last_seen (a hot post keeps climbing). Returns how many were new."""
-    now = _now()
-    new = 0
+def insert_reddit_mentions(path: str | Path, rows: list[dict], taken_at: str | None = None) -> int:
+    """Store one snapshot (every row shares taken_at). Returns rows stored."""
+    taken_at = taken_at or _now()
     conn = _connect(path)
     try:
-        for p in posts:
-            cur = conn.execute(
-                "UPDATE reddit_posts SET score = COALESCE(?, score), "
-                "num_comments = COALESCE(?, num_comments), last_seen = ? WHERE id = ?",
-                (p.get("score"), p.get("num_comments"), now, p["id"]))
-            if cur.rowcount:
-                continue
-            conn.execute(
-                "INSERT INTO reddit_posts (id, subreddit, title, body, author, url, score, "
-                "num_comments, created_at, tickers_json, tone, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (p["id"], p["subreddit"], p["title"], p.get("body"), p.get("author"),
-                 p.get("url"), p.get("score"), p.get("num_comments"), p["created_at"],
-                 json.dumps(p.get("tickers", [])), p.get("tone"), now, now))
-            new += 1
+        conn.executemany(
+            "INSERT OR REPLACE INTO reddit_mentions (taken_at, filter, ticker, name, rank, "
+            "mentions, upvotes, rank_24h_ago, mentions_24h_ago) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(taken_at, r["filter"], r["ticker"], r.get("name"), r.get("rank"), r.get("mentions"),
+              r.get("upvotes"), r.get("rank_24h_ago"), r.get("mentions_24h_ago")) for r in rows])
         conn.commit()
+        return len(rows)
     finally:
         conn.close()
-    return new
 
 
-def recent_reddit_posts(path: str | Path, hours: float = 24, limit: int = 500) -> list[sqlite3.Row]:
+def latest_reddit_mentions(path: str | Path, filter_name: str = "all-stocks",
+                           limit: int = 50) -> list[sqlite3.Row]:
+    """The most recent snapshot for one filter, best rank first."""
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT MAX(taken_at) AS t FROM reddit_mentions WHERE filter = ?",
+                           (filter_name,)).fetchone()
+        if not row or not row["t"]:
+            return []
+        return conn.execute(
+            "SELECT * FROM reddit_mentions WHERE filter = ? AND taken_at = ? "
+            "ORDER BY rank LIMIT ?", (filter_name, row["t"], limit)).fetchall()
+    finally:
+        conn.close()
+
+
+def reddit_mention_history(path: str | Path, ticker: str, filter_name: str = "all-stocks",
+                           hours: float = 48) -> list[sqlite3.Row]:
     conn = _connect(path)
     try:
         return conn.execute(
-            "SELECT * FROM reddit_posts WHERE created_at >= ? "
-            "ORDER BY COALESCE(score, 0) DESC LIMIT ?", (_since(hours), limit)).fetchall()
+            "SELECT * FROM reddit_mentions WHERE ticker = ? AND filter = ? AND taken_at >= ? "
+            "ORDER BY taken_at", (ticker.upper(), filter_name, _since(hours))).fetchall()
     finally:
         conn.close()
 
@@ -252,28 +254,25 @@ def symbols_updated_at(path: str | Path) -> str | None:
 # --- mentions -----------------------------------------------------------------
 
 def ticker_mentions(path: str | Path, hours: float = 24) -> dict[str, dict]:
-    """Per ticker over the window: Reddit posts mentioning it, their summed
-    score, mean tone, and news headlines tagged with it. The raw material for
-    the 'most talked about' digest card."""
+    """Per ticker: Reddit mentions and upvotes over the last 24 hours (latest
+    ApeWisdom snapshot, all stock subreddits), the change against 24 hours
+    before, and news headlines tagged with it over `hours`. The raw material
+    for the 'most talked about' digest card."""
     out: dict[str, dict] = {}
 
     def slot(t):
-        return out.setdefault(t, {"reddit_posts": 0, "reddit_score": 0,
-                                  "tones": [], "news": 0})
+        return out.setdefault(t, {"reddit_mentions": 0, "reddit_mentions_24h_ago": None,
+                                  "reddit_upvotes": 0, "reddit_rank": None, "news": 0})
 
-    for row in recent_reddit_posts(path, hours, limit=5000):
-        for t in json.loads(row["tickers_json"]):
-            s = slot(t)
-            s["reddit_posts"] += 1
-            s["reddit_score"] += row["score"] or 0
-            if row["tone"] is not None:
-                s["tones"].append(row["tone"])
+    for row in latest_reddit_mentions(path, "all-stocks", limit=1000):
+        s = slot(row["ticker"])
+        s["reddit_mentions"] = row["mentions"] or 0
+        s["reddit_mentions_24h_ago"] = row["mentions_24h_ago"]
+        s["reddit_upvotes"] = row["upvotes"] or 0
+        s["reddit_rank"] = row["rank"]
     for row in recent_news_items(path, hours, limit=5000):
         for t in json.loads(row["tickers_json"]):
             slot(t)["news"] += 1
-    for s in out.values():
-        tones = s.pop("tones")
-        s["reddit_tone"] = round(sum(tones) / len(tones), 3) if tones else None
     return out
 
 

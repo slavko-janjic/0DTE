@@ -1,4 +1,4 @@
-"""Feeds runner: collects Reddit posts, news headlines and SEC filings into
+"""Feeds runner: collects Reddit mention counts, news headlines and SEC filings into
 the shared database for the LLM agents' digests. Runs as its own scheduled
 task (0DTE-Feeds) beside the worker, so a slow or failing outside site can
 never delay the trading loop.
@@ -8,9 +8,9 @@ never delay the trading loop.
 
 Each feed has its own interval in config `feeds.intervals_minutes`; a feed is
 due when that long has passed since its last run (stored in feed_status, so a
-restart doesn't re-hit every site at once). Secrets (Reddit API keys) come
-from the environment or a secrets.env file beside the database - never from
-the repo.
+restart doesn't re-hit every site at once). Secrets (the SEC contact email)
+come from the environment or a secrets.env file beside the database - never
+from the repo.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from pathlib import Path
 import single_instance
 from config import DatabaseNotMigrated, check_database_location, database_path, load_settings
 from data import filings, news
-from sentiment import reddit
+from sentiment import apewisdom
 from storage import db as storage
 from storage import feeds as feed_store
 
@@ -96,7 +96,8 @@ def run_feed(name: str, config: dict, db_path: str) -> None:
     errors: list[str] = []
     try:
         if name == "reddit":
-            new = feed_store.upsert_reddit_posts(db_path, reddit.collect(config, universe))
+            rows, errors = apewisdom.collect(config)
+            new = feed_store.insert_reddit_mentions(db_path, rows)
         elif name == "news":
             items, errors = news.collect(config, universe)
             new = feed_store.insert_news_items(db_path, items)
@@ -151,7 +152,6 @@ def main() -> None:
         sys.exit(2)
     storage.init_db(db_path)
     load_secrets(db_path)
-    log.info("reddit source: %s", "API" if reddit.has_api_credentials() else "RSS fallback")
 
     if args.once:
         run_due(config, db_path, force=True)

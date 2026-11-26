@@ -9,5 +9,4 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 httpx>=0.27   # fastapi's TestClient (tests/test_api_endpoints.py)
 pywebpush>=2.0   # Web Push for autopilot alerts with the app closed (webapi/push.py)
-feedparser>=6.0   # news + Reddit RSS (data/news.py, sentiment/reddit.py)
-praw>=7.7   # Reddit API when keys are set (sentiment/reddit.py)
+feedparser>=6.0   # news RSS (data/news.py)

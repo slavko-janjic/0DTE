@@ -21,11 +21,11 @@ def test_due():
 
 
 def test_load_secrets_does_not_override(tmp_path, monkeypatch):
-    (tmp_path / "secrets.env").write_text("# c\nREDDIT_CLIENT_ID='abc'\nOTHER=1\n")
-    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
+    (tmp_path / "secrets.env").write_text("# c\nSEC_USER_AGENT='abc'\nOTHER=1\n")
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     monkeypatch.setenv("OTHER", "keep")
     feeds.load_secrets(str(tmp_path / "t.db"))
-    assert os.environ["REDDIT_CLIENT_ID"] == "abc"
+    assert os.environ["SEC_USER_AGENT"] == "abc"
     assert os.environ["OTHER"] == "keep"
 
 
@@ -34,9 +34,9 @@ def test_run_due_runs_only_due_feeds_and_records_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(feeds, "refresh_symbols_if_stale", lambda c, p: None)
     monkeypatch.setattr(feeds.news, "collect", lambda c, u: (
         [{"id": "1", "source": "s", "title": "t", "tickers": []}], ["bad: down"]))
-    def boom(c, u):
+    def boom(c):
         raise RuntimeError("reddit 429")
-    monkeypatch.setattr(feeds.reddit, "collect", boom)
+    monkeypatch.setattr(feeds.apewisdom, "collect", boom)
     feed_store.record_feed_run(path, "filings", 0)          # just ran: not due
     cfg = {"feeds": {"intervals_minutes": {"reddit": 30, "news": 15, "filings": 360}}}
     feeds.run_due(cfg, path)

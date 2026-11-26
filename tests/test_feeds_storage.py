@@ -15,10 +15,9 @@ def iso(hours_ago: float = 0) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
 
 
-def post(pid, **kw):
-    base = {"id": pid, "subreddit": "wallstreetbets", "title": f"post {pid}",
-            "created_at": iso(1), "tickers": ["TSLA"], "score": 10, "num_comments": 2,
-            "tone": 0.5}
+def mention(ticker, filter_name="all-stocks", **kw):
+    base = {"filter": filter_name, "ticker": ticker, "name": ticker, "rank": 1,
+            "mentions": 100, "upvotes": 500, "rank_24h_ago": 3, "mentions_24h_ago": 40}
     base.update(kw)
     return base
 
@@ -29,26 +28,23 @@ def test_init_db_creates_feed_tables(tmp_path):
     assert feeds.symbol_universe(path) == set()
 
 
-def test_reddit_upsert_counts_new_and_refreshes_score(tmp_path):
+def test_reddit_mentions_latest_snapshot_only(tmp_path):
     path = make_db(tmp_path)
-    assert feeds.upsert_reddit_posts(path, [post("a"), post("b")]) == 2
-    assert feeds.upsert_reddit_posts(path, [post("a", score=99), post("c")]) == 1
-    rows = {r["id"]: r for r in feeds.recent_reddit_posts(path)}
-    assert rows["a"]["score"] == 99
-    assert len(rows) == 3
+    feeds.insert_reddit_mentions(path, [mention("NVDA", rank=1), mention("TSLA", rank=2)],
+                                 taken_at=iso(2))
+    assert feeds.insert_reddit_mentions(path, [mention("TSLA", rank=1, mentions=300)],
+                                        taken_at=iso(1)) == 1
+    latest = feeds.latest_reddit_mentions(path)
+    assert [(r["ticker"], r["mentions"]) for r in latest] == [("TSLA", 300)]
+    assert feeds.latest_reddit_mentions(path, "options") == []
 
 
-def test_reddit_rss_refresh_keeps_existing_score(tmp_path):
+def test_reddit_mention_history(tmp_path):
     path = make_db(tmp_path)
-    feeds.upsert_reddit_posts(path, [post("a", score=50)])
-    feeds.upsert_reddit_posts(path, [post("a", score=None, num_comments=None)])
-    assert feeds.recent_reddit_posts(path)[0]["score"] == 50
-
-
-def test_recent_reddit_respects_window(tmp_path):
-    path = make_db(tmp_path)
-    feeds.upsert_reddit_posts(path, [post("old", created_at=iso(48)), post("new")])
-    assert [r["id"] for r in feeds.recent_reddit_posts(path, hours=24)] == ["new"]
+    feeds.insert_reddit_mentions(path, [mention("TSLA", mentions=10)], taken_at=iso(60))
+    feeds.insert_reddit_mentions(path, [mention("TSLA", mentions=20)], taken_at=iso(2))
+    feeds.insert_reddit_mentions(path, [mention("TSLA", mentions=30)], taken_at=iso(1))
+    assert [r["mentions"] for r in feeds.reddit_mention_history(path, "tsla")] == [20, 30]
 
 
 def test_news_dedupes_and_merges_tickers(tmp_path):
@@ -83,13 +79,14 @@ def test_symbols_replace_and_lookup(tmp_path):
 
 def test_ticker_mentions_combines_reddit_and_news(tmp_path):
     path = make_db(tmp_path)
-    feeds.upsert_reddit_posts(path, [post("a", score=10, tone=1.0),
-                                     post("b", score=5, tone=0.0)])
+    feeds.insert_reddit_mentions(path, [mention("TSLA", rank=4, mentions=80, upvotes=900,
+                                                mentions_24h_ago=20)])
     feeds.insert_news_items(path, [{"id": "n", "source": "s", "title": "t",
                                     "published_at": iso(1), "tickers": ["TSLA", "NVDA"]}])
     m = feeds.ticker_mentions(path)
-    assert m["TSLA"] == {"reddit_posts": 2, "reddit_score": 15, "news": 1, "reddit_tone": 0.5}
-    assert m["NVDA"]["reddit_tone"] is None
+    assert m["TSLA"] == {"reddit_mentions": 80, "reddit_mentions_24h_ago": 20,
+                         "reddit_upvotes": 900, "reddit_rank": 4, "news": 1}
+    assert m["NVDA"]["reddit_mentions"] == 0 and m["NVDA"]["news"] == 1
 
 
 def test_feed_status_keeps_last_ok_through_errors(tmp_path):
