@@ -688,3 +688,34 @@ database:
   # Nightly backups stay in the synced folder: each is written once, closed and
   # never touched again, so OneDrive syncs them safely - off-machine copies.
   backup_dir: "storage/backups"
+
+# Feeds (added 2026-11-26): Reddit, news and SEC filings for the LLM agents'
+# digests, collected by feeds.py (scheduled task 0DTE-Feeds) into the same
+# database. Raw items only - no LLM calls. Edits here are picked up within a
+# minute, no restart needed.
+feeds:
+  enabled: true
+  # tickers always tagged when mentioned, and the ones with a per-ticker news
+  # feed and SEC filings lookups. Wider than `tickers` above on purpose: the
+  # agents may trade stocks, the worker only polls QQQ/SPY.
+  watchlist: [QQQ, SPY, TSLA, NVDA, AAPL, MSFT, AMZN, META, GOOGL, AMD]
+  intervals_minutes:          # 0 switches a feed off
+    reddit: 30
+    news: 15
+    filings: 360
+  reddit:
+    # API keys (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET) go in secrets.env
+    # beside the database, never here. Without them: public RSS, no scores.
+    subreddits: [wallstreetbets, options, stocks, investing]
+    per_listing: 50           # posts from hot AND from new, per subreddit
+  news:
+    per_ticker_yahoo: true    # one Yahoo Finance headline feed per watchlist ticker
+    feeds:
+      cnbc_top: "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+      marketwatch_top: "https://feeds.content.dowjones.io/public/rss/mw_topstories"
+      seekingalpha_currents: "https://seekingalpha.com/market_currents.xml"
+  filings:
+    # SEC requires a contact email in the User-Agent, or it blocks the IP.
+    user_agent: "0DTE research tool (contact: CHANGE_ME@example.com)"
+    forms: ["8-K", "10-Q", "10-K", "4", "S-1", "SC 13D", "SC 13G"]
+    lookback_days: 14
