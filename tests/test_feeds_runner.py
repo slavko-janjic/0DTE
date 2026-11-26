@@ -65,3 +65,12 @@ def test_load_secrets_reads_utf16(tmp_path, monkeypatch):
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     feeds.load_secrets(str(tmp_path / "t.db"))
     assert os.environ["SEC_USER_AGENT"] == "x a@b.c"
+
+
+def test_failed_feed_retries_sooner():
+    now = datetime.now(timezone.utc)
+    failed = {"filings": {"last_run": (now - timedelta(minutes=11)).isoformat(),
+                          "last_error": "no SEC contact"}}
+    assert feeds.due(failed, "filings", 360, now)
+    failed["filings"]["last_error"] = None
+    assert not feeds.due(failed, "filings", 360, now)

@@ -35,6 +35,7 @@ LOCK_PORT = 47633                 # the worker holds 47632
 TICK_SECONDS = 60
 SYMBOLS_MAX_AGE_DAYS = 7
 DEFAULT_INTERVALS = {"reddit": 30, "news": 15, "filings": 360}
+RETRY_MINUTES = 10
 
 log = logging.getLogger("feeds")
 
@@ -65,8 +66,16 @@ def load_secrets(db_path: str) -> None:
 
 
 def due(status: dict, feed: str, minutes: float, now: datetime) -> bool:
-    last = (status.get(feed) or {}).get("last_run")
-    return last is None or now - datetime.fromisoformat(last) >= timedelta(minutes=minutes)
+    """A feed is due once its interval has passed since its last run - or
+    after RETRY_MINUTES when that run failed, so a 6-hour feed that hit an
+    error doesn't sit idle until the next window."""
+    st = status.get(feed) or {}
+    last = st.get("last_run")
+    if last is None:
+        return True
+    if st.get("last_error"):
+        minutes = min(minutes, RETRY_MINUTES)
+    return now - datetime.fromisoformat(last) >= timedelta(minutes=minutes)
 
 
 def refresh_symbols_if_stale(config: dict, db_path: str) -> None:
