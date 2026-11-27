@@ -38,9 +38,19 @@ def history_dir(data_dir: Path) -> Path:
 
 
 def load_keys(data_dir: Path) -> tuple[str, str]:
-    key_id, secret = os.environ.get("ALPACA_KEY_ID"), os.environ.get("ALPACA_SECRET_KEY")
-    if key_id and secret:
-        return key_id, secret
+    """The Alpaca key pair, first found: ALPACA_KEY_ID/ALPACA_SECRET_KEY in the
+    environment; the broker's ALPACA_API_KEY_ID/ALPACA_API_SECRET_KEY in the
+    environment or secrets.env beside the database; alpaca_keys.json. The
+    broker's pair comes before the file because regenerating keys at Alpaca
+    revokes the old pair (2026-11-26: the file's pair went 401)."""
+    from config import read_secrets
+    _, secrets = read_secrets(data_dir)
+    for id_name, secret_name in (("ALPACA_KEY_ID", "ALPACA_SECRET_KEY"),
+                                 ("ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY")):
+        key_id = os.environ.get(id_name) or secrets.get(id_name)
+        secret = os.environ.get(secret_name) or secrets.get(secret_name)
+        if key_id and secret:
+            return key_id, secret
     key_file = Path(data_dir) / "alpaca_keys.json"
     if key_file.exists():
         keys = json.loads(key_file.read_text(encoding="utf-8"))

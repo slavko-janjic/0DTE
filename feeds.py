@@ -27,7 +27,8 @@ from pathlib import Path
 
 import scheduling
 import single_instance
-from config import DatabaseNotMigrated, check_database_location, database_path, load_settings
+from config import (DatabaseNotMigrated, check_database_location, database_path, load_settings,
+                    read_secrets)
 from broker import service as broker_service
 from data import filings, news
 from digests import build as digest_build
@@ -51,25 +52,14 @@ def load_secrets(db_path: str) -> None:
     """KEY=value lines from secrets.env beside the database into the
     environment, without overriding anything already set."""
     folder = Path(db_path).parent
-    # Notepad likes to add .txt; utf-8-sig drops the byte-order mark Windows
-    # editors put at the start, which would otherwise glue onto the first key.
-    path = next((p for p in (folder / "secrets.env", folder / "secrets.env.txt") if p.exists()), None)
+    path, pairs = read_secrets(folder)
     if path is None:
         log.info("no secrets.env in %s", folder)
         return
-    loaded = []
-    raw = path.read_bytes()
-    # Notepad's "Unicode" option writes UTF-16; everything else is UTF-8
-    text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig")
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-        loaded.append(key.strip())
+    for key, value in pairs.items():
+        os.environ.setdefault(key, value)
     log.info("secrets loaded from %s: %s", path.name,
-             ", ".join(loaded) or f"none ({len(raw)} bytes, no KEY=value lines)")
+             ", ".join(pairs) or f"none ({path.stat().st_size} bytes, no KEY=value lines)")
 
 
 def due(status: dict, feed: str, minutes: float, now: datetime) -> bool:
