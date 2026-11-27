@@ -9,3 +9,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 httpx>=0.27   # fastapi's TestClient (tests/test_api_endpoints.py)
 pywebpush>=2.0   # Web Push for autopilot alerts with the app closed (webapi/push.py)
+feedparser>=6.0   # news RSS (data/news.py)
+claude-agent-sdk>=0.2   # digests + agents, via the Claude Code CLI login (llm/client.py)

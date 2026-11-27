@@ -248,6 +248,45 @@ svg.chart{width:100%;height:auto;display:block}
 
 /* empty / loading / error text inside a card */
 .empty{color:var(--faint);font-size:12.5px;padding:14px 2px}
+
+/* Market page: digest cards + feed health */
+.feedrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.feed{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2)}
+.feed i{width:7px;height:7px;border-radius:50%;background:var(--up)}
+.feed.warn i{background:#d9a400} .feed.stale i,.feed.error i{background:var(--down)}
+.feed .sub{font-size:11.5px}
+.digest .md{font-size:13.5px;line-height:1.5;margin-top:8px}
+.digest .md p{margin:0 0 6px}
+.digest .md ul{margin:4px 0 0;padding-left:18px}
+.digest .md li{margin:3px 0}
+.digest .md strong{color:var(--ink)}
+.digest .foot{margin-top:10px;font-size:11.5px;color:var(--faint)}
+.digest .err{margin-top:8px;font-size:12px;color:var(--down)}
+
+/* Agents page: cards with faces, trade list, detail */
+.agent-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+.acard{cursor:pointer;text-align:center;padding:16px 14px;border:1px solid var(--border);border-radius:14px;background:var(--surface);transition:border-color .15s,transform .15s}
+.acard:hover{transform:translateY(-1px)}
+.acard.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.acard .face{width:84px;height:84px;display:block;margin:0 auto 8px}
+.acard .nm{font-weight:600;font-size:14.5px}
+.acard .tags{margin:6px 0 10px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+.acard .ret{font-family:var(--mono);font-size:22px;font-weight:600}
+.acard .mini{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:10px;font-size:11px;color:var(--faint)}
+.acard .mini b{display:block;color:var(--ink);font-family:var(--mono);font-size:13px}
+.tface{width:22px;height:22px;vertical-align:middle;margin-right:6px}
+.tr-reason{max-width:340px;color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface-2);cursor:pointer}
+@media(max-width:760px){.agent-cards{grid-template-columns:repeat(2,1fr)}.tr-reason{max-width:180px}}
+.agent+.agent{margin-top:16px}
+.agent .stats{display:flex;flex-wrap:wrap;gap:22px;margin:12px 0 4px}
+.agent .stats div{font-size:12px;color:var(--muted)} .agent .stats b{display:block;font-size:17px;color:var(--ink);font-family:var(--mono)}
+.agent h4{margin:18px 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.jentry{padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2);font-size:13px}
+.jentry+.jentry{margin-top:8px}
+.jentry .meta{font-size:11.5px;color:var(--faint);margin-bottom:4px}
+.jentry .ev{color:var(--muted);font-size:12.5px;margin-top:4px}
+.jentry .ord{font-family:var(--mono);font-size:11.5px;margin-top:6px;color:var(--muted)}
 .loading{color:var(--faint);font-size:12.5px;padding:14px 2px}
 .loading::after{content:'';display:inline-block;width:9px;height:9px;margin-left:7px;border-radius:50%;
   border:2px solid var(--border);border-top-color:var(--accent);animation:spin .7s linear infinite;

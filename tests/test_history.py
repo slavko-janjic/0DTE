@@ -73,9 +73,24 @@ def test_finished_years_are_fetched_once(tmp_path):
     assert rows[0][4] == 1.5
 
 
+def _no_key_env(monkeypatch):
+    for name in ("ALPACA_KEY_ID", "ALPACA_SECRET_KEY", "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_keys_prefer_the_brokers_secrets_env_pair_over_the_old_file(tmp_path, monkeypatch):
+    _no_key_env(monkeypatch)
+    (tmp_path / "alpaca_keys.json").write_text(json.dumps({"key_id": "old", "secret_key": "old-s"}))
+    (tmp_path / "secrets.env").write_bytes("\ufeffALPACA_API_KEY_ID=new\nALPACA_API_SECRET_KEY='new-s'\n"
+                                           .encode("utf-8"))
+    assert history.load_keys(tmp_path) == ("new", "new-s")
+    monkeypatch.setenv("ALPACA_KEY_ID", "env-a")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "env-b")
+    assert history.load_keys(tmp_path) == ("env-a", "env-b")          # an explicit override still wins
+
+
 def test_keys_from_file_or_environment(tmp_path, monkeypatch):
-    monkeypatch.delenv("ALPACA_KEY_ID", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    _no_key_env(monkeypatch)
     with pytest.raises(history.MissingKeys, match="alpaca_keys.json"):
         history.load_keys(tmp_path)
     (tmp_path / "alpaca_keys.json").write_text(json.dumps({"key_id": "a", "secret_key": "b"}))

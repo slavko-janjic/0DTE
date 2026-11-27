@@ -32,6 +32,27 @@ def database_path(config: dict) -> str:
     return str(_resolve(config["database"]["path"]))
 
 
+def read_secrets(folder) -> tuple[Path | None, dict]:
+    """(the file, its KEY=value pairs) from secrets.env in `folder`;
+    (None, {}) when there is none. Notepad likes to add .txt, utf-8-sig drops
+    the byte-order mark Windows editors put first (it would glue onto the
+    first key), and Notepad's "Unicode" option writes UTF-16."""
+    folder = Path(folder)
+    path = next((p for p in (folder / "secrets.env", folder / "secrets.env.txt") if p.exists()), None)
+    if path is None:
+        return None, {}
+    raw = path.read_bytes()
+    text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig")
+    pairs = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        pairs[key.strip()] = value.strip().strip('"').strip("'")
+    return path, pairs
+
+
 def backup_dir(config: dict) -> Path:
     """Where the nightly backups go (config database.backup_dir). Separate from
     the database on purpose: backups are written once and never touched, so

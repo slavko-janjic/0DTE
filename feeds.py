@@ -1,0 +1,207 @@
+"""Feeds runner: collects Reddit mention counts, news headlines and SEC filings into
+the shared database for the LLM agents' digests. Runs as its own scheduled
+task (0DTE-Feeds) beside the worker, so a slow or failing outside site can
+never delay the trading loop.
+
+    python feeds.py            # loop forever (the scheduled task)
+    python feeds.py --once     # run every feed once now and exit
+    python feeds.py --digests-now   # build every digest card now and exit
+
+Each feed has its own interval in config `feeds.intervals_minutes`; a feed is
+due when that long has passed since its last run (stored in feed_status, so a
+restart doesn't re-hit every site at once). The digest cards (digests/) are
+built here too, at the times in config `digests.at` on trading days. Secrets (the SEC contact email)
+come from the environment or a secrets.env file beside the database - never
+from the repo.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+import scheduling
+import single_instance
+from config import (DatabaseNotMigrated, check_database_location, database_path, load_settings,
+                    read_secrets)
+from broker import service as broker_service
+from data import filings, news
+from digests import build as digest_build
+from sentiment import apewisdom
+from storage import db as storage
+from storage import digests as digest_store
+from storage import feeds as feed_store
+
+LOG_PATH = Path(__file__).resolve().parent / "feeds.log"
+LOCK_PORT = 47633                 # the worker holds 47632
+TICK_SECONDS = 60
+SYMBOLS_MAX_AGE_DAYS = 7
+DEFAULT_INTERVALS = {"reddit": 30, "news": 15, "filings": 360}
+RETRY_MINUTES = 10
+DEFAULT_DIGEST_TIMES = ["08:45", "11:00", "13:30", "16:15"]
+
+log = logging.getLogger("feeds")
+
+
+def load_secrets(db_path: str) -> None:
+    """KEY=value lines from secrets.env beside the database into the
+    environment, without overriding anything already set."""
+    folder = Path(db_path).parent
+    path, pairs = read_secrets(folder)
+    if path is None:
+        log.info("no secrets.env in %s", folder)
+        return
+    for key, value in pairs.items():
+        os.environ.setdefault(key, value)
+    log.info("secrets loaded from %s: %s", path.name,
+             ", ".join(pairs) or f"none ({path.stat().st_size} bytes, no KEY=value lines)")
+
+
+def due(status: dict, feed: str, minutes: float, now: datetime) -> bool:
+    """A feed is due once its interval has passed since its last run - or
+    after RETRY_MINUTES when that run failed, so a 6-hour feed that hit an
+    error doesn't sit idle until the next window."""
+    st = status.get(feed) or {}
+    last = st.get("last_run")
+    if last is None:
+        return True
+    if st.get("last_error"):
+        minutes = min(minutes, RETRY_MINUTES)
+    return now - datetime.fromisoformat(last) >= timedelta(minutes=minutes)
+
+
+def refresh_symbols_if_stale(config: dict, db_path: str) -> None:
+    updated = feed_store.symbols_updated_at(db_path)
+    if updated and datetime.now(timezone.utc) - datetime.fromisoformat(updated) < timedelta(days=SYMBOLS_MAX_AGE_DAYS):
+        return
+    try:
+        n = feed_store.replace_symbols(db_path, filings.fetch_symbols(config))
+        feed_store.record_feed_run(db_path, "symbols", n)
+        log.info("symbols: %d tickers loaded", n)
+    except Exception as exc:  # noqa: BLE001
+        feed_store.record_feed_run(db_path, "symbols", None, error=str(exc)[:500])
+        log.warning("symbols: %s", exc)
+
+
+def run_feed(name: str, config: dict, db_path: str) -> None:
+    universe = feed_store.symbol_universe(db_path)
+    errors: list[str] = []
+    try:
+        if name == "reddit":
+            rows, errors = apewisdom.collect(config)
+            new = feed_store.insert_reddit_mentions(db_path, rows)
+        elif name == "news":
+            items, errors = news.collect(config, universe)
+            new = feed_store.insert_news_items(db_path, items)
+        elif name == "filings":
+            items, errors = filings.collect(config, lambda t: feed_store.cik_for(db_path, t))
+            new = feed_store.insert_filings(db_path, items)
+        else:
+            raise ValueError(f"unknown feed {name}")
+    except Exception as exc:  # noqa: BLE001 - one feed failing never stops the others
+        feed_store.record_feed_run(db_path, name, None, error=str(exc)[:500])
+        log.warning("%s: failed: %s", name, exc)
+        return
+    error = "; ".join(errors)[:500] or None
+    feed_store.record_feed_run(db_path, name, new, error=error)
+    log.info("%s: %d new%s", name, new, f" ({len(errors)} feed errors)" if errors else "")
+
+
+def run_due(config: dict, db_path: str, force: bool = False) -> None:
+    cfg = config.get("feeds", {})
+    if not cfg.get("enabled", True):
+        return
+    refresh_symbols_if_stale(config, db_path)
+    intervals = {**DEFAULT_INTERVALS, **cfg.get("intervals_minutes", {})}
+    status = feed_store.feed_status(db_path)
+    now = datetime.now(timezone.utc)
+    for name, minutes in intervals.items():
+        if minutes and (force or due(status, name, minutes, now)):
+            run_feed(name, config, db_path)
+
+
+def digest_slot_due(config: dict, last_run: str | None, now: datetime) -> datetime | None:
+    """The scheduled build time (UTC) that is due now, or None. A slot is due
+    once it has passed today (exchange time zone, trading days only) and no
+    card has been built since. Only the latest passed slot counts, so a PC
+    that wakes at noon builds once, not for every missed slot."""
+    cfg = config.get("digests", {})
+    if not cfg.get("enabled", True):
+        return None
+    return scheduling.slot_due(cfg.get("at", DEFAULT_DIGEST_TIMES), config, last_run, now)
+
+
+def run_digests_if_due(config: dict, db_path: str, now: datetime | None = None) -> None:
+    now = now or datetime.now(timezone.utc)
+    slot = digest_slot_due(config, digest_store.last_digest_run(db_path), now)
+    if slot is None:
+        return
+    log.info("digests: building the %s UTC slot", slot.strftime("%H:%M"))
+    digest_build.build_all(db_path, config)
+
+
+def _setup_logging(to_file: bool) -> None:
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if to_file:
+        handlers.append(RotatingFileHandler(LOG_PATH, maxBytes=2_000_000, backupCount=2,
+                                            encoding="utf-8"))
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s %(levelname)s %(message)s")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="run every feed once and exit")
+    parser.add_argument("--digests-now", action="store_true", help="build every digest card now and exit")
+    args = parser.parse_args()
+    _setup_logging(to_file=not (args.once or args.digests_now))
+
+    config = load_settings()
+    db_path = database_path(config)
+    try:
+        check_database_location(db_path)
+    except DatabaseNotMigrated as exc:
+        log.error("refusing to start: %s", exc)
+        sys.exit(2)
+    storage.init_db(db_path)
+    load_secrets(db_path)
+
+    if args.once:
+        run_due(config, db_path, force=True)
+        return
+    if args.digests_now:
+        started = datetime.now(timezone.utc).isoformat()
+        for card in digest_build.build_all(db_path, config):
+            print(f"\n=== {card['kind']} ({'ok' if card['ok'] else 'FAILED'}) ===\n{card['content']}")
+        print("\nmodel calls this run (input / cache read / cache write / output tokens, seconds):")
+        for u in digest_store.usage_rows(db_path, started):
+            print(f"  {u['purpose']:<18} {u['input_tokens']} / {u['cache_read_tokens']} / "
+                  f"{u['cache_write_tokens']} / {u['output_tokens']}, "
+                  f"{(u['duration_ms'] or 0) / 1000:.1f}s{'' if u['ok'] else '  FAILED: ' + (u['error'] or '')}")
+        return
+    try:
+        _lock = single_instance.acquire(LOCK_PORT)  # noqa: F841 - held for process lifetime
+    except single_instance.AlreadyRunning as exc:
+        log.info("another feeds runner is already running - exiting (%s)", exc)
+        sys.exit(0)
+    log.info("feeds runner started (pid %d)", os.getpid())
+    while True:
+        try:
+            config = load_settings()    # picks up interval / watchlist edits without a restart
+            run_due(config, db_path)
+            run_digests_if_due(config, db_path)
+            settled = broker_service.settle_expired(db_path, config)   # agents' expired options
+            if settled:
+                log.info("broker: settled %d expired option position(s)", settled)
+        except Exception:  # noqa: BLE001
+            log.exception("feeds cycle failed")
+        time.sleep(TICK_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

@@ -688,3 +688,94 @@ database:
   # Nightly backups stay in the synced folder: each is written once, closed and
   # never touched again, so OneDrive syncs them safely - off-machine copies.
   backup_dir: "storage/backups"
+
+# Feeds (added 2026-11-26): Reddit mentions, news and SEC filings for the LLM agents'
+# digests, collected by feeds.py (scheduled task 0DTE-Feeds) into the same
+# database. Raw items only - no LLM calls. Edits here are picked up within a
+# minute, no restart needed.
+feeds:
+  enabled: true
+  # tickers always tagged when mentioned, and the ones with a per-ticker news
+  # feed and SEC filings lookups. Wider than `tickers` above on purpose: the
+  # agents may trade stocks, the worker only polls QQQ/SPY.
+  watchlist: [QQQ, SPY, TSLA, NVDA, AAPL, MSFT, AMZN, META, GOOGL, AMD]
+  intervals_minutes:          # 0 switches a feed off
+    reddit: 30
+    news: 15
+    filings: 360
+  reddit:
+    # Mention counts per ticker from ApeWisdom (Reddit closed its own API and
+    # RSS to new users in Oct/Nov 2026). all-stocks = every stock subreddit.
+    filters: [all-stocks, wallstreetbets, options, stocks, investing]
+    pages: 1                  # 100 tickers per page, best rank first
+  news:
+    per_ticker_yahoo: true    # one Yahoo Finance headline feed per watchlist ticker
+    feeds:
+      cnbc_top: "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+      marketwatch_top: "https://feeds.content.dowjones.io/public/rss/mw_topstories"
+      seekingalpha_currents: "https://seekingalpha.com/market_currents.xml"
+  filings:
+    # SEC requires a contact email in the User-Agent, or it blocks the IP. Put
+    # SEC_USER_AGENT=<name> <email> in secrets.env beside the database; this
+    # placeholder is ignored.
+    user_agent: "0DTE research tool (contact: CHANGE_ME@example.com)"
+    forms: ["8-K", "10-Q", "10-K", "4", "S-1", "SC 13D", "SC 13G"]
+    lookback_days: 14
+
+# Digests (added 2026-11-26): short Markdown cards written by a small model
+# from the feeds and the worker's own data - what the LLM agents read instead
+# of raw feeds, and what the Market page shows. Built by feeds.py at these
+# exchange-time slots on trading days (only the latest missed slot is built
+# after downtime). `python feeds.py --digests-now` builds them on demand.
+# Runs on the Claude subscription of the Claude Code CLI logged in on this PC.
+digests:
+  enabled: true
+  model: haiku
+  at: ["08:45", "11:00", "13:30", "16:15"]
+  cards: [market, calendar, news, crowd, filings]
+
+# Broker + risk gate for the LLM agents (added 2026-11-26; broker/). Every
+# agent order goes validate -> quote -> risk gate -> fill -> ledger. Options
+# always fill in the simulator against the live chain (buy at the ask, sell at
+# the bid, `costs` above). Stocks go to the Alpaca paper account when
+# ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY are in secrets.env, else the
+# simulator at the last price plus slippage. Each agent's own `risk:` block can
+# only tighten these limits, never loosen them.
+broker:
+  stocks: alpaca              # alpaca | sim
+  stock_slippage_bps: 5       # simulator only
+risk:
+  max_position_pct: 20        # one position's value after a buy, % of equity
+  max_0dte_premium_pct: 10    # premium in options expiring today, % of equity
+  max_daily_loss_pct: 6       # down this much today -> no new buys until tomorrow
+  max_drawdown_pct: 30        # this far below peak equity -> agent paused for review
+  max_open_positions: 8
+  zero_dte_cutoff_minutes: 30
+  allowed_assets: [stock, option]
+
+# LLM agents (added 2026-11-26; agents/, agent_runner.py = task 0DTE-Agents).
+# Kept apart from `agents:` above (the rule-based lab agents) so neither code
+# path trips over the other. Each wakes at its `at` times (exchange time,
+# trading days), reads the briefing cards and its own book, may look deeper
+# with the desk tools and a few web searches, journals every decision, and
+# trades its own book through the risk gate.
+#   mode: off | dry_run (decides, never fills) | live (paper fills)
+#   risk: tighten-only overrides of `risk:` above
+llm_schedule:
+  default: ["09:45", "11:00", "12:30", "14:00", "15:30"]
+llm_agents:
+  - name: momentum
+    label: Momentum swing
+    about: "Buys strength on rising volume, cuts losers fast; shares and 2-6 week calls; holds days to weeks."
+    persona: momentum.md
+    avatar: { color: "#f59e0b", eyes: sharp, accessory: visor }   # the face on the Agents page
+    mode: dry_run
+    model: sonnet
+    starting_balance: 5000
+    at: ["09:50", "12:30", "15:20"]
+    deep_dives_per_run: 3
+    max_turns: 30
+    max_tokens_per_day: 600000
+    digests: [market, calendar, news, crowd, filings]
+    risk:
+      max_open_positions: 5
