@@ -8,7 +8,8 @@ as "no data" without spending a model call.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from storage import db as storage
@@ -20,6 +21,14 @@ FILINGS_DAYS = 3
 CALENDAR_DAYS = 7
 # Index ETFs have no earnings; asking yfinance for them only logs 404 noise.
 NO_EARNINGS = {"QQQ", "SPY", "IWM", "DIA", "VOO", "VTI"}
+# The premarket range (04:00-09:29) can be fetched once Alpaca's free SIP feed
+# has it: 15 minutes after the bell.
+PREMARKET_KNOWN_AT = time(9, 45)
+PREMARKET_NOTE = ("Premarket range = today's 04:00-09:29 range over its own 20-day normal. "
+                  "The worker's research (pre-registered 2026-10-29): QUIET (<= 0.67x) days "
+                  "moved less than option prices implied and bought options lost more than usual; "
+                  "WIDE (>= 1.5x) days moved more than implied. It forecasts the size of the "
+                  "move, not its direction - premarket direction tested as a coin flip.")
 
 
 def _pct_change(now: int | None, before: int | None) -> str:
@@ -79,12 +88,24 @@ def filings(db_path: str, config: dict) -> str:
     return "\n".join(lines)
 
 
-def market(db_path: str, config: dict) -> str:
+def _premarket_ratio(db_path: str, ticker: str, now: datetime) -> float | None:
+    """Today's premarket range ratio (signals/premarket.py, the same reading
+    the worker's quiet-premarket filter uses); None before 09:45 or unknown."""
+    if now.time() < PREMARKET_KNOWN_AT:
+        return None
+    from signals import premarket
+    return premarket.range_ratio(ticker, now.date(), Path(db_path).parent)
+
+
+def market(db_path: str, config: dict, premarket_ratio=None, now: datetime | None = None) -> str:
     """The worker's own read of QQQ/SPY: latest composite signal, today's
-    pre-market setup, VIX term structure."""
+    pre-market setup and premarket range class, VIX term structure."""
+    from analytics.premarket_lab import range_class
     tz = ZoneInfo(config["market_hours"].get("timezone", "America/New_York"))
-    today = datetime.now(tz).date().isoformat()
-    lines = []
+    now = now or datetime.now(tz)
+    today = now.date().isoformat()
+    premarket_ratio = premarket_ratio or (lambda t: _premarket_ratio(db_path, t, now))
+    lines, ranged = [], False
     for ticker in config.get("tickers", []):
         sig = storage.get_latest_signal(db_path, ticker)
         if sig:
@@ -104,6 +125,11 @@ def market(db_path: str, config: dict) -> str:
                                               "prior_close", "overnight_high", "overnight_low",
                                               "catalysts", "opening_bias")}
             lines.append(f"{ticker} pre-market setup today: {json.dumps(keep, default=str)}")
+        ratio = premarket_ratio(ticker)
+        if ratio is not None:
+            lines.append(f"{ticker} premarket range today: {ratio:.2f}x its 20-day normal "
+                         f"= {range_class(ratio).upper()}")
+            ranged = True
     with storage.connect(db_path) as conn:
         vix = conn.execute("SELECT * FROM vix_snapshots ORDER BY timestamp DESC LIMIT 1").fetchone()
     if vix:
@@ -111,6 +137,8 @@ def market(db_path: str, config: dict) -> str:
                      f"term ratio {vix['term_ratio']} (negative = contango = normal) at {vix['timestamp'][:16]} UTC")
     if not lines:
         return ""
+    if ranged:
+        lines.append(PREMARKET_NOTE)
     lines.insert(0, "Note: the worker's own research found direction calls near a coin flip; "
                     "treat direction/confidence as context, not a forecast.")
     return "\n".join(lines)

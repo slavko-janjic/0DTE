@@ -77,6 +77,28 @@ def test_market_input(tmp_path):
     assert "coin flip" in text
 
 
+def test_market_input_reports_the_premarket_range_class(tmp_path):
+    path = make_db(tmp_path)
+    text = inputs.market(path, CONFIG, premarket_ratio=lambda t: 0.5)
+    assert "QQQ premarket range today: 0.50x its 20-day normal = QUIET" in text
+    assert "not its direction" in text
+    assert "WIDE" in inputs.market(path, CONFIG, premarket_ratio=lambda t: 1.8)
+    assert inputs.market(path, CONFIG, premarket_ratio=lambda t: None) == ""   # unknown: left out
+
+
+def test_premarket_range_is_not_asked_before_it_can_be_known(tmp_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    from signals import premarket
+    asked = []
+    monkeypatch.setattr(premarket, "range_ratio", lambda *a: asked.append(a) or 1.0)
+    et = ZoneInfo("America/New_York")
+    assert inputs._premarket_ratio(str(tmp_path / "t.db"), "QQQ",
+                                   datetime(2026, 11, 27, 8, 45, tzinfo=et)) is None
+    assert asked == []                                  # the 08:45 card goes without it
+    assert inputs._premarket_ratio(str(tmp_path / "t.db"), "QQQ",
+                                   datetime(2026, 11, 27, 11, 0, tzinfo=et)) == 1.0
+
+
 def test_calendar_input_window_and_earnings():
     text = inputs.calendar(None, CONFIG, earnings_lookup=lambda t: "2026-11-30" if t == "TSLA" else None,
                            today=date(2026, 11, 26))

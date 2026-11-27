@@ -35,8 +35,10 @@ PROMPTS = {
                "items mean), clusters of insider Form 4 reports by ticker, anything unusual. Note "
                "that a Form 4 alone does not say buy or sell.",
     "market": "Card: market state for QQQ and SPY. Spot, gap and pre-market setup, gamma regime, "
-              "VIX level and term structure (contango normal, backwardation = stress). Keep the "
-              "worker's caveat that its direction calls are close to a coin flip.",
+              "VIX level and term structure (contango normal, backwardation = stress), and the "
+              "premarket range class when given (quiet / normal / wide: a forecast of how much the "
+              "day moves vs option prices, not of direction). Keep the worker's caveat that its "
+              "direction calls are close to a coin flip.",
     "calendar": "Card: calendar. Upcoming catalysts in date order with day names: macro releases, "
                 "Fed, holidays and half days, watchlist earnings. Mark anything today or tomorrow.",
 }
